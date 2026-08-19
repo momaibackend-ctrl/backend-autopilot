@@ -4,7 +4,7 @@ const secretPattern=/(token|secret|password|authorization|api[_-]?key)/i;
 export function redact(value:unknown):unknown{
   if(Array.isArray(value))return value.map(redact);
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,secretPattern.test(k)?'[REDACTED]':redact(v)]));
-  if(typeof value==='string')return value.replace(/(?:gh[pousr]_|sbp_)[A-Za-z0-9_-]+/g,'[REDACTED]').replace(/(password|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi,'$1=[REDACTED]');
+  if(typeof value==='string')return value.replace(/(?:gh[pousr]_|sbp_)[A-Za-z0-9_-]+/g,'[REDACTED]').replace(/\bBearer\s+\S+/gi,'Bearer [REDACTED]').replace(/\b(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s/]+@/gi,'$1[REDACTED]@').replace(/(password|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi,'$1=[REDACTED]');
   return value;
 }
 export class AuditLog {

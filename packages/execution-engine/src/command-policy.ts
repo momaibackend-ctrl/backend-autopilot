@@ -8,7 +8,8 @@ export class CommandPolicy {
     const name=command.toLowerCase().replace(/\.exe$/,'');
     if(destructive.has(name))return 'DESTRUCTIVE';
     if(args.some(a=>/[;&|><`]/.test(a)))return 'UNKNOWN';
-    if(name==='git'&&['push','fetch','pull','clone'].includes(args[0]??''))return 'NETWORK';
+    if(name==='git'&&['push','fetch','pull','clone','ls-remote'].includes(args[0]??''))return 'NETWORK';
+    if(name==='git'&&args[0]==='remote'&&['add','set-url','remove','rename'].includes(args[1]??''))return 'BUILD';
     if(name==='git'&&args[0]==='branch'&&args[1]==='--show-current')return 'READ';
     if(name==='git'&&['checkout','switch','branch','add','commit'].includes(args[0]??''))return 'BUILD';
     if(name==='pnpm'||name==='npm'||name==='npx')return (args[0]==='test'||args.includes('vitest'))?'TEST':'BUILD';

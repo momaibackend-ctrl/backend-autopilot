@@ -31,19 +31,29 @@ Statuses are evidence-based: `SUPPORTED`, `CONFIGURED`, `LIVE_TESTED`, `MOCK`, `
 
    ```bash
    gh auth login --web --hostname github.com
+   gh auth switch --hostname github.com --user <dedicated-sandbox-login>
    supabase login
    ```
 
 3. Confirm that each active identity is a dedicated sandbox account. Backend Autopilot detects and registers account/organization IDs itself:
 
    ```bash
-   pnpm autopilot sandbox-github-register --project <id> --confirm-dedicated-sandbox
+   pnpm autopilot sandbox-github-register --project <id> --expected-login <dedicated-sandbox-login> --confirm-dedicated-sandbox
+   pnpm autopilot sandbox-github-repository-register --project <id> --account-resource <id> --repository <owner/name> --confirm-explicit-sandbox-target
    pnpm autopilot sandbox-supabase-register --project <id> --confirm-dedicated-sandbox
    ```
 
-4. Call `sandbox_bootstrap` through MCP or `pnpm autopilot sandbox-bootstrap --file bootstrap.json`.
+4. Register the exact existing Supabase target, configure its generated database credential, then call `sandbox_bootstrap` through MCP or the CLI:
 
-Bootstrap creates and pushes a private sandbox repository, creates the Supabase project, stores generated database credentials only in `.env`, registers resources, waits for the database, applies versioned migrations, configures structured RLS, optionally configures Auth/Storage, observes CI, writes manifests, and captures capabilities.
+   ```bash
+   pnpm autopilot sandbox-supabase-project-register --project <id> --organization-resource <id> --expected-project-ref <ref> --confirm-explicit-sandbox-target
+   pnpm autopilot sandbox-supabase-database-configure --project <id> --supabase-project-resource <id> --confirm-credential-rotation
+   pnpm autopilot sandbox-bootstrap --file bootstrap.json
+   ```
+
+Bootstrap either creates a policy-named private sandbox repository or adopts exactly one human-confirmed existing private repository owned by the active sandbox identity. Existing GitHub accounts are never logged out. It creates or adopts one explicitly authorized Supabase sandbox project, stores generated database credentials only in `.env`, registers resources, waits for the database, applies versioned migrations, configures structured RLS, optionally configures Auth/Storage, observes CI, writes manifests, and captures capabilities.
+
+For an implementation run, `sandbox_github_ci_verify` binds CI evidence to the exact commit SHA before IndependentReview can make a GitHub-backed task `READY`. `sandbox_github_pull_request_open` then opens one idempotent PR from that task's exact `autopilot/*` branch.
 
 Passwords are never accepted as persistent inputs. Generated secrets are replaceable through `MutableSecretProvider`; manifests contain reference names and lifecycle procedures only.
 
@@ -70,6 +80,6 @@ pnpm check
 
 External live database tests run when `AUTOPILOT_LIVE_DATABASE_URL` is explicitly supplied. GitHub/Supabase live bootstrap is never triggered by the ordinary test suite.
 
-The local E2E creates an isolated Git repository, intentionally fails security tests, commits a repair on the same task branch, reruns six suites, performs IndependentReview, and proves the formal `READY` gates.
+The local E2E creates an isolated Git repository, intentionally fails security tests, commits a repair on the same task branch, reruns six suites, performs IndependentReview, and proves the formal `READY` gates. The completed live proof additionally used repository `momaibackend-ctrl/momnabackend`, Supabase project `qtyfdzjzmgxtrarpgcmn`, exact commit `6314f9b903cff61887b08f89c2d7754f60204f57`, GitHub Actions run `32264809746`, and pull request [#1](https://github.com/momaibackend-ctrl/momnabackend/pull/1).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md), [RUNBOOK.md](RUNBOOK.md), and [SETUP_REQUIRED.md](SETUP_REQUIRED.md).

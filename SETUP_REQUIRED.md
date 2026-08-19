@@ -1,12 +1,7 @@
 # Setup required
 
-Docker is not required.
+No human action remains for the completed v0.2 sandbox proof.
 
-Current unavoidable human boundary for the first live sandbox:
+On 2026-08-19 the official GitHub and Supabase login/confirmation boundaries were completed. The active GitHub identity is `momaibackend-ctrl`; other stored GitHub accounts were not logged out or modified. The only Supabase target is `qtyfdzjzmgxtrarpgcmn`; no second project was created and no billing action was required.
 
-1. Confirm whether the currently active GitHub identity `oopsie-star` is a dedicated Backend Autopilot sandbox account with no production access. If not, perform the official `gh auth login` or `gh auth switch` flow for such an account.
-2. Perform `supabase login` using a dedicated sandbox account, including OAuth/2FA/CAPTCHA if requested.
-3. Confirm any provider billing/payment prompt if Supabase project creation requires it.
-4. If Auth/Storage Management API live tests are required, complete the official scoped Supabase token/OAuth issuance flow. The value must be placed directly into the protected secret environment as `SUPABASE_ACCESS_TOKEN`, never pasted into chat, artifacts, or repository files.
-
-After these identity/security confirmations, the agent can discover the sandbox organization, create repository/database resources, store secret references, apply migrations, push, observe CI, run repair, and write manifests without manual developer setup.
+Future credential expiry may require the human-only OAuth/2FA/CAPTCHA step again. Backend Autopilot must then repeat exact identity and resource checks before any write. Billing upgrades, production targets, and `AUTONOMOUS_PRODUCTION` remain outside authorization.

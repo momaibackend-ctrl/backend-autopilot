@@ -89,7 +89,7 @@ export const reviewResultSchema = z.enum(['PASS','PASS_WITH_WARNINGS','FAIL']);
 export const independentReviewSchema = z.object({result:reviewResultSchema,checks:z.record(z.boolean()),warnings:z.array(z.string()),failures:z.array(z.string()),reviewedAt:z.string().datetime()});
 export type IndependentReview = z.infer<typeof independentReviewSchema>;
 
-export const artifactKindSchema = z.enum(['REQUIREMENTS_SNAPSHOT','IMPLEMENTATION_PLAN','ARCHITECTURE_REVIEW','CODE_DIFF','MIGRATION_MANIFEST','API_CONTRACT','TEST_REPORT','SECURITY_REPORT','REVIEW_REPORT','FINAL_CHANGE_MANIFEST','COMMAND_LOG','COMMAND_STDOUT','COMMAND_STDERR','CAPABILITY_SNAPSHOT','SECRETS_MANIFEST','INFRASTRUCTURE_MANIFEST','BOOTSTRAP_REPORT']);
+export const artifactKindSchema = z.enum(['REQUIREMENTS_SNAPSHOT','IMPLEMENTATION_PLAN','ARCHITECTURE_REVIEW','CODE_DIFF','MIGRATION_MANIFEST','API_CONTRACT','TEST_REPORT','SECURITY_REPORT','CI_REPORT','REVIEW_REPORT','FINAL_CHANGE_MANIFEST','PULL_REQUEST_REPORT','COMMAND_LOG','COMMAND_STDOUT','COMMAND_STDERR','CAPABILITY_SNAPSHOT','SECRETS_MANIFEST','INFRASTRUCTURE_MANIFEST','BOOTSTRAP_REPORT']);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({id:z.string().uuid(),projectId:z.string().uuid(),taskId:z.string().uuid().optional(),runId:z.string().uuid().optional(),kind:artifactKindSchema,schemaVersion:z.string(),content:z.unknown(),contentHash:z.string(),createdAt:z.string().datetime()});
 export type Artifact = z.infer<typeof artifactSchema>;

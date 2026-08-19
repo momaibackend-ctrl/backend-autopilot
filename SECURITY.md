@@ -11,7 +11,10 @@
 - Imported source material is untrusted data and has immutable provenance stating that it is not instruction authority.
 - Audit events are append-only in application code and protected from SQL UPDATE/DELETE by a database trigger.
 - Provider accounts must be explicitly confirmed as dedicated sandbox identities before discovery; authenticated sessions alone grant no authority.
+- GitHub authorization never logs out or overwrites existing accounts: the expected sandbox login must be explicitly switched active and matched before registration and every write.
+- An existing GitHub repository is adopted only by exact `owner/name` confirmation, active-owner match, private visibility, `ADMIN` permission, and a project-scoped registry record.
 - Generated passwords are transient credentials stored by `MutableSecretProvider`; sensitive CLI argument positions are journaled as `[REDACTED]`.
+- IPv4-only sandbox hosts use the official Supavisor session pooler with encrypted `sslmode=require` semantics. CA-pinned `verify-full` remains preferred when the provider certificate is available; production autonomy remains unsupported.
 - Repository/database deletion requires a separate semantic tool plus a resource-bound confirmation object.
 - Capability status distinguishes implemented, configured and live-tested behavior; mocks can never produce live evidence.
 

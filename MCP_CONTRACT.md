@@ -25,9 +25,14 @@ All inputs are Zod-validated. Results are JSON encoded in MCP text content. Doma
 | `git_diff` | read | Diff against recorded base for registered Git resource |
 | `project_snapshot` | read | Machine-readable state/audit/version snapshot |
 | `runtime_capabilities` | read | Evidence-based current environment capability snapshot |
-| `sandbox_github_identity_register` | write | Detect active GitHub identity after dedicated-sandbox confirmation |
+| `sandbox_github_identity_register` | write | Require an exact expected active GitHub login after dedicated-sandbox confirmation |
+| `sandbox_github_repository_register` | write/open-world | Verify private/admin ownership and explicitly allowlist one existing `owner/name` repository |
 | `sandbox_supabase_identity_register` | write | Discover one sandbox organization after official login/confirmation |
-| `sandbox_bootstrap` | write/idempotent/open-world | Create GitHub/Supabase sandbox, migrate, verify CI, and write manifests |
+| `sandbox_supabase_project_register` | write/open-world | Verify and allowlist the exact sole project ref in the dedicated sandbox account |
+| `sandbox_supabase_database_configure` | write/open-world | Generate/rotate a registered sandbox database credential and retain references only |
+| `sandbox_github_ci_verify` | write/idempotent/open-world | Bind a successful GitHub Actions run to the exact task commit SHA and write `CI_REPORT` |
+| `sandbox_github_pull_request_open` | write/idempotent/open-world | For a `READY` task, open/reuse one PR from its exact latest `autopilot/*` branch |
+| `sandbox_bootstrap` | write/idempotent/open-world | Create or use a registered GitHub sandbox, create Supabase sandbox, migrate, verify CI, and write manifests |
 | `sandbox_repository_delete` | destructive | Delete only a registered sandbox repository with matching confirmation |
 | `sandbox_database_delete` | destructive | Delete only a registered sandbox database project with matching confirmation |
 

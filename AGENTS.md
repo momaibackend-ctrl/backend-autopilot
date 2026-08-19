@@ -13,6 +13,7 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 5. Never persist secret values. Persist environment/vault reference names only; redact logs, audit and artifacts.
 6. `AUTONOMOUS_PRODUCTION` remains a hard `NOT_SUPPORTED`. Do not add flags, hidden routes or adapter calls that bypass it.
 7. A task is not `READY` until implementation, ArchitectureGuard, required tests, IndependentReview, and mandatory artifacts all pass.
+8. Never run `gh auth logout`. Add a dedicated account through official web login, explicitly switch it active, compare it with the expected login, and register an existing repository only after exact `owner/name`, private visibility, owner, and `ADMIN` checks.
 
 ## Code map
 
