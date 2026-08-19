@@ -9,6 +9,7 @@ export class MemoryStateStore implements StateStore {
   async createProject(v:Project){if([...this.projects.values()].some(p=>p.slug===v.slug))throw new Conflict('Project slug already exists');this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async getProject(id:string){return clone(this.projects.get(id));} async listProjects(){return clones([...this.projects.values()]);}
   async createResource(v:Resource){const duplicate=[...this.resources.values()].find(r=>r.provider===v.provider&&r.externalReference===v.externalReference);if(duplicate)throw new Conflict('External resource already registered',{resourceId:duplicate.resourceId});this.resources.set(v.resourceId,structuredClone(v));return structuredClone(v);}
+  async updateResource(v:Resource){this.resources.set(v.resourceId,structuredClone(v));return structuredClone(v);}
   async getResource(id:string){return clone(this.resources.get(id));}
   async findResource(projectId:string,externalReference:string){return clone([...this.resources.values()].find(r=>r.projectId===projectId&&r.externalReference===externalReference));}
   async listResources(projectId:string){return clones([...this.resources.values()].filter(r=>r.projectId===projectId));}

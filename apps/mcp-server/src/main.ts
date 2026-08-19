@@ -1,15 +1,18 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { createService, DomainError } from '../../../packages/core/src/index.js';
-import { autonomyModeSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, secretRefSchema } from '../../../packages/schemas/src/index.js';
+import { createRuntime, DomainError } from '../../../packages/core/src/index.js';
+import { autonomyModeSchema, contextSectionTypeSchema, destructiveAuthorizationSchema, environmentSchema, fileChangeSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, secretRefSchema } from '../../../packages/schemas/src/index.js';
 import type { ContextImport } from '../../../packages/context-engine/src/index.js';
+import type { SandboxBootstrapInput } from '../../../packages/bootstrap/src/index.js';
+import { redact } from '../../../packages/audit/src/index.js';
 
-const service=createService();const server=new McpServer({name:'backend-autopilot',version:'0.1.0'});
+const {service,bootstrap}=createRuntime();const server=new McpServer({name:'backend-autopilot',version:'0.2.0'});
 type ToolResult={content:{type:'text';text:string}[];isError?:boolean};
 const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value,null,2)}]});
-const safe=<T>(fn:(args:T)=>Promise<unknown>)=>async(args:T):Promise<ToolResult>=>{try{return result(await fn(args));}catch(error){if(error instanceof DomainError)return {isError:true,content:[{type:'text',text:JSON.stringify({error:{code:error.code,message:error.message,details:error.details}})}]};throw error;}};
+const safe=<T>(fn:(args:T)=>Promise<unknown>)=>async(args:T):Promise<ToolResult>=>{try{return result(await fn(args));}catch(error){if(error instanceof DomainError)return {isError:true,content:[{type:'text',text:JSON.stringify({error:{code:error.code,message:error.message,details:redact(error.details)}})}]};throw error;}};
 const ro={readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false};const mut={readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false};
+const destructive={readOnlyHint:false,destructiveHint:true,idempotentHint:true,openWorldHint:true};
 
 server.registerTool('system_health',{description:'Return platform health and supported autonomy modes',inputSchema:{},annotations:ro},safe(async()=>service.systemHealth()));
 server.registerTool('project_create',{description:'Register an isolated target project; production is rejected',inputSchema:{name:z.string(),slug:z.string(),sourceType:z.string(),environment:environmentSchema,autonomyMode:autonomyModeSchema,workspacePath:z.string()},annotations:mut},safe(async a=>service.projectCreate(a)));
@@ -35,4 +38,10 @@ server.registerTool('run_list',{description:'List reproducible task runs',inputS
 server.registerTool('run_get',{description:'Get one project-scoped run',inputSchema:{projectId:z.string().uuid(),runId:z.string().uuid()},annotations:ro},safe(async a=>service.runGet(a.projectId,a.runId)));
 server.registerTool('git_diff',{description:'Read committed diff for an authorized git resource',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid(),resourceId:z.string().uuid()},annotations:ro},safe(async a=>service.gitDiff(a.projectId,a.taskId,a.resourceId)));
 server.registerTool('project_snapshot',{description:'Export project state and reproducibility metadata',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.projectSnapshot(a.projectId)));
+server.registerTool('runtime_capabilities',{description:'Probe actual configured and live-tested runtime capabilities; never reports interfaces as live',inputSchema:{projectId:z.string().uuid().optional()},annotations:ro},safe(async a=>bootstrap.runtimeCapabilities(a.projectId)));
+server.registerTool('sandbox_github_identity_register',{description:'After human login and explicit dedicated-sandbox confirmation, detect and allowlist the active GitHub identity',inputSchema:{projectId:z.string().uuid(),confirmedDedicatedSandbox:z.literal(true)},annotations:mut},safe(async a=>bootstrap.registerGithubIdentity(a.projectId,a.confirmedDedicatedSandbox)));
+server.registerTool('sandbox_supabase_identity_register',{description:'After human login and explicit dedicated-sandbox confirmation, discover one unambiguous Supabase organization and allowlist it',inputSchema:{projectId:z.string().uuid(),confirmedDedicatedSandbox:z.literal(true)},annotations:mut},safe(async a=>bootstrap.registerSupabaseOrganization(a.projectId,a.confirmedDedicatedSandbox)));
+server.registerTool('sandbox_bootstrap',{description:'Create and verify GitHub plus Supabase sandbox infrastructure through semantic provider adapters',inputSchema:{projectId:z.string().uuid(),operationId:z.string().min(8),githubAccountResourceId:z.string().uuid(),githubRepositoryName:z.string(),supabaseOrganizationResourceId:z.string().uuid(),supabaseProjectName:z.string(),region:z.string(),migrations:z.array(z.object({name:z.string(),sql:z.string(),rollback:z.string()})),rlsPolicies:z.array(z.object({table:z.string(),ownerColumn:z.string(),policyName:z.string()})),authConfig:z.object({site_url:z.string().url().optional(),disable_signup:z.boolean().optional(),jwt_exp:z.number().int().positive().optional(),mailer_autoconfirm:z.boolean().optional()}).optional(),storageConfig:z.object({fileSizeLimit:z.number().int().positive().optional(),features:z.record(z.unknown()).optional()}).optional(),waitForCi:z.boolean().default(true)},annotations:{...mut,idempotentHint:true,openWorldHint:true}},safe(async a=>bootstrap.bootstrap(a as SandboxBootstrapInput)));
+server.registerTool('sandbox_repository_delete',{description:'Explicitly delete one registered sandbox GitHub repository',inputSchema:{projectId:z.string().uuid(),authorization:destructiveAuthorizationSchema},annotations:destructive},safe(async a=>bootstrap.deleteRepository(a.projectId,a.authorization)));
+server.registerTool('sandbox_database_delete',{description:'Explicitly delete one registered sandbox Supabase database project',inputSchema:{projectId:z.string().uuid(),authorization:destructiveAuthorizationSchema},annotations:destructive},safe(async a=>bootstrap.deleteDatabase(a.projectId,a.authorization)));
 await server.connect(new StdioServerTransport());

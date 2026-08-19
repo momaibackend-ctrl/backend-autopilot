@@ -26,6 +26,8 @@ External AI / future Internal AgentRuntime
 
 `AutopilotService` is the application boundary shared by MCP, CLI and HTTP. Domain contracts are Zod schemas and inferred TypeScript types. PostgreSQL is control-plane storage; Git workspace execution, target test runners, target databases, GitHub, Supabase, task sources, LLMs and secret stores are adapters behind ports.
 
+`SandboxBootstrapService` is a separate application boundary for external provisioning. It requires `AUTONOMOUS_STAGING`, dedicated account/organization resources, semantic provider calls, idempotency IDs, manifest artifacts and `resource_created` audit events. It cannot provision production.
+
 ## Isolation and authority
 
 Every entity carries `projectId`; store queries for private objects include it. Every external write names a registered `resourceId`, and `PolicyEngine` verifies ownership, status, environment and permission. The registered local Git external reference must exactly equal the project's normalized workspace. There are no global mutable current-project variables.
@@ -43,6 +45,12 @@ Context is versioned sections, not a prompt. Every section records source type/r
 ## Persistence and recovery
 
 Projects, resources, context versions, tasks, transitions, runs, artifacts and audit events are stored in PostgreSQL JSONB envelopes with relational ownership/index columns. Runs contain platform/workflow/policy/context versions and Git metadata. Temporary workspaces are recoverable from registered metadata and Git.
+
+Before an external PostgreSQL control plane is available, the Dockerless bootstrap registry persists the same `StateStore` contract in `.autopilot/state.json`; it contains no secret values. `DotEnvSecretProvider` separately stores replaceable runtime secrets in the ignored `.env`. With `DATABASE_URL`, runtime automatically composes the PostgreSQL store.
+
+## Provider bootstrap
+
+GitHub provisioning uses the authenticated official CLI and verifies its identity against a confirmed `GITHUB_ACCOUNT` resource. Supabase provisioning uses the official CLI, generates the database password internally, redacts its command position, and stores only secret references in state. PostgreSQL migrations use checksums, an advisory lock, a migration ledger, a transaction, rollback metadata and a destructive-SQL denylist. Supabase Auth/Storage use the scoped Management API adapter.
 
 ## Provider extension
 

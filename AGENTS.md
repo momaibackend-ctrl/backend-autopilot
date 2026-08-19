@@ -39,4 +39,4 @@ Update state transition definitions, schema/version constants, migration compati
 
 Add unit tests for pure rules, integration tests for store/application contracts, security tests for isolation/denial, and E2E tests for actual commands and Git state. API changes require contract tests; database changes require migration tests; auth/privacy changes require security tests. Never replace a failed external verification with a fake success or skip without reporting it.
 
-Run `pnpm check` before handoff. PostgreSQL checks require the documented Docker service. Preserve unrelated user changes and record material architecture changes as ADRs.
+Run `pnpm check` before handoff. Docker is optional; external PostgreSQL live tests require an explicitly allowlisted URL. During bootstrap, stop only for login/OAuth/2FA/CAPTCHA/billing/legal consent. Never ask a user to perform provider setup that an official API/CLI can safely perform. Preserve unrelated user changes and record material architecture changes as ADRs.

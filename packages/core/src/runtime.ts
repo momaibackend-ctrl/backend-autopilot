@@ -1,15 +1,21 @@
 import 'dotenv/config';
 import type { StateStore } from './ports.js';
-import { systemClock } from './ports.js';
-import { MemoryStateStore, PostgresStateStore } from '../../project-registry/src/index.js';
+import { systemClock, uuidGenerator } from './ports.js';
+import { FileStateStore, MemoryStateStore, PostgresStateStore } from '../../project-registry/src/index.js';
 import { CommandPolicy, CommandRunner, ExecutionEngine, TestEngine } from '../../execution-engine/src/index.js';
 import { LocalGitAdapter } from '../../adapters/git/src/index.js';
 import { AutopilotService } from './application.js';
+import { DotEnvSecretProvider } from './secrets.js';
+import { LiveGitHubAdapter } from '../../adapters/github/src/index.js';
+import { ExternalPostgresAdapter } from '../../adapters/database/src/index.js';
+import { LiveSupabaseCliAdapter, SupabaseManagementApiAdapter } from '../../adapters/supabase/src/index.js';
+import { RuntimeCapabilityProbe, SandboxBootstrapService } from '../../bootstrap/src/index.js';
 
 export function createService(options:{store?:StateStore}={}){
-  const store=options.store??createConfiguredStore();const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);return new AutopilotService({store,execution:new ExecutionEngine(git,systemClock),tests:new TestEngine(commands,systemClock),git,commands});
+  return createRuntime(options).service;
 }
+export function createRuntime(options:{store?:StateStore}={}){const store=options.store??createConfiguredStore();const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const service=new AutopilotService({store,execution:new ExecutionEngine(git,systemClock),tests:new TestEngine(commands,systemClock),git,commands});const secrets=new DotEnvSecretProvider();const github=new LiveGitHubAdapter(commands);const database=new ExternalPostgresAdapter(secrets);const supabase=new LiveSupabaseCliAdapter(commands,secrets);const supabaseApi=new SupabaseManagementApiAdapter(secrets);const capabilities=new RuntimeCapabilityProbe(store,secrets,systemClock);const bootstrap=new SandboxBootstrapService({store,clock:systemClock,ids:uuidGenerator,commands,secrets,github,supabase,supabaseApi,database,capabilities});return {service,bootstrap,store,secrets,providers:{github,database,supabase,supabaseApi}};}
 function createConfiguredStore():StateStore {
   if(process.env['AUTOPILOT_STORE']==='memory')return new MemoryStateStore();
-  const url=process.env['DATABASE_URL'];if(!url)throw new Error('DATABASE_URL is required for persistent runtime. Use AUTOPILOT_STORE=memory only for tests/local diagnostics.');return new PostgresStateStore(url);
+  const url=process.env['DATABASE_URL'];if(url)return new PostgresStateStore(url);const path=process.env['AUTOPILOT_STATE_PATH'];return path?new FileStateStore(path):new FileStateStore();
 }

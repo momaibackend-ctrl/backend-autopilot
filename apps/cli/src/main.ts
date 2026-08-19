@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import { readFile } from 'node:fs/promises';
-import { createService, DomainError } from '../../../packages/core/src/index.js';
-const service=createService();const cli=new Command().name('autopilot').description('Backend Autopilot v0.1 diagnostic CLI').version('0.1.0');
+import { createRuntime, DomainError } from '../../../packages/core/src/index.js';
+import type { SandboxBootstrapInput } from '../../../packages/bootstrap/src/index.js';
+import { redact } from '../../../packages/audit/src/index.js';
+const {service,bootstrap}=createRuntime();const cli=new Command().name('autopilot').description('Backend Autopilot v0.2 diagnostic and sandbox bootstrap CLI').version('0.2.0');
 const print=(v:unknown)=>console.log(JSON.stringify(v,null,2));const run=(fn:()=>Promise<unknown>)=>async()=>print(await fn());
 cli.command('health').action(run(()=>service.systemHealth()));
 cli.command('projects').action(run(()=>service.projectList()));
@@ -17,4 +19,8 @@ cli.command('task-review').requiredOption('--project <id>').requiredOption('--ta
 cli.command('task-status').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskStatus(o.project,o.task)));
 cli.command('task-retry').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskRetry(o.project,o.task)));
 cli.command('artifacts').requiredOption('--project <id>').option('--task <id>').action(async o=>print(await service.artifactList(o.project,o.task)));
-try{await cli.parseAsync();}catch(error){if(error instanceof DomainError){console.error(JSON.stringify({error:{code:error.code,message:error.message,details:error.details}},null,2));process.exitCode=1;}else throw error;}
+cli.command('capabilities').option('--project <id>').action(async o=>print(await bootstrap.runtimeCapabilities(o.project)));
+cli.command('sandbox-github-register').requiredOption('--project <id>').requiredOption('--confirm-dedicated-sandbox').action(async o=>print(await bootstrap.registerGithubIdentity(o.project,o.confirmDedicatedSandbox===true)));
+cli.command('sandbox-supabase-register').requiredOption('--project <id>').requiredOption('--confirm-dedicated-sandbox').action(async o=>print(await bootstrap.registerSupabaseOrganization(o.project,o.confirmDedicatedSandbox===true)));
+cli.command('sandbox-bootstrap').requiredOption('--file <json>').action(async o=>print(await bootstrap.bootstrap(JSON.parse(await readFile(o.file,'utf8')) as SandboxBootstrapInput)));
+try{await cli.parseAsync();}catch(error){if(error instanceof DomainError){console.error(JSON.stringify({error:{code:error.code,message:error.message,details:redact(error.details)}},null,2));process.exitCode=1;}else throw error;}

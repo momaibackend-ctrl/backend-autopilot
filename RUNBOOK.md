@@ -2,11 +2,15 @@
 
 ## API/MCP will not start
 
-Check Node `>=22`, copy `.env.example` to `.env`, start PostgreSQL, then run `pnpm db:migrate`. `DATABASE_URL is required` means persistent state is intentionally unavailable; do not silently switch a deployed runtime to memory mode.
+Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Without `DATABASE_URL`, the durable bootstrap registry uses the gitignored `.autopilot/state.json`. If an external control-plane URL is configured, run `pnpm db:migrate` before restart.
 
 ## Migration fails
 
-Run `docker compose ps` and confirm the healthcheck is healthy. Verify port `54329` is free. Re-running `pnpm db:migrate` is safe: schema objects use `IF NOT EXISTS`, and the trigger is recreated deterministically.
+Check the explicitly configured external `DATABASE_URL` and provider health. Re-running `pnpm db:migrate` is safe: schema objects use `IF NOT EXISTS`, and the trigger is recreated deterministically. Docker Compose is only an optional local provider.
+
+## Bootstrap needs human action
+
+`HUMAN_ACTION_REQUIRED` includes the official login/consent action. Complete only login, OAuth, 2FA, CAPTCHA, billing, or legal confirmation, then repeat the same idempotent operation ID. Do not manually create projects, copy resource IDs, or run migrations.
 
 ## Policy error
 

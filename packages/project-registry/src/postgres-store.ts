@@ -13,6 +13,7 @@ export class PostgresStateStore implements StateStore {
   async getProject(id:string){return data<Project>((await this.db.select().from(s.projects).where(eq(s.projects.id,id)).limit(1))[0]);}
   async listProjects(){return (await this.db.select().from(s.projects).orderBy(s.projects.createdAt)).map(r=>r.data as Project);}
   async createResource(v:Resource){await this.db.insert(s.resources).values({id:v.resourceId,projectId:v.projectId,provider:v.provider,externalReference:v.externalReference,data:v,createdAt:new Date(v.createdAt)});return v;}
+  async updateResource(v:Resource){await this.db.update(s.resources).set({data:v}).where(and(eq(s.resources.id,v.resourceId),eq(s.resources.projectId,v.projectId)));return v;}
   async getResource(id:string){return data<Resource>((await this.db.select().from(s.resources).where(eq(s.resources.id,id)).limit(1))[0]);}
   async findResource(projectId:string,externalReference:string){return data<Resource>((await this.db.select().from(s.resources).where(and(eq(s.resources.projectId,projectId),eq(s.resources.externalReference,externalReference))).limit(1))[0]);}
   async listResources(projectId:string){return (await this.db.select().from(s.resources).where(eq(s.resources.projectId,projectId))).map(r=>r.data as Resource);}

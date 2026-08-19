@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const PlatformVersions = {
-  platform: '0.1.0', workflow: '1', policy: '1', context: '1', artifact: '1'
+  platform: '0.2.0', workflow: '2', policy: '2', context: '1', artifact: '2'
 } as const;
 
 export const autonomyModeSchema = z.enum(['OBSERVE', 'GUARDED', 'AUTONOMOUS_STAGING', 'AUTONOMOUS_PRODUCTION']);
@@ -19,7 +19,7 @@ export type Project = z.infer<typeof projectSchema>;
 export const projectCreateSchema = projectSchema.pick({name:true,slug:true,sourceType:true,environment:true,autonomyMode:true,workspacePath:true});
 export type ProjectCreate = z.infer<typeof projectCreateSchema>;
 
-export const resourceTypeSchema = z.enum(['GIT_REPOSITORY','GITHUB_REPOSITORY','SUPABASE_PROJECT','DATABASE','TASK_SOURCE','OBJECT_STORAGE']);
+export const resourceTypeSchema = z.enum(['GIT_REPOSITORY','GITHUB_ACCOUNT','GITHUB_REPOSITORY','SUPABASE_ORGANIZATION','SUPABASE_PROJECT','DATABASE','TASK_SOURCE','OBJECT_STORAGE']);
 export const resourcePermissionSchema = z.enum(['READ','WRITE','ADMIN','MIGRATE']);
 export type ResourcePermission = z.infer<typeof resourcePermissionSchema>;
 export const secretRefSchema = z.string().regex(/^[A-Z][A-Z0-9_]{2,127}$/,'Secret references must be environment/vault-style names, never values');
@@ -89,7 +89,7 @@ export const reviewResultSchema = z.enum(['PASS','PASS_WITH_WARNINGS','FAIL']);
 export const independentReviewSchema = z.object({result:reviewResultSchema,checks:z.record(z.boolean()),warnings:z.array(z.string()),failures:z.array(z.string()),reviewedAt:z.string().datetime()});
 export type IndependentReview = z.infer<typeof independentReviewSchema>;
 
-export const artifactKindSchema = z.enum(['REQUIREMENTS_SNAPSHOT','IMPLEMENTATION_PLAN','ARCHITECTURE_REVIEW','CODE_DIFF','MIGRATION_MANIFEST','API_CONTRACT','TEST_REPORT','SECURITY_REPORT','REVIEW_REPORT','FINAL_CHANGE_MANIFEST','COMMAND_LOG','COMMAND_STDOUT','COMMAND_STDERR']);
+export const artifactKindSchema = z.enum(['REQUIREMENTS_SNAPSHOT','IMPLEMENTATION_PLAN','ARCHITECTURE_REVIEW','CODE_DIFF','MIGRATION_MANIFEST','API_CONTRACT','TEST_REPORT','SECURITY_REPORT','REVIEW_REPORT','FINAL_CHANGE_MANIFEST','COMMAND_LOG','COMMAND_STDOUT','COMMAND_STDERR','CAPABILITY_SNAPSHOT','SECRETS_MANIFEST','INFRASTRUCTURE_MANIFEST','BOOTSTRAP_REPORT']);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({id:z.string().uuid(),projectId:z.string().uuid(),taskId:z.string().uuid().optional(),runId:z.string().uuid().optional(),kind:artifactKindSchema,schemaVersion:z.string(),content:z.unknown(),contentHash:z.string(),createdAt:z.string().datetime()});
 export type Artifact = z.infer<typeof artifactSchema>;
@@ -103,3 +103,15 @@ export type AuditEvent = z.infer<typeof auditEventSchema>;
 
 export const taskSourceSnapshotSchema = z.object({vision:z.string(),canon:z.array(z.string()),epics:z.array(z.unknown()),tasks:z.array(z.unknown()),attachments:z.array(z.unknown()),relationships:z.array(z.unknown()),comments:z.array(z.unknown()),questions:z.array(z.unknown())});
 export type TaskSourceSnapshot = z.infer<typeof taskSourceSnapshotSchema>;
+
+export const capabilityStatusSchema=z.enum(['SUPPORTED','CONFIGURED','LIVE_TESTED','MOCK','NOT_CONFIGURED','NOT_SUPPORTED']);
+export type CapabilityStatus=z.infer<typeof capabilityStatusSchema>;
+export const capabilitySchema=z.object({status:capabilityStatusSchema,detail:z.string(),lastTestedAt:z.string().datetime().optional()});
+export const runtimeCapabilitiesSchema=z.object({capturedAt:z.string().datetime(),git:z.object({local:capabilitySchema,githubAuthentication:capabilitySchema,remoteWrite:capabilitySchema,ci:capabilitySchema}),database:z.object({externalPostgres:capabilitySchema,migrations:capabilitySchema}),supabase:z.object({adapter:capabilitySchema,authentication:capabilitySchema,projectCreation:capabilitySchema,rlsManagement:capabilitySchema,authManagement:capabilitySchema,storageManagement:capabilitySchema}),providers:z.object({neon:capabilitySchema,cloudflare:capabilitySchema})});
+export type RuntimeCapabilities=z.infer<typeof runtimeCapabilitiesSchema>;
+export const credentialManifestEntrySchema=z.object({credentialName:secretRefSchema,provider:z.string(),purpose:z.string(),projectId:z.string().uuid(),scope:z.string(),createdAt:z.string().datetime(),whereStored:z.string(),rotationMethod:z.string(),revocationMethod:z.string(),status:z.enum(['ACTIVE','ROTATED','REVOKED'])});
+export type CredentialManifestEntry=z.infer<typeof credentialManifestEntrySchema>;
+export const infrastructureManifestEntrySchema=z.object({provider:z.string(),account:z.string(),organization:z.string().optional(),resourceType:resourceTypeSchema,externalId:z.string(),projectId:z.string().uuid(),environment:environmentSchema,urls:z.array(z.string()),createdAt:z.string().datetime(),purpose:z.string(),deletionProcedure:z.string(),status:z.enum(['ACTIVE','DELETED','FAILED'])});
+export type InfrastructureManifestEntry=z.infer<typeof infrastructureManifestEntrySchema>;
+export const destructiveAuthorizationSchema=z.object({operationId:z.string().min(8),confirmation:z.enum(['DELETE_SANDBOX_REPOSITORY','DELETE_SANDBOX_DATABASE','RESET_SANDBOX_DATABASE','ROTATE_CREDENTIAL','REVOKE_CREDENTIAL']),resourceId:z.string().uuid()});
+export type DestructiveAuthorization=z.infer<typeof destructiveAuthorizationSchema>;

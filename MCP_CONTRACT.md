@@ -1,4 +1,4 @@
-# MCP contract v0.1
+# MCP contract v0.2
 
 All inputs are Zod-validated. Results are JSON encoded in MCP text content. Domain failures return `isError: true` with `{error:{code,message,details}}`. Mutating calls are audited and use the shared application service.
 
@@ -24,5 +24,11 @@ All inputs are Zod-validated. Results are JSON encoded in MCP text content. Doma
 | `run_list`, `run_get` | read | Reproducible execution records |
 | `git_diff` | read | Diff against recorded base for registered Git resource |
 | `project_snapshot` | read | Machine-readable state/audit/version snapshot |
+| `runtime_capabilities` | read | Evidence-based current environment capability snapshot |
+| `sandbox_github_identity_register` | write | Detect active GitHub identity after dedicated-sandbox confirmation |
+| `sandbox_supabase_identity_register` | write | Discover one sandbox organization after official login/confirmation |
+| `sandbox_bootstrap` | write/idempotent/open-world | Create GitHub/Supabase sandbox, migrate, verify CI, and write manifests |
+| `sandbox_repository_delete` | destructive | Delete only a registered sandbox repository with matching confirmation |
+| `sandbox_database_delete` | destructive | Delete only a registered sandbox database project with matching confirmation |
 
 There is intentionally no `run_any_command`. Read-only annotations are set on reads; mutations use non-destructive semantic annotations. `task_execute` is idempotent by `(projectId, operationId)`.

@@ -10,5 +10,5 @@ export interface LlmProvider {complete<T>(request:AgentRequest):Promise<T>;}
 export class InternalAgentRuntime implements AgentRuntime {
   readonly mode='INTERNAL' as const;
   constructor(private provider?:LlmProvider){}
-  async invoke<TInput,TOutput>(request:AgentRequest<TInput>):Promise<TOutput>{if(!this.provider)throw new UnsupportedOperation('Internal agent provider is not configured in v0.1');return this.provider.complete<TOutput>(request);}
+  async invoke<TInput,TOutput>(request:AgentRequest<TInput>):Promise<TOutput>{if(!this.provider)throw new UnsupportedOperation('Internal agent provider is not configured in v0.2');return this.provider.complete<TOutput>(request);}
 }

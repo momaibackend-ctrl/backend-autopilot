@@ -1,12 +1,12 @@
 {
   "name": "backend-autopilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "engines": { "node": ">=22" },
   "scripts": {
-    "bootstrap": "pnpm install && pnpm db:migrate",
+    "bootstrap": "pnpm install && pnpm autopilot health",
     "dev": "tsx apps/control-api/src/main.ts",
     "dev:worker": "tsx apps/worker/src/main.ts",
     "mcp": "tsx apps/mcp-server/src/main.ts",
@@ -19,6 +19,7 @@
     "test:integration": "vitest run tests/integration",
     "test:security": "vitest run tests/security",
     "test:e2e": "vitest run tests/e2e",
+    "live:sandbox": "tsx scripts/live-sandbox.ts",
     "build": "tsc -p tsconfig.build.json",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
