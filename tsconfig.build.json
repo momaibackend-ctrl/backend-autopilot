@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "declaration": true },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["tests", "dist", "node_modules"]
+}

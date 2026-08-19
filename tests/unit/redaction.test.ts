@@ -1,0 +1,2 @@
+import { describe,expect,it } from 'vitest';import { redact } from '../../packages/audit/src/index.js';
+describe('secret redaction',()=>{it('redacts keys, token prefixes and assignment-shaped values',()=>{const value=redact({password:'plain',message:'token=abc123',output:'ghp_abcdefghijklmnopqrstuvwxyz'});expect(JSON.stringify(value)).not.toContain('plain');expect(JSON.stringify(value)).not.toContain('abc123');expect(JSON.stringify(value)).not.toContain('ghp_');});});

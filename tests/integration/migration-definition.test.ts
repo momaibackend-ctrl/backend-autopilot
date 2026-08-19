@@ -1,0 +1,2 @@
+import { describe,expect,it } from 'vitest';import { readFile } from 'node:fs/promises';
+describe('control-plane migration',()=>{it('defines durable workflow evidence and immutable audit',async()=>{const sql=await readFile('packages/project-registry/migrations/0001_initial.sql','utf8');for(const table of ['projects','resources','project_contexts','tasks','artifacts','runs','task_transitions','audit_events'])expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);expect(sql).toContain('prevent_audit_mutation');expect(sql).toContain('BEFORE UPDATE OR DELETE');});});

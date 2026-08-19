@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS projects (id uuid PRIMARY KEY, slug text NOT NULL UNIQUE, data jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS resources (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), provider text NOT NULL, external_reference text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL, UNIQUE(provider, external_reference));
+CREATE INDEX IF NOT EXISTS resources_project_idx ON resources(project_id);
+CREATE TABLE IF NOT EXISTS project_contexts (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), data jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS contexts_project_idx ON project_contexts(project_id);
+CREATE TABLE IF NOT EXISTS tasks (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), external_key text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL, UNIQUE(project_id, external_key));
+CREATE INDEX IF NOT EXISTS tasks_project_idx ON tasks(project_id);
+CREATE TABLE IF NOT EXISTS artifacts (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), task_id uuid REFERENCES tasks(id), data jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS artifacts_project_idx ON artifacts(project_id); CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts(task_id);
+CREATE TABLE IF NOT EXISTS runs (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), task_id uuid NOT NULL REFERENCES tasks(id), operation_id text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL, UNIQUE(project_id, operation_id));
+CREATE INDEX IF NOT EXISTS runs_task_idx ON runs(task_id);
+CREATE TABLE IF NOT EXISTS task_transitions (id uuid PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks(id), data jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS transitions_task_idx ON task_transitions(task_id);
+CREATE TABLE IF NOT EXISTS audit_events (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), data jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS audit_project_idx ON audit_events(project_id);
+CREATE OR REPLACE FUNCTION prevent_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit_events are append-only'; END $$;
+DROP TRIGGER IF EXISTS audit_immutable ON audit_events;
+CREATE TRIGGER audit_immutable BEFORE UPDATE OR DELETE ON audit_events FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();

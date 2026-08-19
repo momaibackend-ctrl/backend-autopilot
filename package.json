@@ -1,0 +1,45 @@
+{
+  "name": "backend-autopilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "bootstrap": "pnpm install && pnpm db:migrate",
+    "dev": "tsx apps/control-api/src/main.ts",
+    "dev:worker": "tsx apps/worker/src/main.ts",
+    "mcp": "tsx apps/mcp-server/src/main.ts",
+    "autopilot": "tsx apps/cli/src/main.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:security": "vitest run tests/security",
+    "test:e2e": "vitest run tests/e2e",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.3",
+    "commander": "^14.0.0",
+    "dotenv": "^17.2.1",
+    "drizzle-orm": "^0.44.4",
+    "fastify": "^5.5.0",
+    "pg": "^8.16.3",
+    "pino": "^9.9.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@types/node": "^24.3.0",
+    "@types/pg": "^8.15.5",
+    "eslint": "^9.34.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0",
+    "vitest": "^3.2.4"
+  }
+}

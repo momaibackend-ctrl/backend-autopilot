@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import { NotesService } from '../src/notes.js';import { fakeDb } from './helpers.js';
+test('anonymous access is denied',async()=>{await assert.rejects(()=>new NotesService(fakeDb()).list(''),e=>e.code==='UNAUTHORIZED');});test('updates cannot cross ownership boundary',async()=>{const db=fakeDb();await new NotesService(db).update('u1','n1',{title:'x'});assert.match(db.calls[0].sql,/owner_id=\$2/);});

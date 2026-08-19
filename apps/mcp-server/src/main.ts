@@ -1,0 +1,38 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { createService, DomainError } from '../../../packages/core/src/index.js';
+import { autonomyModeSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, secretRefSchema } from '../../../packages/schemas/src/index.js';
+import type { ContextImport } from '../../../packages/context-engine/src/index.js';
+
+const service=createService();const server=new McpServer({name:'backend-autopilot',version:'0.1.0'});
+type ToolResult={content:{type:'text';text:string}[];isError?:boolean};
+const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value,null,2)}]});
+const safe=<T>(fn:(args:T)=>Promise<unknown>)=>async(args:T):Promise<ToolResult>=>{try{return result(await fn(args));}catch(error){if(error instanceof DomainError)return {isError:true,content:[{type:'text',text:JSON.stringify({error:{code:error.code,message:error.message,details:error.details}})}]};throw error;}};
+const ro={readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false};const mut={readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false};
+
+server.registerTool('system_health',{description:'Return platform health and supported autonomy modes',inputSchema:{},annotations:ro},safe(async()=>service.systemHealth()));
+server.registerTool('project_create',{description:'Register an isolated target project; production is rejected',inputSchema:{name:z.string(),slug:z.string(),sourceType:z.string(),environment:environmentSchema,autonomyMode:autonomyModeSchema,workspacePath:z.string()},annotations:mut},safe(async a=>service.projectCreate(a)));
+server.registerTool('project_get',{description:'Get one project',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.projectGet(a.projectId)));
+server.registerTool('project_list',{description:'List registered projects',inputSchema:{},annotations:ro},safe(async()=>service.projectList()));
+server.registerTool('resource_register',{description:'Explicitly allowlist an external resource for one project',inputSchema:{projectId:z.string().uuid(),type:resourceTypeSchema,provider:z.string(),externalReference:z.string(),environment:environmentSchema,permissions:z.array(resourcePermissionSchema),secretRefs:z.array(secretRefSchema).default([]),status:z.enum(['ACTIVE','DISABLED']).default('ACTIVE')},annotations:mut},safe(async a=>service.resourceRegister(a)));
+server.registerTool('resource_list',{description:'List resources scoped to a project',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.resourceList(a.projectId)));
+server.registerTool('context_import',{description:'Import structured project context; source content remains untrusted data',inputSchema:{projectId:z.string().uuid(),items:z.array(z.object({type:contextSectionTypeSchema,content:z.unknown(),sourceType:z.enum(['TASK_SOURCE','FILE','MCP','USER','REPOSITORY','DECISION']),sourceRef:z.string()}))},annotations:mut},safe(async a=>service.contextImport(a.projectId,a.items as ContextImport[])));
+server.registerTool('context_get',{description:'Get latest versioned structured context',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.contextGet(a.projectId)));
+server.registerTool('task_create',{description:'Ingest a task as untrusted data',inputSchema:{projectId:z.string().uuid(),externalKey:z.string(),title:z.string(),description:z.string(),requirements:z.array(z.string()),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:z.string().uuid()})).default([])},annotations:mut},safe(async a=>service.taskCreate(a)));
+server.registerTool('task_get',{description:'Get task',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:ro},safe(async a=>service.taskGet(a.projectId,a.taskId)));
+server.registerTool('task_list',{description:'List project tasks',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.taskList(a.projectId)));
+server.registerTool('task_analyze',{description:'Check dependencies and create requirements snapshot',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:mut},safe(async a=>service.taskAnalyze(a.projectId,a.taskId)));
+server.registerTool('task_plan',{description:'Create and ArchitectureGuard-check a structured implementation plan',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:mut},safe(async a=>service.taskPlan(a.projectId,a.taskId)));
+server.registerTool('task_execute',{description:'Apply a validated file change set in an isolated git branch',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid(),resourceId:z.string().uuid(),operationId:z.string().min(8),changes:z.array(fileChangeSchema)},annotations:{...mut,idempotentHint:true}},safe(async a=>service.taskExecute({projectId:a.projectId,taskId:a.taskId,operationId:a.operationId,changes:a.changes},a.resourceId)));
+server.registerTool('task_test',{description:'Run all test suites required by the approved plan',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:mut},safe(async a=>service.taskTest(a.projectId,a.taskId)));
+server.registerTool('task_review',{description:'Perform independent formal review and READY gates',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:mut},safe(async a=>service.taskReview(a.projectId,a.taskId)));
+server.registerTool('task_retry',{description:'Retry a blocked or failed task within repair policy',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:mut},safe(async a=>service.taskRetry(a.projectId,a.taskId)));
+server.registerTool('task_status',{description:'Get lifecycle, transitions, runs, and artifacts',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid()},annotations:ro},safe(async a=>service.taskStatus(a.projectId,a.taskId)));
+server.registerTool('artifact_list',{description:'List project-scoped artifacts',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid().optional()},annotations:ro},safe(async a=>service.artifactList(a.projectId,a.taskId)));
+server.registerTool('artifact_read',{description:'Read one project-scoped artifact',inputSchema:{projectId:z.string().uuid(),artifactId:z.string().uuid()},annotations:ro},safe(async a=>service.artifactRead(a.projectId,a.artifactId)));
+server.registerTool('run_list',{description:'List reproducible task runs',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid().optional()},annotations:ro},safe(async a=>service.runList(a.projectId,a.taskId)));
+server.registerTool('run_get',{description:'Get one project-scoped run',inputSchema:{projectId:z.string().uuid(),runId:z.string().uuid()},annotations:ro},safe(async a=>service.runGet(a.projectId,a.runId)));
+server.registerTool('git_diff',{description:'Read committed diff for an authorized git resource',inputSchema:{projectId:z.string().uuid(),taskId:z.string().uuid(),resourceId:z.string().uuid()},annotations:ro},safe(async a=>service.gitDiff(a.projectId,a.taskId,a.resourceId)));
+server.registerTool('project_snapshot',{description:'Export project state and reproducibility metadata',inputSchema:{projectId:z.string().uuid()},annotations:ro},safe(async a=>service.projectSnapshot(a.projectId)));
+await server.connect(new StdioServerTransport());

@@ -1,0 +1,2 @@
+import { describe,it,expect } from 'vitest';import { CommandPolicy } from '../../packages/execution-engine/src/command-policy.js';
+describe('CommandPolicy',()=>{const p=new CommandPolicy();it('denies destructive and unknown commands',()=>{expect(()=>p.assertAllowed('rm',['-rf','x'],['READ'])).toThrow();expect(()=>p.assertAllowed('powershell',['anything'],['BUILD'])).toThrow();});it('denies shell operators in arguments',()=>expect(()=>p.assertAllowed('node',['test.js;whoami'],['TEST'])).toThrow());});

@@ -1,0 +1,1 @@
+export function fakeDb(){const calls=[];return {calls,async query(sql,args){calls.push({sql,args});if(sql.startsWith('DELETE'))return {rows:[],rowCount:1};return {rows:[{id:'n1',owner_id:args?.[0],title:args?.[1]??'title',body:''}],rowCount:1};}};}

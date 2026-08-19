@@ -1,0 +1,20 @@
+import { Command } from 'commander';
+import { readFile } from 'node:fs/promises';
+import { createService, DomainError } from '../../../packages/core/src/index.js';
+const service=createService();const cli=new Command().name('autopilot').description('Backend Autopilot v0.1 diagnostic CLI').version('0.1.0');
+const print=(v:unknown)=>console.log(JSON.stringify(v,null,2));const run=(fn:()=>Promise<unknown>)=>async()=>print(await fn());
+cli.command('health').action(run(()=>service.systemHealth()));
+cli.command('projects').action(run(()=>service.projectList()));
+cli.command('project-create').requiredOption('--name <name>').requiredOption('--slug <slug>').requiredOption('--workspace <path>').option('--mode <mode>','autonomy mode','GUARDED').action(async o=>print(await service.projectCreate({name:o.name,slug:o.slug,sourceType:'LOCAL',environment:'SANDBOX',autonomyMode:o.mode,workspacePath:o.workspace})));
+cli.command('resources').requiredOption('--project <id>').action(async o=>print(await service.resourceList(o.project)));
+cli.command('tasks').requiredOption('--project <id>').action(async o=>print(await service.taskList(o.project)));
+cli.command('task-create').requiredOption('--project <id>').requiredOption('--key <key>').requiredOption('--title <title>').requiredOption('--requirement <text>').action(async o=>print(await service.taskCreate({projectId:o.project,externalKey:o.key,title:o.title,description:o.title,requirements:[o.requirement],relationships:[]})));
+cli.command('task-analyze').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskAnalyze(o.project,o.task)));
+cli.command('task-plan').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskPlan(o.project,o.task)));
+cli.command('task-execute').requiredOption('--project <id>').requiredOption('--task <id>').requiredOption('--resource <id>').requiredOption('--operation <id>').requiredOption('--changes <json-file>').action(async o=>print(await service.taskExecute({projectId:o.project,taskId:o.task,operationId:o.operation,changes:JSON.parse(await readFile(o.changes,'utf8'))},o.resource)));
+cli.command('task-test').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskTest(o.project,o.task)));
+cli.command('task-review').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskReview(o.project,o.task)));
+cli.command('task-status').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskStatus(o.project,o.task)));
+cli.command('task-retry').requiredOption('--project <id>').requiredOption('--task <id>').action(async o=>print(await service.taskRetry(o.project,o.task)));
+cli.command('artifacts').requiredOption('--project <id>').option('--task <id>').action(async o=>print(await service.artifactList(o.project,o.task)));
+try{await cli.parseAsync();}catch(error){if(error instanceof DomainError){console.error(JSON.stringify({error:{code:error.code,message:error.message,details:error.details}},null,2));process.exitCode=1;}else throw error;}
