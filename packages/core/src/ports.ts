@@ -1,4 +1,4 @@
-import type { Artifact, AuditEvent, Project, ProjectContext, Resource, Run, Task, Transition } from '../../schemas/src/index.js';
+import type { Artifact, AuditEvent, CommandRecord, FileChange, ImplementationPlan, Project, ProjectContext, Resource, Run, Task, TestReport, Transition } from '../../schemas/src/index.js';
 
 export interface StateStore {
   createProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
@@ -15,3 +15,11 @@ export interface Clock { now():string; }
 export const systemClock:Clock={now:()=>new Date().toISOString()};
 export interface IdGenerator { next():string; }
 export const uuidGenerator:IdGenerator={next:()=>crypto.randomUUID()};
+
+export interface GitWorkspaceAdapter {
+  snapshot(cwd:string,taskId:string):Promise<{baseCommit:string;branch:string;clean:boolean}>; branch(cwd:string,taskId:string,name:string):Promise<void>;
+  stage(cwd:string,taskId:string):Promise<void>; diff(cwd:string,taskId:string,baseCommit?:string):Promise<string>; commit(cwd:string,taskId:string,message:string):Promise<string>;
+}
+export interface ImplementationExecutor {execute(input:{workspace:string;task:Task;changes:FileChange[]}):Promise<{baseCommit:string;branch:string;commitSha:string;diff:string;changedFiles:string[];completedAt:string}>;}
+export interface TestExecutor {run(workspace:string,taskId:string,plan:ImplementationPlan):Promise<TestReport>;}
+export interface CommandJournal {drain(taskId:string):{record:CommandRecord;stdout:string;stderr:string}[];}

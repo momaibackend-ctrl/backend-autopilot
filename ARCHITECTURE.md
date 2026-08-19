@@ -24,7 +24,7 @@ External AI / future Internal AgentRuntime
           StateStore port -> PostgreSQL
 ```
 
-`AutopilotService` is the application boundary shared by MCP, CLI and HTTP. Domain contracts are Zod schemas and inferred TypeScript types. PostgreSQL is control-plane storage; target databases, GitHub, Supabase, task sources, LLMs and secret stores are adapters behind ports.
+`AutopilotService` is the application boundary shared by MCP, CLI and HTTP. Domain contracts are Zod schemas and inferred TypeScript types. PostgreSQL is control-plane storage; Git workspace execution, target test runners, target databases, GitHub, Supabase, task sources, LLMs and secret stores are adapters behind ports.
 
 ## Isolation and authority
 

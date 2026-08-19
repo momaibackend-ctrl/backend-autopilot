@@ -1,12 +1,11 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
-import type { Clock } from '../../core/src/ports.js';
+import type { Clock, GitWorkspaceAdapter } from '../../core/src/ports.js';
 import { ExecutionFailed } from '../../core/src/errors.js';
 import type { FileChange, Task } from '../../schemas/src/index.js';
-import type { LocalGitAdapter } from '../../adapters/git/src/index.js';
 
 export class ExecutionEngine {
-  constructor(private git:LocalGitAdapter,private clock:Clock){}
+  constructor(private git:GitWorkspaceAdapter,private clock:Clock){}
   async execute(input:{workspace:string;task:Task;changes:FileChange[]}){
     const root=resolve(input.workspace);const snapshot=await this.git.snapshot(root,input.task.id);const slug=input.task.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40)||'task';const branch=`autopilot/${input.task.externalKey}-${slug}`;
     if(snapshot.branch!==branch)await this.git.branch(root,input.task.id,branch);

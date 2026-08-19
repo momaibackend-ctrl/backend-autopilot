@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import type { StateStore, Clock, IdGenerator } from './ports.js';
+import type { StateStore, Clock, IdGenerator, CommandJournal, GitWorkspaceAdapter, ImplementationExecutor, TestExecutor } from './ports.js';
 import { systemClock, uuidGenerator } from './ports.js';
 import { ArchitectureViolation, InvalidState, NotFound, ReviewFailed, TestFailed, UnsupportedOperation } from './errors.js';
 import { projectCreateSchema, resourceRegisterSchema, taskCreateSchema, implementationPlanSchema, executeInputSchema, PlatformVersions, type ArchitectureRule, type Artifact, type ArtifactKind, type ImplementationPlan, type Project, type Resource, type Run, type Task, type TestReport } from '../../schemas/src/index.js';
@@ -10,10 +10,8 @@ import { DependencyEngine, WorkflowEngine } from '../../workflow-engine/src/inde
 import { ArtifactStore } from '../../artifact-store/src/index.js';
 import { AuditLog } from '../../audit/src/index.js';
 import { IndependentReviewer } from '../../execution-engine/src/index.js';
-import type { CommandRunner, ExecutionEngine, TestEngine } from '../../execution-engine/src/index.js';
-import type { LocalGitAdapter } from '../../adapters/git/src/index.js';
 
-export interface ServiceDependencies {store:StateStore;execution:ExecutionEngine;tests:TestEngine;git:LocalGitAdapter;commands:CommandRunner;clock?:Clock;ids?:IdGenerator;maxAutoRepairAttempts?:number;}
+export interface ServiceDependencies {store:StateStore;execution:ImplementationExecutor;tests:TestExecutor;git:GitWorkspaceAdapter;commands:CommandJournal;clock?:Clock;ids?:IdGenerator;maxAutoRepairAttempts?:number;}
 export class AutopilotService {
   readonly store:StateStore;private clock:Clock;private ids:IdGenerator;private policy:PolicyEngine;private contexts:ContextEngine;private dependencies:DependencyEngine;private workflow:WorkflowEngine;private artifacts:ArtifactStore;private audit:AuditLog;private guard=new ArchitectureGuard();private reviewer:IndependentReviewer;private maxRepairs:number;
   constructor(private deps:ServiceDependencies){this.store=deps.store;this.clock=deps.clock??systemClock;this.ids=deps.ids??uuidGenerator;this.policy=new PolicyEngine(deps.store);this.contexts=new ContextEngine(deps.store,this.ids,this.clock);this.dependencies=new DependencyEngine(deps.store);this.workflow=new WorkflowEngine(deps.store,this.ids,this.clock);this.artifacts=new ArtifactStore(deps.store,this.ids,this.clock);this.audit=new AuditLog(deps.store,this.ids,this.clock);this.reviewer=new IndependentReviewer(this.clock);this.maxRepairs=deps.maxAutoRepairAttempts??3;}
