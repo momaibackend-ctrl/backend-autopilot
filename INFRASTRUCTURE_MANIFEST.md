@@ -17,7 +17,7 @@ The repository and Supabase project existed before registration; Backend Autopil
 | Provider | Type | External reference | Environment | Status |
 |---|---|---|---|---|
 | GitHub | private source repository | `momaibackend-ctrl/backend-autopilot` | control-plane staging | active |
-| GitHub Pages | static Operator Console | `https://momaibackend-ctrl.github.io/backend-autopilot/` | control-plane staging | configured by workflow |
+| GitHub Pages | static Operator Console | `https://momaibackend-ctrl.github.io/backend-autopilot/` | control-plane staging | blocked: current plan rejects Pages for private repository (HTTP 422) |
 | Supabase | Auth / Postgres / Storage / Edge | `qtyfdzjzmgxtrarpgcmn` | control-plane sandbox | active |
 | Supabase Edge | Control API | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api` | control-plane sandbox | active |
 | Supabase Edge | HTTP MCP | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp` | control-plane sandbox | active |

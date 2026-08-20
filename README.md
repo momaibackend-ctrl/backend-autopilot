@@ -25,7 +25,7 @@ pnpm bootstrap
 pnpm dev
 ```
 
-For local development, open [http://localhost:3000](http://localhost:3000). The explicit `NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV=true` test/dev composition uses the local Fastify proxy. Production builds never set that flag: they are static files that call the authenticated HTTPS Edge API directly. The remote console is `https://momaibackend-ctrl.github.io/backend-autopilot/`.
+For local development, open [http://localhost:3000](http://localhost:3000). The explicit `NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV=true` test/dev composition uses the local Fastify proxy. Production builds never set that flag: they are static files that call the authenticated HTTPS Edge API directly. The configured Pages URL is `https://momaibackend-ctrl.github.io/backend-autopilot/`; activation is currently blocked because the account plan does not support Pages for this private repository (HTTP 422). See `SETUP_REQUIRED.md`.
 
 The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 
