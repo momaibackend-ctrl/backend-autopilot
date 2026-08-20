@@ -1,4 +1,6 @@
-# MCP contract v0.2
+# MCP contract v0.3
+
+The v0.3 Operator Console adds HTTP application routes but does not expose a shell or weaken this semantic MCP surface. Existing MCP clients remain compatible.
 
 All inputs are Zod-validated. Results are JSON encoded in MCP text content. Domain failures return `isError: true` with `{error:{code,message,details}}`. Mutating calls are audited and use the shared application service.
 

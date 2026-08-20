@@ -3,7 +3,7 @@
 ```text
 External AI / future Internal AgentRuntime
                     |
-             MCP / CLI / HTTP
+        MCP / CLI / HTTP / Operator Console
                     |
              AutopilotService
        +------------+-------------+
@@ -57,3 +57,41 @@ GitHub provisioning uses the authenticated official CLI and verifies its identit
 Add an adapter implementing the appropriate port; never import provider types into Core. Provider-specific credentials remain secret references, resolved at runtime. The unchanged Core can support another Git host, relational database, task tracker or LLM provider.
 
 Architecture decisions are in `docs/adr/`.
+
+## Operator Console v0.3
+
+```text
+Browser (Next.js, localhost:3000)
+        | escaped React text/JSON; no provider credentials
+        v
+Fastify console routes (localhost:4310)
+        |
+OperatorConsoleService
+   +----+----------------+------------------+
+   |                     |                  |
+AutopilotService     StateStore       PolicyEngine
+   |                 artifacts/audit        |
+workflow/readiness   persisted views   project-owned resource
+                                             |
+                             TestEngine / HTTP / DB adapters
+```
+
+The browser never reads `.autopilot/state.json`, PostgreSQL, Git, GitHub, or Supabase. `OperatorConsoleService` creates read models and delegates to the existing application layer. Polling every five seconds gives live updates while persisted state remains the source of truth after restart.
+
+The API Explorer derives endpoints from `API_CONTRACT` OpenAPI artifacts. Validation and API requests create immutable artifacts and audit events. Saved scenarios support sequential steps, extraction of response values, non-secret `{{variable}}` interpolation, and server-memory-only bearer handoff. Production and unregistered targets fail before network access.
+
+## Future full product assembly
+
+```text
+Product tasks / task source + DesignSourceAdapter + frontend repository
+                              |
+                    contract synchronization
+                              |
+              backend + frontend implementation
+                              |
+                  integrated test environment
+                              |
+                    full product validation
+```
+
+`DesignSourceAdapter` and `FrontendTaskSourceAdapter` are provider-neutral ports with local and unconfigured implementations. Figma, frontend execution, and integrated product validation are deliberately not implemented in v0.3.

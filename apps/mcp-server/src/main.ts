@@ -7,7 +7,7 @@ import type { ContextImport } from '../../../packages/context-engine/src/index.j
 import type { SandboxBootstrapInput } from '../../../packages/bootstrap/src/index.js';
 import { redact } from '../../../packages/audit/src/index.js';
 
-const {service,bootstrap}=createRuntime();const server=new McpServer({name:'backend-autopilot',version:'0.2.0'});
+const {service,bootstrap}=createRuntime();const server=new McpServer({name:'backend-autopilot',version:'0.3.0'});
 type ToolResult={content:{type:'text';text:string}[];isError?:boolean};
 const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value,null,2)}]});
 const safe=<T>(fn:(args:T)=>Promise<unknown>)=>async(args:T):Promise<ToolResult>=>{try{return result(await fn(args));}catch(error){if(error instanceof DomainError)return {isError:true,content:[{type:'text',text:JSON.stringify({error:{code:error.code,message:error.message,details:redact(error.details)}})}]};throw error;}};

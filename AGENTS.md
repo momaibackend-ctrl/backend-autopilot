@@ -25,6 +25,9 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 - `packages/workflow-engine`: dependency checks and persisted state transitions.
 - `packages/execution-engine`: file changes, command policy, tests and independent review.
 - `packages/adapters`: provider edges; Core must not depend on provider-specific types.
+- `packages/operator-console`: server-side console read models and semantic validation operations; it may compose Core ports but must not redefine readiness.
+- `packages/adapters/design-source` and `packages/adapters/frontend-task-source`: future full-product assembly boundaries; no Figma/customer coupling in Core.
+- `apps/operator-console`: Next.js presentation only. It must never read state files, databases, Git or provider APIs directly.
 - `apps`: thin MCP, CLI, API and worker entrypoints. Business logic does not belong here.
 - `tests`: unit, integration, E2E and mandatory security invariants.
 
@@ -40,4 +43,4 @@ Update state transition definitions, schema/version constants, migration compati
 
 Add unit tests for pure rules, integration tests for store/application contracts, security tests for isolation/denial, and E2E tests for actual commands and Git state. API changes require contract tests; database changes require migration tests; auth/privacy changes require security tests. Never replace a failed external verification with a fake success or skip without reporting it.
 
-Run `pnpm check` before handoff. Docker is optional; external PostgreSQL live tests require an explicitly allowlisted URL. During bootstrap, stop only for login/OAuth/2FA/CAPTCHA/billing/legal consent. Never ask a user to perform provider setup that an official API/CLI can safely perform. Preserve unrelated user changes and record material architecture changes as ADRs.
+Run `pnpm check` before handoff; it includes Playwright browser E2E. Treat every string rendered by the console as untrusted, use React escaping/JSON views, and never add `dangerouslySetInnerHTML`. New console mutations belong in the server application layer, require Zod input, PolicyEngine authorization, idempotency, artifact/audit evidence, and production denial. Docker is optional; external PostgreSQL live tests require an explicitly allowlisted URL. During bootstrap, stop only for login/OAuth/2FA/CAPTCHA/billing/legal consent. Never ask a user to perform provider setup that an official API/CLI can safely perform. Preserve unrelated user changes and record material architecture changes as ADRs.

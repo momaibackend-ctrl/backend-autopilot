@@ -4,6 +4,20 @@
 
 Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Without `DATABASE_URL`, the durable bootstrap registry uses the gitignored `.autopilot/state.json`. If an external control-plane URL is configured, run `pnpm db:migrate` before restart.
 
+## Operator Console will not load
+
+Run `pnpm dev` and open `http://localhost:3000` (use `localhost`, not a different host alias). Confirm `http://127.0.0.1:4310/health` responds. Next proxies `/api/control/*`; the browser must never be configured with provider tokens. If the shell appears but data does not, inspect the redacted API log and use the Retry button.
+
+## Validation fails
+
+Open Validation History and expand the failed report. The human summary identifies the failed gate; technical details contain command exit status, redacted output, request/response, schema evidence, and artifact references. A missing required test is `PARTIAL`, not a pass. Production and non-allowlisted targets are expected `NOT_SUPPORTED`/`POLICY_VIOLATION` failures.
+
+API Request Runner requires an active `HTTP_API` resource owned by the selected project and `AUTONOMOUS_STAGING`. Register the exact sandbox base URL through the normal Resource Registry; do not work around origin or credential checks. Saved scenarios stop after the first failed step and persist skipped steps.
+
+## Browser E2E diagnosis
+
+Run `pnpm console:e2e:seed` and `pnpm test:browser`. The fixture is written only under ignored `tests/.tmp`, contains sanitized LIVE-1-shaped evidence, starts both services, and performs no external provider calls. Use `pnpm exec playwright show-trace <trace.zip>` for a retained failure trace.
+
 ## Migration fails
 
 Check the explicitly configured external `DATABASE_URL` and provider health. Re-running `pnpm db:migrate` is safe: schema objects use `IF NOT EXISTS`, and the trigger is recreated deterministically. Docker Compose is only an optional local provider.

@@ -1,6 +1,22 @@
-# Backend Autopilot v0.2
+# Backend Autopilot v0.3
 
 Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a Momna backend and never discovers or trusts existing external resources automatically.
+
+v0.3 adds a browser Operator Console without replacing the v0.2 engine. It shows projects, task lifecycle and timeline, runs, infrastructure, OpenAPI, migrations/schema evidence, artifacts, audit and evidence-based capabilities. Operators can run non-production validation suites and allowlisted sandbox API scenarios without using Git, PostgreSQL, Supabase, CI, or a terminal.
+
+## Operator Console
+
+```bash
+cp .env.example .env
+pnpm bootstrap
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). The Fastify Control API listens on `127.0.0.1:4310`; Next.js proxies `/api/control/*` to it. The default durable state remains `.autopilot/state.json`, so the existing LIVE-1 sandbox proof is displayed without hardcoded UI data.
+
+The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
+
+Validation suites: `SMOKE`, `CRUD`, `AUTHENTICATION`, `AUTHORIZATION`, `RLS`, `REGRESSION`, and `FULL`. The API Explorer is generated from persisted OpenAPI artifacts. Request Runner and saved scenarios require an explicitly registered, non-production `HTTP_API` resource. Browser credentials and production validation are technically rejected.
 
 ## Lightweight start — Docker is optional
 
@@ -78,8 +94,10 @@ The MCP surface has semantic operations only. External provisioning requires exp
 pnpm check
 ```
 
+`pnpm check` runs lint, strict TypeScript, all Vitest unit/integration/security/E2E tests, both builds, seeds a sanitized persisted console fixture, starts the full API/UI pair, and runs Playwright Chromium E2E. `pnpm bootstrap` installs the local Chromium binary. CI installs Chromium plus its OS dependencies.
+
 External live database tests run when `AUTOPILOT_LIVE_DATABASE_URL` is explicitly supplied. GitHub/Supabase live bootstrap is never triggered by the ordinary test suite.
 
 The local E2E creates an isolated Git repository, intentionally fails security tests, commits a repair on the same task branch, reruns six suites, performs IndependentReview, and proves the formal `READY` gates. The completed live proof additionally used repository `momaibackend-ctrl/momnabackend`, Supabase project `qtyfdzjzmgxtrarpgcmn`, exact commit `6314f9b903cff61887b08f89c2d7754f60204f57`, GitHub Actions run `32264809746`, and pull request [#1](https://github.com/momaibackend-ctrl/momnabackend/pull/1).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md), [RUNBOOK.md](RUNBOOK.md), and [SETUP_REQUIRED.md](SETUP_REQUIRED.md).
+See [OPERATOR_CONSOLE.md](OPERATOR_CONSOLE.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md), [RUNBOOK.md](RUNBOOK.md), and [SETUP_REQUIRED.md](SETUP_REQUIRED.md).
