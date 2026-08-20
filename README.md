@@ -4,6 +4,14 @@ Backend Autopilot is a standalone, provider-neutral control plane for policy-che
 
 v0.3 adds a browser Operator Console without replacing the v0.2 engine. It shows projects, task lifecycle and timeline, runs, infrastructure, OpenAPI, migrations/schema evidence, artifacts, audit and evidence-based capabilities. Operators can run non-production validation suites and allowlisted sandbox API scenarios without using Git, PostgreSQL, Supabase, CI, or a terminal.
 
+## Remote deployment
+
+The canonical source is the private GitHub repository `momaibackend-ctrl/backend-autopilot`. The remote deployment builds its checked-in `Dockerfile` on Linux, runs the full `pnpm check`, starts Next.js plus the unchanged Fastify control plane, and publishes only the Next.js port over HTTPS. Browser API requests remain same-origin at `/api/control/*`; the Fastify origin is server-side configuration and is never sent to the browser.
+
+Remote state uses a dedicated PostgreSQL control plane. A persistent `/data` volume contains target Git workspaces. The first empty-database boot transactionally imports `deployment/bootstrap-state.json`, replaces portable workspace placeholders with `/data/workspaces/<project-slug>`, and clones only the already registered GitHub sandbox repository. Later restarts and deploys reuse PostgreSQL and the volume.
+
+Required server variables are documented in `.env.example` and `SECRETS_MANIFEST.md`. `AUTOPILOT_CONSOLE_BASIC_AUTH` is mandatory in production. Provider values stay in hosting secrets; the committed bootstrap snapshot contains reference names and redacted evidence, never credential values.
+
 ## Operator Console
 
 ```bash
@@ -12,7 +20,7 @@ pnpm bootstrap
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The Fastify Control API listens on `127.0.0.1:4310`; Next.js proxies `/api/control/*` to it. The default durable state remains `.autopilot/state.json`, so the existing LIVE-1 sandbox proof is displayed without hardcoded UI data.
+For local development, open [http://localhost:3000](http://localhost:3000). The Fastify Control API listens on the local development interface and Next.js proxies `/api/control/*` to it. Remote deployment uses the HTTPS console origin and server-only internal API routing. The local durable state remains `.autopilot/state.json`, so the existing LIVE-1 sandbox proof is displayed without hardcoded UI data.
 
 The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 

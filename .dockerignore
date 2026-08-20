@@ -1,0 +1,15 @@
+.git
+.github
+.autopilot
+.env
+.env.*
+!.env.example
+node_modules
+dist
+**/.next
+workspaces
+artifacts
+tests/.tmp
+test-results
+playwright-report
+*.log

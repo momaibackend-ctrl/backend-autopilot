@@ -30,3 +30,5 @@ Security tests cover production disablement, prompt injection, command injection
 - Saved scenario access is project-scoped. Sensitive extracted variables live only in memory and may only be consumed as a bearer value, never interpolated into URL/query/body text.
 - Console routes return typed human errors. Unexpected server errors are logged after redaction and the browser receives no stack or raw exception details.
 - Playwright proves artifact-based script/HTML payloads remain inert. Security tests prove production actions, origin escape, browser credentials, unknown resources, and cross-project scenario access are denied.
+- Remote deployment exposes only Next.js over HTTPS. A production-only server-side Basic Auth gate covers console and proxied control routes; the public health route returns system status only. Fastify remains on an internal container port.
+- Deployment state export rejects credential-shaped tokens and database URLs, replaces host paths with a workspace placeholder, and imports transactionally only into an empty control-plane database.

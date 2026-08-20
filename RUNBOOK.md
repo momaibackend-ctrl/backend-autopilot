@@ -8,6 +8,14 @@ Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Wit
 
 Run `pnpm dev` and open `http://localhost:3000` (use `localhost`, not a different host alias). Confirm `http://127.0.0.1:4310/health` responds. Next proxies `/api/control/*`; the browser must never be configured with provider tokens. If the shell appears but data does not, inspect the redacted API log and use the Retry button.
 
+For the remote service, check the hosting health endpoint `/api/control/health`, deployment logs, and the configured public domain. A `401` on console/API routes is the expected Basic Auth gate. A `503 CONFIGURATION_ERROR` means `AUTOPILOT_CONSOLE_BASIC_AUTH` is absent. The browser must use the public HTTPS origin only; the internal Fastify origin belongs exclusively in server variables.
+
+## Remote boot or redeploy fails
+
+Confirm `DATABASE_URL`, `AUTOPILOT_HOST=0.0.0.0`, `AUTOPILOT_PORT=4310`, `AUTOPILOT_CONTROL_API_ORIGIN`, `AUTOPILOT_WORKSPACE_ROOT=/data/workspaces`, and the `/data` volume mount. First boot applies `0001_initial`, imports the portable seed only into an empty database, verifies `GH_TOKEN` resolves to `momaibackend-ctrl`, and restores the exact registered repository. A provider identity mismatch fails closed.
+
+If PostgreSQL already contains projects, `deployment:bootstrap` skips seed import. If `/data/<workspace>` already contains `.git`, it reuses it without reset or checkout. Inspect structured `deployment.*` events; do not delete a database or volume to repair a configuration error. Restore from a hosting backup when data recovery is required.
+
 ## Validation fails
 
 Open Validation History and expand the failed report. The human summary identifies the failed gate; technical details contain command exit status, redacted output, request/response, schema evidence, and artifact references. A missing required test is `PARTIAL`, not a pass. Production and non-allowlisted targets are expected `NOT_SUPPORTED`/`POLICY_VIOLATION` failures.

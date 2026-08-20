@@ -1,6 +1,6 @@
 # Operator Console contract
 
-The browser is served at `http://localhost:3000`. All data and mutations go through `/api/control/v1/console`, proxied to the local Fastify application. Responses are JSON; inputs are validated with Zod.
+The browser is served locally at `http://localhost:3000` or remotely at the configured public HTTPS domain. All data and mutations go through same-origin `/api/control/v1/console`, proxied server-side to Fastify. The public deployment requires server-side Basic Auth; provider secrets never enter the browser. Responses are JSON; inputs are validated with Zod.
 
 ## Read routes
 
