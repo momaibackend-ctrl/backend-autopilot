@@ -14,6 +14,7 @@
     "deployment:export-state": "tsx scripts/export-deployment-state.ts",
     "deployment:bootstrap": "tsx scripts/deployment-bootstrap.ts",
     "execution:job": "tsx scripts/run-execution-job.ts",
+    "remote:e2e": "tsx scripts/remote-e2e.ts",
     "mcp": "tsx apps/mcp-server/src/main.ts",
     "autopilot": "tsx apps/cli/src/main.ts",
     "db:migrate": "tsx scripts/migrate.ts",
