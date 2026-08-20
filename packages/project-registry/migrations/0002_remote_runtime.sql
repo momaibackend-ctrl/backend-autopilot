@@ -35,16 +35,30 @@ CREATE TABLE IF NOT EXISTS migration_markers (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO storage.buckets (id, name, public, file_size_limit)
-VALUES ('autopilot-artifacts', 'autopilot-artifacts', false, 52428800)
-ON CONFLICT (id) DO UPDATE SET public=false, file_size_limit=EXCLUDED.file_size_limit;
+DO $$ BEGIN
+  IF to_regclass('storage.buckets') IS NOT NULL THEN
+    EXECUTE $bucket$
+      INSERT INTO storage.buckets (id, name, public, file_size_limit)
+      VALUES ('autopilot-artifacts', 'autopilot-artifacts', false, 52428800)
+      ON CONFLICT (id) DO UPDATE SET public=false, file_size_limit=EXCLUDED.file_size_limit
+    $bucket$;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS autopilot_operators (
-  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id uuid PRIMARY KEY,
   email text NOT NULL,
   status text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','DISABLED')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+DO $$ BEGIN
+  IF to_regclass('auth.users') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='autopilot_operators_user_id_fkey'
+  ) THEN
+    ALTER TABLE autopilot_operators ADD CONSTRAINT autopilot_operators_user_id_fkey
+      FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS autopilot_project_memberships (
   user_id uuid NOT NULL REFERENCES autopilot_operators(user_id) ON DELETE CASCADE,
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -99,8 +113,12 @@ BEGIN
   RETURN updated_data;
 END $$;
 
-REVOKE ALL ON FUNCTION claim_execution_job(uuid,text,integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION claim_execution_job(uuid,text,integer) TO service_role;
+REVOKE ALL ON FUNCTION claim_execution_job(uuid,text,integer) FROM PUBLIC;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN EXECUTE 'REVOKE ALL ON FUNCTION claim_execution_job(uuid,text,integer) FROM anon'; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN EXECUTE 'REVOKE ALL ON FUNCTION claim_execution_job(uuid,text,integer) FROM authenticated'; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='service_role') THEN EXECUTE 'GRANT EXECUTE ON FUNCTION claim_execution_job(uuid,text,integer) TO service_role'; END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION transition_task_atomic(task_data jsonb, transition_data jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
@@ -114,8 +132,12 @@ BEGIN
   INSERT INTO task_transitions(id,task_id,data,created_at) VALUES ((transition_data->>'id')::uuid,requested_task_id,transition_data,(transition_data->>'timestamp')::timestamptz);
   RETURN task_data;
 END $$;
-REVOKE ALL ON FUNCTION transition_task_atomic(jsonb,jsonb) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION transition_task_atomic(jsonb,jsonb) TO service_role;
+REVOKE ALL ON FUNCTION transition_task_atomic(jsonb,jsonb) FROM PUBLIC;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN EXECUTE 'REVOKE ALL ON FUNCTION transition_task_atomic(jsonb,jsonb) FROM anon'; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN EXECUTE 'REVOKE ALL ON FUNCTION transition_task_atomic(jsonb,jsonb) FROM authenticated'; END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='service_role') THEN EXECUTE 'GRANT EXECUTE ON FUNCTION transition_task_atomic(jsonb,jsonb) TO service_role'; END IF;
+END $$;
 
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE resources ENABLE ROW LEVEL SECURITY;
