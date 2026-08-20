@@ -1,6 +1,7 @@
 import { Conflict, ExecutionFailed, HumanActionRequired, PolicyViolation, UnsupportedOperation } from '../../../core/src/errors.js';
 import type { CommandRunner } from '../../../execution-engine/src/command-runner.js';
 import type { DestructiveAuthorization, Resource } from '../../../schemas/src/index.js';
+export * from './actions-dispatcher.js';
 
 export interface GitHubRepositoryMetadata {nameWithOwner:string;url:string;isPrivate:boolean;defaultBranch:string;viewerPermission:string;}
 export interface GitHubCiStatus {success:boolean;status:string;conclusion?:string;url?:string;databaseId?:number;}

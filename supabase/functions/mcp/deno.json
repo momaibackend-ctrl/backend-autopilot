@@ -1,0 +1,18 @@
+{
+  "imports": {
+    "zod": "npm:zod@3.25.76",
+    "drizzle-orm": "npm:drizzle-orm@0.44.4",
+    "../../../packages/schemas/src/index.js": "../../../packages/schemas/src/index.ts",
+    "../../../packages/core/src/errors.js": "../../../packages/core/src/errors.ts",
+    "../../../packages/core/src/ports.js": "../../../packages/core/src/ports.ts",
+    "../../../packages/core/src/branch.js": "../../../packages/core/src/branch.ts",
+    "../../../packages/core/src/async-execution.js": "../../../packages/core/src/async-execution.ts",
+    "../../../packages/audit/src/index.js": "../../../packages/audit/src/index.ts",
+    "../../../packages/artifact-store/src/index.js": "../../../packages/artifact-store/src/index.ts",
+    "../../../packages/policy-engine/src/index.js": "../../../packages/policy-engine/src/index.ts",
+    "../../../packages/policy-engine/src/architecture-guard.js": "../../../packages/policy-engine/src/architecture-guard.ts",
+    "../../../packages/workflow-engine/src/index.js": "../../../packages/workflow-engine/src/index.ts",
+    "../../../packages/context-engine/src/index.js": "../../../packages/context-engine/src/index.ts",
+    "../../../packages/execution-engine/src/reviewer.js": "../../../packages/execution-engine/src/reviewer.ts"
+  }
+}

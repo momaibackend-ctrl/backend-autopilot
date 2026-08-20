@@ -4,6 +4,7 @@ import { ExecutionFailed, HumanActionRequired, PolicyViolation, UnsupportedOpera
 import type { MutableSecretProvider, SecretProvider } from '../../../core/src/secrets.js';
 import type { CommandRunner } from '../../../execution-engine/src/command-runner.js';
 import type { DestructiveAuthorization, Resource } from '../../../schemas/src/index.js';
+export * from './artifact-storage.js';
 
 export interface SupabaseProjectResult {ref:string;name:string;organizationId:string;region:string;status:string;databaseSecretRef:string;passwordSecretRef:string;}
 export interface ExistingSupabaseProject {ref:string;name:string;organizationId:string;region:string;status:string;}

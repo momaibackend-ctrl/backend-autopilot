@@ -1,0 +1,10 @@
+project_id = "backend-autopilot"
+
+[functions.control-api]
+verify_jwt = true
+
+[functions.mcp]
+verify_jwt = false
+
+[functions.reconcile]
+verify_jwt = false

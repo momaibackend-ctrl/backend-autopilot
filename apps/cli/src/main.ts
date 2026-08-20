@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createRuntime, DomainError } from '../../../packages/core/src/index.js';
 import type { SandboxBootstrapInput } from '../../../packages/bootstrap/src/index.js';
 import { redact } from '../../../packages/audit/src/index.js';
-const {service,bootstrap}=createRuntime();const cli=new Command().name('autopilot').description('Backend Autopilot v0.3 diagnostic and sandbox bootstrap CLI').version('0.3.0');
+const {service,bootstrap}=createRuntime();const cli=new Command().name('autopilot').description('Backend Autopilot v0.4 diagnostic and sandbox bootstrap CLI').version('0.4.0');
 const print=(v:unknown)=>console.log(JSON.stringify(v,null,2));const run=(fn:()=>Promise<unknown>)=>async()=>print(await fn());
 cli.command('health').action(run(()=>service.systemHealth()));
 cli.command('projects').action(run(()=>service.projectList()));

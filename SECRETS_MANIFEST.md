@@ -15,11 +15,12 @@ The project-scoped `SECRETS_MANIFEST` artifact contains the same references and 
 
 | Reference | Provider/storage | Scope | Lifecycle |
 |---|---|---|---|
-| `DATABASE_URL` | hosting-managed secret/reference | Backend Autopilot control-plane PostgreSQL only | rotate in hosting provider; never point at a target-project database |
-| `GH_TOKEN` | hosting server variable | dedicated `momaibackend-ctrl` sandbox identity | refresh/revoke with official GitHub OAuth; verify identity before every provider write |
-| `AUTOPILOT_LIVE_SANDBOX_SUPABASE_ACCESS_TOKEN` | hosting server variable | registered sandbox Supabase account | revoke through official Supabase account settings |
-| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DB_PASSWORD` | hosting server variable | registered target database only | rotate through the registered semantic operation |
-| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DATABASE_URL` | hosting server variable | registered target database adapter only | regenerate after target password rotation |
-| `AUTOPILOT_CONSOLE_BASIC_AUTH` | hosting server variable | public Operator Console access boundary | generate randomly; rotate in hosting variables and the owner's gitignored local `.env` |
+| `AUTOPILOT_CONTROL_DATABASE_URL` | GitHub Actions secret | control-plane PostgreSQL and migrations | rotate with the sandbox database credential |
+| `AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY` | GitHub Actions secret / Supabase managed Edge secret | Actions callback and private Storage | rotate in the registered Supabase project |
+| `AUTOPILOT_SUPABASE_PUBLISHABLE_KEY` | GitHub Actions secret used at static build | browser Supabase Auth bootstrap; not privileged | rotate in the registered Supabase project |
+| `AUTOPILOT_GITHUB_TOKEN` | GitHub Actions and Supabase Edge secrets | dedicated `momaibackend-ctrl` sandbox repositories | refresh/revoke with official GitHub OAuth; verify identity before provider writes |
+| `AUTOPILOT_SUPABASE_ACCESS_TOKEN` | GitHub Actions secret | reproducible Edge/schema deployment | revoke through official Supabase account settings |
+| `AUTOPILOT_MCP_TOKEN` | Supabase Edge and authorized MCP client only | remote semantic MCP | rotate both endpoints; never send to the browser |
+| `AUTOPILOT_RECONCILE_TOKEN` | Supabase Edge and reconciliation workflow only | scheduled recovery endpoint | rotate both endpoints |
 
-Hosting variables are server-side only. The deployment snapshot contains the reference names above where required by registered resources, but never their values.
+Local copies use the gitignored `.env` under their `AUTOPILOT_CONTROL_*` names. Deployed copies are server-side only. Workflow inputs contain only a job UUID, never any value above.

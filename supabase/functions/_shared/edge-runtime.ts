@@ -1,0 +1,31 @@
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
+import './edge-dependencies.ts';
+import { GitHubActionsDispatcher } from '../../../packages/adapters/github/src/actions-dispatcher.ts';
+import { SupabaseStorageArtifactBlobStore } from '../../../packages/adapters/supabase/src/artifact-storage.ts';
+import { AsyncExecutionCoordinator } from '../../../packages/core/src/async-execution.ts';
+import { AutopilotService } from '../../../packages/core/src/application.ts';
+import { UnsupportedOperation } from '../../../packages/core/src/errors.ts';
+import { PostgrestStateStore } from '../../../packages/project-registry/src/postgrest-store.ts';
+
+export function createEdgeRuntime(){
+  const url=required('SUPABASE_URL'),serviceKey=required('SUPABASE_SERVICE_ROLE_KEY');const store=new PostgrestStateStore(url,serviceKey);const unavailable=async():Promise<never>=>{throw new UnsupportedOperation('Subprocess execution is only available in GitHub Actions');};
+  const blobs=new SupabaseStorageArtifactBlobStore(url,serviceKey);const service=new AutopilotService({store,execution:{execute:unavailable},tests:{run:unavailable},git:{snapshot:unavailable,branch:unavailable,stage:unavailable,diff:unavailable,commit:unavailable},commands:{drain:()=>[]},artifactBlobs:blobs});
+  const dispatcher=new GitHubActionsDispatcher(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'),required('AUTOPILOT_CONTROL_REPOSITORY'),Deno.env.get('AUTOPILOT_EXECUTION_WORKFLOW')??'autopilot-execution.yml',Deno.env.get('AUTOPILOT_CONTROL_REF')??'autopilot/v0.4-remote-runtime');
+  return {store,service,asyncExecution:new AsyncExecutionCoordinator(store,dispatcher),url,serviceKey,blobs};
+}
+
+export async function authenticatedOperator(request:Request,projectId?:string){
+  const authorization=request.headers.get('authorization');if(!authorization?.startsWith('Bearer '))throw new EdgeHttpError(401,'AUTHENTICATION_REQUIRED','Supabase Auth session is required');const url=required('SUPABASE_URL'),publishable=Deno.env.get('SUPABASE_ANON_KEY')??required('SUPABASE_PUBLISHABLE_KEY');const userResponse=await fetch(`${url}/auth/v1/user`,{headers:{authorization,apikey:publishable}});if(!userResponse.ok)throw new EdgeHttpError(401,'INVALID_SESSION','Supabase Auth session is invalid');const user=await userResponse.json() as {id:string;email?:string};if(!user.id||!user.email)throw new EdgeHttpError(403,'OPERATOR_REQUIRED','Authenticated user has no operator email');const key=required('SUPABASE_SERVICE_ROLE_KEY');let operator=await adminRows<{user_id:string;status:string}>(url,key,`autopilot_operators?select=user_id,status&user_id=eq.${user.id}&limit=1`);
+  if(!operator[0]){const allowed=csv(required('AUTOPILOT_OPERATOR_EMAILS')).map(value=>value.toLowerCase());if(!allowed.includes(user.email.toLowerCase()))throw new EdgeHttpError(403,'OPERATOR_REQUIRED','User is not an allowlisted Backend Autopilot operator');await adminWrite(url,key,'autopilot_operators',{user_id:user.id,email:user.email,status:'ACTIVE'});for(const id of csv(required('AUTOPILOT_OPERATOR_PROJECT_IDS')))await adminWrite(url,key,'autopilot_project_memberships',{user_id:user.id,project_id:id,role:'ADMIN'});operator=await adminRows(url,key,`autopilot_operators?select=user_id,status&user_id=eq.${user.id}&limit=1`);}
+  if(operator[0]?.status!=='ACTIVE')throw new EdgeHttpError(403,'OPERATOR_DISABLED','Operator is disabled');if(projectId){const membership=await adminRows<{role:string}>(url,key,`autopilot_project_memberships?select=role&user_id=eq.${user.id}&project_id=eq.${projectId}&limit=1`);if(!membership[0])throw new EdgeHttpError(403,'PROJECT_ACCESS_DENIED','Operator is not assigned to this project');}
+  return user;
+}
+
+export function mcpProjectAllowed(projectId:string){return csv(required('AUTOPILOT_MCP_PROJECT_IDS')).includes(projectId);}
+export function corsHeaders(request:Request){const allowed=csv(Deno.env.get('AUTOPILOT_CONSOLE_ORIGINS')??'');const origin=request.headers.get('origin')??'';return {'access-control-allow-origin':allowed.includes(origin)?origin:(allowed[0]??'null'),'access-control-allow-headers':'authorization,apikey,content-type,x-client-info','access-control-allow-methods':'GET,POST,PATCH,OPTIONS','vary':'origin'};}
+export function json(value:unknown,status=200,headers:HeadersInit={}){return new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8',...headers}});}
+export class EdgeHttpError extends Error{constructor(readonly status:number,readonly code:string,message:string,readonly details?:unknown){super(message);}}
+export async function adminRows<T>(url:string,key:string,path:string){const response=await fetch(`${url}/rest/v1/${path}`,{headers:{apikey:key,authorization:`Bearer ${key}`}});if(!response.ok)throw new EdgeHttpError(502,'CONTROL_STORE_ERROR','Control store query failed',{status:response.status});return response.json() as Promise<T[]>;}
+export async function adminWrite(url:string,key:string,table:string,body:unknown){const response=await fetch(`${url}/rest/v1/${table}`,{method:'POST',headers:{apikey:key,authorization:`Bearer ${key}`,'content-type':'application/json',prefer:'return=minimal'},body:JSON.stringify(body)});if(!response.ok&&response.status!==409)throw new EdgeHttpError(502,'CONTROL_STORE_ERROR','Control store write failed',{status:response.status});}
+export function required(name:string){const value=Deno.env.get(name);if(!value)throw new Error(`${name} is required`);return value;}
+function csv(value:string){return value.split(',').map(item=>item.trim()).filter(Boolean);}

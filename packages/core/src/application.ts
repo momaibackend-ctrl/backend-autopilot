@@ -7,6 +7,7 @@ import type {
   GitWorkspaceAdapter,
   ImplementationExecutor,
   TestExecutor,
+  ArtifactBlobStore,
 } from "./ports.js";
 import { systemClock, uuidGenerator } from "./ports.js";
 import {
@@ -46,7 +47,7 @@ import {
 } from "../../workflow-engine/src/index.js";
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { AuditLog } from "../../audit/src/index.js";
-import { IndependentReviewer } from "../../execution-engine/src/index.js";
+import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
 
 export interface ServiceDependencies {
   store: StateStore;
@@ -57,6 +58,7 @@ export interface ServiceDependencies {
   clock?: Clock;
   ids?: IdGenerator;
   maxAutoRepairAttempts?: number;
+  artifactBlobs?: ArtifactBlobStore;
 }
 export class AutopilotService {
   readonly store: StateStore;
@@ -79,7 +81,7 @@ export class AutopilotService {
     this.contexts = new ContextEngine(deps.store, this.ids, this.clock);
     this.dependencies = new DependencyEngine(deps.store);
     this.workflow = new WorkflowEngine(deps.store, this.ids, this.clock);
-    this.artifacts = new ArtifactStore(deps.store, this.ids, this.clock);
+    this.artifacts = new ArtifactStore(deps.store, this.ids, this.clock, deps.artifactBlobs);
     this.audit = new AuditLog(deps.store, this.ids, this.clock);
     this.reviewer = new IndependentReviewer(this.clock);
     this.maxRepairs = deps.maxAutoRepairAttempts ?? 3;
@@ -111,7 +113,7 @@ export class AutopilotService {
       id: this.ids.next(),
       ...data,
       status: "ACTIVE",
-      workspacePath: resolve(data.workspacePath),
+      ...(data.workspacePath ? { workspacePath: resolve(data.workspacePath) } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -362,6 +364,10 @@ export class AutopilotService {
       actor,
     });
     const resource = await this.store.getResource(resourceId);
+    if (!project.workspacePath)
+      throw new UnsupportedOperation(
+        "Local execution requires a workspacePath; remote projects must dispatch an execution job",
+      );
     if (
       !resource ||
       resource.type !== "GIT_REPOSITORY" ||
@@ -479,8 +485,14 @@ export class AutopilotService {
     taskId: string,
     actor = "external-agent",
     correlationId = this.ids.next(),
+    executionWorkspace?: string,
   ) {
     const project = await this.requiredProject(projectId);
+    const workspace=executionWorkspace??project.workspacePath;
+    if (!workspace)
+      throw new UnsupportedOperation(
+        "Local testing requires a workspacePath; remote projects must dispatch an execution job",
+      );
     let task = await this.requiredTask(projectId, taskId);
     if (task.state !== "IMPLEMENTING")
       throw new InvalidState("Task must be IMPLEMENTING before testing");
@@ -492,7 +504,7 @@ export class AutopilotService {
     );
     const plan = await this.latestPlan(projectId, taskId);
     const report = await this.deps.tests.run(
-      project.workspacePath,
+      workspace,
       task.id,
       plan,
     );
@@ -766,6 +778,10 @@ export class AutopilotService {
   }
   async gitDiff(projectId: string, taskId: string, resourceId: string) {
     const project = await this.requiredProject(projectId);
+    if (!project.workspacePath)
+      throw new UnsupportedOperation(
+        "Local git diff requires a workspacePath; remote projects read the persisted CODE_DIFF artifact",
+      );
     await this.policy.authorize({
       project,
       action: "RESOURCE_READ",

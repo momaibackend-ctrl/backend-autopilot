@@ -22,6 +22,6 @@ export class WorkflowEngine {
   async transition(task:Task,to:TaskState,reason:string,actor:string,inputArtifactIds:string[]=[],outputArtifactIds:string[]=[]){
     if(!transitions[task.state].includes(to))throw new InvalidState(`Transition ${task.state} -> ${to} is not allowed`);
     const from=task.state;const updated={...task,state:to,updatedAt:this.clock.now()};
-    await this.store.updateTask(updated);await this.store.appendTransition({id:this.ids.next(),taskId:task.id,from,to,reason,actor,inputArtifactIds,outputArtifactIds,timestamp:this.clock.now()});return updated;
+    return this.store.transitionTask(updated,{id:this.ids.next(),taskId:task.id,from,to,reason,actor,inputArtifactIds,outputArtifactIds,timestamp:this.clock.now()});
   }
 }

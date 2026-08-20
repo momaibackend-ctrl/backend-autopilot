@@ -1,0 +1,23 @@
+name: Backend Autopilot reconciliation
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reconcile terminated execution jobs
+        env:
+          CONTROL_URL: ${{ secrets.AUTOPILOT_CONTROL_API_URL }}
+          RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
+        run: |
+          RECONCILE_URL="${CONTROL_URL%/control-api}/reconcile"
+          curl --fail-with-body --silent --show-error \
+            -X POST "$RECONCILE_URL" \
+            -H "Authorization: Bearer $RECONCILE_TOKEN"

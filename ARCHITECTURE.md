@@ -48,7 +48,7 @@ Projects, resources, context versions, tasks, transitions, runs, artifacts and a
 
 Before an external PostgreSQL control plane is available, the Dockerless bootstrap registry persists the same `StateStore` contract in `.autopilot/state.json`; it contains no secret values. `DotEnvSecretProvider` separately stores replaceable runtime secrets in the ignored `.env`. With `DATABASE_URL`, runtime automatically composes the PostgreSQL store.
 
-The remote v0.3 deployment uses PostgreSQL unconditionally and mounts a persistent Linux volume for target Git workspaces. A first-boot transaction imports the credential-free portable snapshot only when the projects table is empty. It materializes workspace paths beneath the configured root and restores only the exact registered repository through the registered sandbox account. A non-empty database is never overwritten by the seed.
+The remote v0.4 deployment uses Supabase Postgres and has no persistent filesystem workspace. A repeat-safe checksummed migration imports the existing credential-free state in one transaction without modifying its source. Every GitHub Actions run creates an ephemeral target checkout from the registered repository identity and restores the persisted task branch/exact SHA for repair.
 
 ## Provider bootstrap
 
@@ -60,30 +60,27 @@ Add an adapter implementing the appropriate port; never import provider types in
 
 Architecture decisions are in `docs/adr/`.
 
-## Operator Console v0.3
+## Remote runtime v0.4
 
 ```text
-Browser (public HTTPS + server-side access gate)
-        | same-origin /api/control; escaped React text/JSON
+Browser (GitHub Pages static export)
+        | Supabase Auth JWT; exact-origin CORS
         v
-Next.js (public container port)
-        | server-only internal origin
+Supabase Edge Control API / HTTP MCP
+        | service-role PostgREST and Storage
         v
-Fastify console routes (non-public container port)
-        |
-OperatorConsoleService
-   +----+----------------+------------------+
-   |                     |                  |
-AutopilotService     StateStore       PolicyEngine
-   |                 artifacts/audit        |
-workflow/readiness   persisted views   project-owned resource
-                                             |
-                             TestEngine / HTTP / DB adapters
+AutopilotService -> PolicyEngine -> durable ExecutionJob
+                                      |
+                              GitHub workflow_dispatch
+                                      |
+                     ephemeral checkout / tests / review
+                                      |
+                         Postgres + private Storage
 ```
 
-The browser never reads `.autopilot/state.json`, PostgreSQL, Git, GitHub, or Supabase. `OperatorConsoleService` creates read models and delegates to the existing application layer. Polling every five seconds gives live updates while persisted state remains the source of truth after restart.
+The browser never receives a service-role key, GitHub credential, target secret or direct table policy. Edge validates the Supabase JWT and operator/project membership before using its service role. Polling every five seconds reads durable state; large artifact bodies are hydrated from the private bucket by the server-side adapter.
 
-Remote source and deployment are GitHub-driven. The Linux image includes pinned provider CLIs, verifies them by SHA-256, and runs `pnpm check` at build time. PostgreSQL and the workspace volume are independent of the container lifecycle. Static hosting is intentionally rejected because it cannot preserve the current process/Git execution adapter.
+Remote source and deployment are GitHub-driven. Pages and Edge are short-lived/serverless. Execution runs only in fixed GitHub Actions workflows, and workflow inputs contain a job UUID rather than repository paths, URLs or credentials. Database claim/lease and operation-id uniqueness prevent duplicate concurrent work; scheduled reconciliation handles lost callbacks without an always-on worker.
 
 The API Explorer derives endpoints from `API_CONTRACT` OpenAPI artifacts. Validation and API requests create immutable artifacts and audit events. Saved scenarios support sequential steps, extraction of response values, non-secret `{{variable}}` interpolation, and server-memory-only bearer handoff. Production and unregistered targets fail before network access.
 

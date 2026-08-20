@@ -17,5 +17,10 @@ The repository and Supabase project existed before registration; Backend Autopil
 | Provider | Type | External reference | Environment | Status |
 |---|---|---|---|---|
 | GitHub | private source repository | `momaibackend-ctrl/backend-autopilot` | control-plane staging | active |
+| GitHub Pages | static Operator Console | `https://momaibackend-ctrl.github.io/backend-autopilot/` | control-plane staging | configured by workflow |
+| Supabase | Auth / Postgres / Storage / Edge | `qtyfdzjzmgxtrarpgcmn` | control-plane sandbox | active |
+| Supabase Edge | Control API | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api` | control-plane sandbox | active |
+| Supabase Edge | HTTP MCP | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp` | control-plane sandbox | active |
+| GitHub Actions | ephemeral execution | `autopilot-execution.yml` | sandbox targets only | configured |
 
-The source repository was created only after `gh auth status` and `gh api user` both proved that `momaibackend-ctrl` was active with `ADMIN` authority. Stored accounts including `oopsie-star` were not logged out or modified. Remote hosting, database, volume, and domain entries must not be added until their official provider APIs confirm actual creation.
+The source repository was used only after `gh auth status` and `gh api user` both proved that `momaibackend-ctrl` was active with `ADMIN` authority. Stored accounts including `oopsie-star` were not logged out or modified. There is no persistent execution volume or always-on application service.

@@ -1,0 +1,45 @@
+name: Deploy Operator Console to GitHub Pages
+on:
+  push:
+    branches: [autopilot/v0.4-remote-runtime, main]
+    paths: ["apps/operator-console/**", "pnpm-lock.yaml", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_GITHUB_PAGES_BASE_PATH: /backend-autopilot
+      NEXT_PUBLIC_SUPABASE_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_PUBLISHABLE_KEY }}
+      NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.32.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:console
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/operator-console/.next-static
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

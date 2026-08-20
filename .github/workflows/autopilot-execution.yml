@@ -1,0 +1,39 @@
+name: Backend Autopilot execution
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Durable Backend Autopilot execution job UUID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopilot-execution-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AUTOPILOT_JOB_ID: ${{ inputs.job_id }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Execute durable job
+        run: pnpm execution:job -- --job "$AUTOPILOT_JOB_ID"

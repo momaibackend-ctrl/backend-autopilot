@@ -1,6 +1,6 @@
 # ADR 011: GitHub-driven remote container deployment
 
-Status: accepted for v0.3.
+Status: superseded by ADR 012. Retained only as decision history; it is not a deployable v0.4 architecture.
 
 ## Context
 

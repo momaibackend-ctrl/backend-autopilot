@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 export const PlatformVersions = {
-  platform: "0.3.0",
-  workflow: "2",
+  platform: "0.4.0",
+  workflow: "3",
   policy: "3",
   context: "1",
-  artifact: "3",
+  artifact: "4",
 } as const;
 
 export const autonomyModeSchema = z.enum([
@@ -23,6 +23,15 @@ export const environmentSchema = z.enum([
 ]);
 export type Environment = z.infer<typeof environmentSchema>;
 
+export const repositoryIdentitySchema = z.object({
+  owner: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+  name: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+  defaultBranch: z.string().min(1),
+  resourceId: z.string().uuid(),
+  metadata: z.record(z.unknown()).optional(),
+});
+export type RepositoryIdentity = z.infer<typeof repositoryIdentitySchema>;
+
 export const projectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
@@ -31,7 +40,8 @@ export const projectSchema = z.object({
   environment: environmentSchema,
   autonomyMode: autonomyModeSchema,
   status: z.enum(["ACTIVE", "SUSPENDED", "ARCHIVED"]),
-  workspacePath: z.string().min(1),
+  workspacePath: z.string(),
+  repository: repositoryIdentitySchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -42,8 +52,8 @@ export const projectCreateSchema = projectSchema.pick({
   sourceType: true,
   environment: true,
   autonomyMode: true,
-  workspacePath: true,
-});
+  repository: true,
+}).extend({workspacePath:z.string().optional().default("")});
 export type ProjectCreate = z.infer<typeof projectCreateSchema>;
 
 export const resourceTypeSchema = z.enum([
@@ -415,6 +425,14 @@ export const artifactSchema = z.object({
   schemaVersion: z.string(),
   content: z.unknown(),
   contentHash: z.string(),
+  status: z.enum(["AVAILABLE", "FAILED", "DELETED"]).default("AVAILABLE"),
+  storage: z.object({
+    provider: z.string().min(1),
+    bucket: z.string().min(1),
+    path: z.string().min(1),
+    contentType: z.string().min(1),
+    size: z.number().int().nonnegative(),
+  }).optional(),
   createdAt: z.string().datetime(),
 });
 export type Artifact = z.infer<typeof artifactSchema>;
@@ -436,6 +454,52 @@ export const runSchema = z.object({
   finishedAt: z.string().datetime().optional(),
 });
 export type Run = z.infer<typeof runSchema>;
+
+export const executionJobKindSchema = z.enum([
+  "IMPLEMENTATION",
+  "TEST",
+  "VALIDATION",
+  "REPAIR",
+  "RECONCILIATION",
+]);
+export const executionJobStatusSchema = z.enum([
+  "QUEUED",
+  "DISPATCHING",
+  "DISPATCHED",
+  "CLAIMED",
+  "RUNNING",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+  "BLOCKED",
+]);
+export const executionJobSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  runId: z.string().uuid().optional(),
+  operationId: z.string().min(8),
+  kind: executionJobKindSchema,
+  status: executionJobStatusSchema,
+  payload: z.unknown(),
+  workflowRunId: z.string().optional(),
+  workflowRunUrl: z.string().url().optional(),
+  branch: z.string().optional(),
+  baseCommit: z.string().optional(),
+  commitSha: z.string().optional(),
+  attempt: z.number().int().nonnegative(),
+  leaseOwner: z.string().optional(),
+  leaseExpiresAt: z.string().datetime().optional(),
+  queuedAt: z.string().datetime(),
+  startedAt: z.string().datetime().optional(),
+  finishedAt: z.string().datetime().optional(),
+  updatedAt: z.string().datetime(),
+  error: z.unknown().optional(),
+  result: z.unknown().optional(),
+});
+export type ExecutionJob = z.infer<typeof executionJobSchema>;
 export const transitionSchema = z.object({
   id: z.string().uuid(),
   taskId: z.string().uuid(),

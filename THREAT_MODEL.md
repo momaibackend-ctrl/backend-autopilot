@@ -1,6 +1,6 @@
 # Threat model
 
-| Threat | Boundary/control | Remaining v0.3 risk |
+| Threat | Boundary/control | Remaining v0.4 risk |
 |---|---|---|
 | Prompt injection in tasks, attachments, README, comments or source | Structured context, provenance, no policy-from-text, semantic MCP operations | A future LLM provider needs content isolation and adversarial evals |
 | Malicious repository content | Repository data is never executed implicitly; only plan-required fixed test entrypoints run | Test code itself executes inside the host account; OS/container sandbox remains future hardening |
@@ -19,6 +19,6 @@
 | API Runner SSRF / origin escape | Exact project-owned `HTTP_API` allowlist, non-production mode, HTTPS or loopback HTTP, same-origin path assertion, no redirects | DNS rebinding and private-address resolution checks require a hardened outbound proxy before remote multi-tenant deployment |
 | Browser credential exfiltration | Secret-bearing headers/body fields rejected; server-side secret resolution; response cookies/auth headers omitted; recursive redaction | Auth identities need a richer server-side credential-profile abstraction |
 | Saved-scenario token leakage | Sensitive extractions stay in memory, can only feed `bearerFrom`, and are redacted from evidence | Distributed scenario workers need encrypted ephemeral state |
-| Cross-project console access | Read models use project-scoped store calls; resource/scenario actions re-authorize ownership | HTTP user/organization authentication is not implemented for local v0.3; remote SaaS deployment must add tenant identity and authorization |
+| Cross-project console access | Edge validates Supabase operator status and project membership; stores scope private objects by `projectId` | Organization-level SaaS administration remains future work |
 
-Trust assumptions: the local OS account and external PostgreSQL administrator are trusted; the Operator Console binds to local development services; confirmed bootstrap accounts have no production access; target credentials are scoped to the intended sandbox; Git itself is trusted. Production is outside the v0.3 trust boundary.
+Trust assumptions: GitHub Actions and the dedicated Supabase sandbox control plane are trusted; target credentials are scoped to explicit registered resources; hostile requirements and repository text remain data. The local OS is not part of the deployed runtime. Production writes remain outside the v0.4 trust boundary.

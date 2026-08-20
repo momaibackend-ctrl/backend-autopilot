@@ -1,16 +1,21 @@
-# Backend Autopilot v0.3
+# Backend Autopilot v0.4
 
 Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a Momna backend and never discovers or trusts existing external resources automatically.
 
-v0.3 adds a browser Operator Console without replacing the v0.2 engine. It shows projects, task lifecycle and timeline, runs, infrastructure, OpenAPI, migrations/schema evidence, artifacts, audit and evidence-based capabilities. Operators can run non-production validation suites and allowlisted sandbox API scenarios without using Git, PostgreSQL, Supabase, CI, or a terminal.
+v0.4 moves the production runtime off the developer workstation. The static Operator Console uses Supabase Auth and an authenticated Edge Control API; durable state and artifacts live in Supabase; semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
 
 ## Remote deployment
 
-The canonical source is the private GitHub repository `momaibackend-ctrl/backend-autopilot`. The remote deployment builds its checked-in `Dockerfile` on Linux, runs the full `pnpm check`, starts Next.js plus the unchanged Fastify control plane, and publishes only the Next.js port over HTTPS. Browser API requests remain same-origin at `/api/control/*`; the Fastify origin is server-side configuration and is never sent to the browser.
+The canonical source is the private repository `momaibackend-ctrl/backend-autopilot`. Four reproducible workflows deploy and operate the remote system:
 
-Remote state uses a dedicated PostgreSQL control plane. A persistent `/data` volume contains target Git workspaces. The first empty-database boot transactionally imports `deployment/bootstrap-state.json`, replaces portable workspace placeholders with `/data/workspaces/<project-slug>`, and clones only the already registered GitHub sandbox repository. Later restarts and deploys reuse PostgreSQL and the volume.
+- `pages.yml` builds a Next.js static export and deploys GitHub Pages.
+- `supabase.yml` applies versioned SQL, sets Edge secret references and deploys Edge Functions.
+- `autopilot-execution.yml` claims one durable job, clones only its registered repository, installs dependencies, changes a deterministic task branch, tests, reviews, pushes and records evidence.
+- `autopilot-reconcile.yml` periodically repairs terminal workflow states that could not write their callback.
 
-Required server variables are documented in `.env.example` and `SECRETS_MANIFEST.md`. `AUTOPILOT_CONSOLE_BASIC_AUTH` is mandatory in production. Provider values stay in hosting secrets; the committed bootstrap snapshot contains reference names and redacted evidence, never credential values.
+Remote state uses project `qtyfdzjzmgxtrarpgcmn`: PostgreSQL stores envelopes and relational ownership metadata; the private `autopilot-artifacts` Storage bucket stores large blobs. Jobs have operation-id idempotency, per-task distributed claim/lease, exact branch/SHA recovery and bounded repair attempts. No persistent workspace volume or always-on application process exists.
+
+Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The browser receives only the Supabase URL and publishable key. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
 
 ## Operator Console
 
@@ -20,7 +25,7 @@ pnpm bootstrap
 pnpm dev
 ```
 
-For local development, open [http://localhost:3000](http://localhost:3000). The Fastify Control API listens on the local development interface and Next.js proxies `/api/control/*` to it. Remote deployment uses the HTTPS console origin and server-only internal API routing. The local durable state remains `.autopilot/state.json`, so the existing LIVE-1 sandbox proof is displayed without hardcoded UI data.
+For local development, open [http://localhost:3000](http://localhost:3000). The explicit `NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV=true` test/dev composition uses the local Fastify proxy. Production builds never set that flag: they are static files that call the authenticated HTTPS Edge API directly. The remote console is `https://momaibackend-ctrl.github.io/backend-autopilot/`.
 
 The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 
@@ -82,6 +87,15 @@ For an implementation run, `sandbox_github_ci_verify` binds CI evidence to the e
 Passwords are never accepted as persistent inputs. Generated secrets are replaceable through `MutableSecretProvider`; manifests contain reference names and lifecycle procedures only.
 
 ## MCP
+
+Production MCP is an authenticated, stateless Streamable HTTP endpoint:
+
+```text
+https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+Authorization: Bearer <AUTOPILOT_MCP_TOKEN>
+```
+
+Local stdio remains available for development:
 
 ```json
 {

@@ -1,0 +1,47 @@
+name: Deploy Supabase control plane
+on:
+  push:
+    branches: [autopilot/v0.4-remote-runtime, main]
+    paths: ["supabase/**", "packages/project-registry/migrations/**", ".github/workflows/supabase.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-control-plane
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: qtyfdzjzmgxtrarpgcmn
+      AUTOPILOT_GITHUB_DISPATCH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      AUTOPILOT_MCP_TOKEN: ${{ secrets.AUTOPILOT_MCP_TOKEN }}
+      AUTOPILOT_RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.32.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: supabase/setup-cli@v1
+        with: { version: 2.75.0 }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:migrate
+      - name: Configure Edge server secrets
+        run: >-
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
+          AUTOPILOT_GITHUB_DISPATCH_TOKEN="$AUTOPILOT_GITHUB_DISPATCH_TOKEN"
+          AUTOPILOT_CONTROL_REPOSITORY="momaibackend-ctrl/backend-autopilot"
+          AUTOPILOT_CONTROL_REF="autopilot/v0.4-remote-runtime"
+          AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
+          AUTOPILOT_OPERATOR_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
+          AUTOPILOT_MCP_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
+          AUTOPILOT_CONSOLE_ORIGINS="https://momaibackend-ctrl.github.io"
+          AUTOPILOT_MCP_TOKEN="$AUTOPILOT_MCP_TOKEN"
+          AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"
+      - run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"

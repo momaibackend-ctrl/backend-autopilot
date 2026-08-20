@@ -1,6 +1,8 @@
-# MCP contract v0.3
+# MCP contract v0.4
 
-The v0.3 Operator Console adds HTTP application routes but does not expose a shell or weaken this semantic MCP surface. Existing MCP clients remain compatible.
+Local stdio remains compatible with the v0.3 semantic surface. Production uses authenticated stateless Streamable HTTP at `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp`. It never exposes a shell or starts subprocesses; execution tools return durable job/run identities.
+
+The remote surface implements: `system_health`, `project_list`, `project_get`, `resource_list`, `resource_register`, `context_get`, `context_import`, `task_create`, `task_get`, `task_list`, `task_analyze`, `task_plan`, `task_execute`, `task_review`, `task_retry`, `task_status`, `artifact_list`, `artifact_read`, `run_list`, `run_get`, `job_list`, `job_get`, `project_snapshot`, and `runtime_status`. Read-only and mutating tools have MCP annotations; `task_execute` is explicitly idempotent and accepts only an allowlisted resource UUID plus a structured change set.
 
 All inputs are Zod-validated. Results are JSON encoded in MCP text content. Domain failures return `isError: true` with `{error:{code,message,details}}`. Mutating calls are audited and use the shared application service.
 

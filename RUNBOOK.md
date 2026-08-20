@@ -8,7 +8,7 @@ Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Wit
 
 Run `pnpm dev` and open `http://localhost:3000` (use `localhost`, not a different host alias). Confirm `http://127.0.0.1:4310/health` responds. Next proxies `/api/control/*`; the browser must never be configured with provider tokens. If the shell appears but data does not, inspect the redacted API log and use the Retry button.
 
-For the remote service, check the hosting health endpoint `/api/control/health`, deployment logs, and the configured public domain. A `401` on console/API routes is the expected Basic Auth gate. A `503 CONFIGURATION_ERROR` means `AUTOPILOT_CONSOLE_BASIC_AUTH` is absent. The browser must use the public HTTPS origin only; the internal Fastify origin belongs exclusively in server variables.
+For the remote service, check GitHub Pages deployment, Supabase Function logs, and authenticated `control-api/health`. `401` means the Supabase session is absent or invalid; `403` means the operator or project membership is not allowlisted. Diagnose execution through its durable job/run and Actions URL. Invoke reconciliation after a cancelled or timed-out job that could not write its callback.
 
 ## Remote boot or redeploy fails
 

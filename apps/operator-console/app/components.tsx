@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { authorizedFetch } from "./lib/supabase";
 
 type Json = Record<string, unknown>;
 type ProjectCard = {
@@ -80,13 +81,13 @@ type Overview = {
   projects: ProjectCard[];
   events: Audit[];
 };
-const api = "/api/control/v1/console";
+const api = "/v1/console";
 function usePolling<T>(path: string) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
-      const response = await fetch(`${api}${path}`, { cache: "no-store" });
+      const response = await authorizedFetch(`${api}${path}`, { cache: "no-store" });
       const value = (await response.json()) as
         | T
         | { error: { message: string } };
@@ -209,7 +210,7 @@ function Projects({
       {projects.map((project) => (
         <Link
           className="projectCard"
-          href={`/projects/${project.id}`}
+          href={`/projects?projectId=${encodeURIComponent(project.id)}`}
           key={project.id}
         >
           <div className="row between">
@@ -245,7 +246,7 @@ function Tasks({ projects }: { projects: ProjectCard[] }) {
       rows={tasks.map((task) => [
         <Link
           key={task.id}
-          href={`/projects/${task.projectId}/tasks/${task.id}`}
+          href={`/tasks?projectId=${encodeURIComponent(task.projectId)}&taskId=${encodeURIComponent(task.id)}`}
         >
           <strong>{task.externalKey}</strong>
           <small>{task.title}</small>
@@ -297,7 +298,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
   );
   const loadHistory = useCallback(async () => {
     if (!projectId) return;
-    const response = await fetch(`${api}/projects/${projectId}/validation`, {
+    const response = await authorizedFetch(`${api}/projects/${projectId}/validation`, {
       cache: "no-store",
     });
     if (response.ok) setHistory((await response.json()) as Artifact[]);
@@ -311,7 +312,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
     if (!projectId || !taskId) return;
     setPending(true);
     setOperationError("");
-    const response = await fetch(`${api}/projects/${projectId}/validation`, {
+    const response = await authorizedFetch(`${api}/projects/${projectId}/validation`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ taskId, suite, operationId: crypto.randomUUID() }),
@@ -330,7 +331,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
     if (!projectId) return;
     setPending(true);
     setOperationError("");
-    const response = await fetch(`${api}/projects/${projectId}/scenarios/run`, {
+    const response = await authorizedFetch(`${api}/projects/${projectId}/scenarios/run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -767,7 +768,7 @@ export function TaskDetail({
   return (
     <div className="page">
       <div className="breadcrumbs">
-        <Link href={`/projects/${projectId}`}>Project</Link>
+        <Link href={`/projects?projectId=${encodeURIComponent(projectId)}`}>Project</Link>
         <span>/</span>
         {String(task.externalKey)}
       </div>
@@ -869,7 +870,7 @@ function ApiExplorer({
   async function send() {
     if (!endpoint || !resourceId) return;
     try {
-      const response = await fetch(`${apiBase(projectId)}/api-request`, {
+      const response = await authorizedFetch(`${apiBase(projectId)}/api-request`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -897,7 +898,7 @@ function ApiExplorer({
   async function saveScenario() {
     if (!endpoint || !resourceId) return;
     try {
-      const response = await fetch(`${apiBase(projectId)}/scenarios`, {
+      const response = await authorizedFetch(`${apiBase(projectId)}/scenarios`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

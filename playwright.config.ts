@@ -14,6 +14,7 @@ export default defineConfig({
       ...process.env,
       DATABASE_URL: "",
       AUTOPILOT_STATE_PATH: "tests/.tmp/operator-console-state.json",
+      NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV: "true",
     },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

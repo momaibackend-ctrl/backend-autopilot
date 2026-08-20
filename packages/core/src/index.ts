@@ -3,4 +3,6 @@ export * from './ports.js';
 export * from './secrets.js';
 export * from './application.js';
 export * from './runtime.js';
+export * from './async-execution.js';
+export * from './branch.js';
 export * from './credentials.js';
