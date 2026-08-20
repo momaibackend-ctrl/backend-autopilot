@@ -12,6 +12,7 @@ export default defineConfig({
     timeout: 120_000,
     env: {
       ...process.env,
+      DATABASE_URL: "",
       AUTOPILOT_STATE_PATH: "tests/.tmp/operator-console-state.json",
     },
   },
