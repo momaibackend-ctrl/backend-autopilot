@@ -55,8 +55,8 @@ async function installTargetDependencies(workspace:string,job:ExecutionJob,comma
 }
 async function gradleToolchainVersions(workspace:string,job:ExecutionJob,commands:CommandRunner){
   try{
-    const result=await commands.run({command:'./gradlew',args:['--version','--no-daemon','--console=plain'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
-    const pick=(label:string)=>result.stdout.match(new RegExp(`^${label}\\s*:\\s*(\\S+)`,'m'))?.[1];
+    const result=await commands.run({command:join(workspace,'gradlew'),args:['--version','--no-daemon','--console=plain'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
+    const pick=(label:string)=>result.stdout.match(new RegExp(`^${label}\\s*:?\\s*(\\S+)`,'m'))?.[1];
     return {gradle:pick('Gradle'),kotlin:pick('Kotlin'),jvm:pick('JVM')};
   }catch{return undefined;}
 }

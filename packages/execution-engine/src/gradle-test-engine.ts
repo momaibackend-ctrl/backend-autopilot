@@ -1,8 +1,11 @@
+import { join } from 'node:path';
 import type { Clock } from '../../core/src/ports.js';
 import type { ImplementationPlan, TestReport } from '../../schemas/src/index.js';
 import type { CommandRunner } from './command-runner.js';
 
-const gradlewCommand = (workspace: string) => (process.platform === 'win32' ? `${workspace}\\gradlew.bat` : './gradlew');
+// Absolute path, not a relative "./gradlew" -- avoids depending on whether the spawned
+// process's relative-path resolution happens before or after `cwd` is applied.
+const gradlewCommand = (workspace: string) => join(workspace, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
 
 // Real Kotlin/JVM projects run their full test suite through one `test` task rather than
 // Node's one-file-per-suite-type convention, so every required suite type is attributed to a

@@ -6,7 +6,8 @@ const allowed:Record<string,CommandCategory>={node:'TEST',pnpm:'BUILD',npm:'BUIL
 const gradleTaskIsTest=(task:string)=>task==='test'||task==='check'||/test$/i.test(task);
 export class CommandPolicy {
   classify(command:string,args:string[]):CommandCategory{
-    const name=command.toLowerCase().replace(/\.exe$|\.bat$/,'').replace(/^\.\//,'');
+    const base=command.split(/[\\/]/).pop()??command;
+    const name=base.toLowerCase().replace(/\.exe$|\.bat$/,'');
     if(destructive.has(name))return 'DESTRUCTIVE';
     if(args.some(a=>/[;&|><`]/.test(a)))return 'UNKNOWN';
     if(name==='git'&&['push','fetch','pull','clone','ls-remote'].includes(args[0]??''))return 'NETWORK';
