@@ -11,11 +11,14 @@ const pool=new Pool({connectionString});
 try {
   const directory=join(dirname(fileURLToPath(import.meta.url)),'../packages/project-registry/migrations');
   const migrations=(await readdir(directory)).filter(name=>/^\d+_.+\.sql$/.test(name)).sort();
+  const applied:{key:string;checksum:string;migration:string}[]=[];
   for(const migration of migrations){
     const sql=await readFile(join(directory,migration),'utf8');
     await pool.query(sql);
     const key=`schema:${migration.replace(/\.sql$/,'')}`,checksum=createHash('sha256').update(sql).digest('hex');
-    await pool.query('insert into migration_markers(key,checksum,data,created_at) values($1,$2,$3,now()) on conflict(key) do update set checksum=excluded.checksum,data=excluded.data',[key,checksum,{migration,platformVersion:'0.5.0'}]);
+    applied.push({key,checksum,migration});
+    const markerTable=await pool.query<{exists:string|null}>("select to_regclass('public.migration_markers')::text as exists");
+    if(markerTable.rows[0]?.exists)for(const item of applied)await pool.query('insert into migration_markers(key,checksum,data,created_at) values($1,$2,$3,now()) on conflict(key) do update set checksum=excluded.checksum,data=excluded.data',[item.key,item.checksum,{migration:item.migration,platformVersion:'0.5.0'}]);
     console.log(JSON.stringify({level:'info',event:'migration.complete',migration:migration.replace(/\.sql$/,'')}));
   }
 } finally { await pool.end(); }
