@@ -34,6 +34,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: pnpm install --frozen-lockfile
       - name: Execute durable job
         run: pnpm execution:job -- --job "$AUTOPILOT_JOB_ID"

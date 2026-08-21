@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type {
   StateStore,
   Clock,
@@ -437,7 +438,9 @@ export class AutopilotService {
           {
             contracts: apiFiles.map((c) => ({
               path: c.path,
-              document: JSON.parse(c.content),
+              document: /\.ya?ml$/i.test(c.path)
+                ? parseYaml(c.content)
+                : JSON.parse(c.content),
             })),
           },
           task.id,
