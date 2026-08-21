@@ -3,9 +3,9 @@
 ```text
 External AI / future Internal AgentRuntime
                     |
-        MCP / CLI / HTTP / Operator Console
+   HTTP MCP / CLI / HTTP / Operator Console
                     |
-             AutopilotService
+       AutopilotService + SuperadminService
        +------------+-------------+
        |            |             |
  Project/Resource  Context    Workflow + Dependency
@@ -24,7 +24,7 @@ External AI / future Internal AgentRuntime
           StateStore port -> PostgreSQL
 ```
 
-`AutopilotService` is the application boundary shared by MCP, CLI and HTTP. Domain contracts are Zod schemas and inferred TypeScript types. PostgreSQL is control-plane storage; Git workspace execution, target test runners, target databases, GitHub, Supabase, task sources, LLMs and secret stores are adapters behind ports.
+`AutopilotService` is the project lifecycle boundary shared by MCP, CLI and HTTP. `SuperadminService` composes the same ports and services for global administration, enforces the `SUPERADMIN` principal role, owns mutation idempotency and emits one `mcp.<tool>` audit event per semantic change. Superadmin bypasses membership lookup only: it never bypasses resource ownership, PolicyEngine, command policy, formal READY gates, immutable evidence or production denial. Domain contracts are Zod schemas and inferred TypeScript types. PostgreSQL is control-plane storage; Git workspace execution, target test runners, target databases, GitHub, Supabase, task sources, LLMs and secret stores are adapters behind ports.
 
 `SandboxBootstrapService` is a separate application boundary for external provisioning. It requires `AUTONOMOUS_STAGING`, dedicated account/organization resources, semantic provider calls, idempotency IDs, manifest artifacts and `resource_created` audit events. It cannot provision production.
 
@@ -48,7 +48,7 @@ Projects, resources, context versions, tasks, transitions, runs, artifacts and a
 
 Before an external PostgreSQL control plane is available, the Dockerless bootstrap registry persists the same `StateStore` contract in `.autopilot/state.json`; it contains no secret values. `DotEnvSecretProvider` separately stores replaceable runtime secrets in the ignored `.env`. With `DATABASE_URL`, runtime automatically composes the PostgreSQL store.
 
-The remote v0.4 deployment uses Supabase Postgres and has no persistent filesystem workspace. A repeat-safe checksummed migration imports the existing credential-free state in one transaction without modifying its source. Every GitHub Actions run creates an ephemeral target checkout from the registered repository identity and restores the persisted task branch/exact SHA for repair.
+The remote v0.5 deployment uses Supabase Postgres and has no persistent filesystem workspace. Repeat-safe checksummed migrations also populate `migration_markers`. `admin_operations` provides operation-ID replay protection; `system_settings` and `console_screens` are server-driven semantic configuration. Every GitHub Actions run creates an ephemeral target checkout from the registered repository identity and restores the persisted task branch/exact SHA for repair.
 
 ## Provider bootstrap
 
@@ -60,7 +60,7 @@ Add an adapter implementing the appropriate port; never import provider types in
 
 Architecture decisions are in `docs/adr/`.
 
-## Remote runtime v0.4
+## Remote runtime v0.5
 
 ```text
 Browser (GitHub Pages static export)
@@ -79,6 +79,8 @@ AutopilotService -> PolicyEngine -> durable ExecutionJob
 ```
 
 The browser never receives a service-role key, GitHub credential, target secret or direct table policy. Edge validates the Supabase JWT and operator/project membership before using its service role. Polling every five seconds reads durable state; large artifact bodies are hydrated from the private bucket by the server-side adapter.
+
+The HTTP MCP has two distinct credentials. The ordinary token creates a `PROJECT_OPERATOR` principal restricted to an explicit project ID list. The dedicated superadmin token creates a `SUPERADMIN` principal and is never accepted by the browser. Operator Console users have persisted `OPERATOR`/`SUPERADMIN` roles; only the latter may skip membership checks. Dashboard aggregation is membership-filtered for ordinary operators.
 
 Remote source and deployment are GitHub-driven. Pages and Edge are short-lived/serverless. Execution runs only in fixed GitHub Actions workflows, and workflow inputs contain a job UUID rather than repository paths, URLs or credentials. Database claim/lease and operation-id uniqueness prevent duplicate concurrent work; scheduled reconciliation handles lost callbacks without an always-on worker.
 

@@ -81,6 +81,11 @@ type Overview = {
   projects: ProjectCard[];
   events: Audit[];
 };
+type ScreenBlock=
+  | {id:string;type:"TEXT";title:string;content:string}
+  | {id:string;type:"METRIC";title:string;value:string|number|boolean;note:string}
+  | {id:string;type:"JSON";title:string;value:unknown};
+type ScreenConfig={screenId:string;title:string;description:string;enabled:boolean;blocks:ScreenBlock[]};
 const api = "/v1/console";
 function usePolling<T>(path: string) {
   const [data, setData] = useState<T>();
@@ -113,17 +118,21 @@ function usePolling<T>(path: string) {
 }
 export function ConsoleSection({ section }: { section: string }) {
   const { data, error, reload } = usePolling<Overview>("/overview");
+  const screen = useOptionalScreen(section.toLowerCase());
   if (error) return <ErrorState message={error} retry={reload} />;
   if (!data) return <Loading />;
   const normalized = section.toLowerCase();
   return (
     <div className="page">
-      <Title title={label(normalized)} subtitle={subtitle(normalized)} />
+      <Title title={screen?.title??label(normalized)} subtitle={screen?.description??subtitle(normalized)} />
+      {screen&&<ConfiguredBlocks blocks={screen.blocks}/>}
       {normalized === "dashboard" && <Dashboard data={data} />}{" "}
       {normalized === "projects" && <Projects projects={data.projects} />}{" "}
       {normalized === "tasks" && <Tasks projects={data.projects} />}{" "}
       {normalized === "runs" && <Runs projects={data.projects} />}{" "}
       {normalized === "validation" && <Validation projects={data.projects} />}{" "}
+      {normalized === "api-explorer" && <GlobalApiExplorer projects={data.projects} />}{" "}
+      {normalized === "database" && <GlobalDatabase projects={data.projects} />}{" "}
       {normalized === "infrastructure" && (
         <Infrastructure projects={data.projects} />
       )}{" "}
@@ -136,6 +145,8 @@ export function ConsoleSection({ section }: { section: string }) {
     </div>
   );
 }
+function useOptionalScreen(screenId:string){const [value,setValue]=useState<ScreenConfig>();useEffect(()=>{let active=true;const load=()=>authorizedFetch(`${api}/screens/${screenId}`,{cache:"no-store"}).then(async response=>{if(response.ok&&active)setValue(await response.json() as ScreenConfig);}).catch(()=>undefined);void load();const timer=setInterval(()=>void load(),5_000);return()=>{active=false;clearInterval(timer);};},[screenId]);return value;}
+function ConfiguredBlocks({blocks}:{blocks:ScreenBlock[]}){if(!blocks.length)return null;return <div className="configuredBlocks">{blocks.map(block=>block.type==="TEXT"?<Panel key={block.id} title={block.title}><p>{block.content}</p></Panel>:block.type==="METRIC"?<div className="metric" key={block.id}><span>{block.title}</span><strong>{String(block.value)}</strong><small>{block.note}</small></div>:<Panel key={block.id} title={block.title}><JsonView value={block.value}/></Panel>)}</div>;}
 function Dashboard({ data }: { data: Overview }) {
   const providerCount = new Set(
     data.projects.flatMap((project) =>
@@ -474,6 +485,10 @@ function Infrastructure({ projects }: { projects: ProjectCard[] }) {
     </div>
   );
 }
+function GlobalApiExplorer({projects}:{projects:ProjectCard[]}){return <div className="stack">{projects.map(project=><ProjectApiExplorer key={project.id} project={project}/>)}</div>;}
+function ProjectApiExplorer({project}:{project:ProjectCard}){const {data}=usePolling<Json>(`/projects/${project.id}`);if(!data)return <Loading small/>;return <Panel title={project.name}><ApiExplorer api={(data.api??{}) as Json} resources={(data.resources??[]) as Json[]} projectId={project.id} tasks={(data.tasks??[]) as Task[]}/></Panel>;}
+function GlobalDatabase({projects}:{projects:ProjectCard[]}){return <div className="stack">{projects.map(project=><ProjectDatabase key={project.id} project={project}/>)}</div>;}
+function ProjectDatabase({project}:{project:ProjectCard}){const {data}=usePolling<Json>(`/projects/${project.id}`);return <Panel title={project.name}>{data?<DatabasePanel value={(data.database??{}) as Json}/>:<Loading small/>}</Panel>;}
 function InfrastructureCard({ project }: { project: ProjectCard }) {
   const { data } = usePolling<Json>(`/projects/${project.id}`);
   const resources = (data?.resources ?? []) as Json[];

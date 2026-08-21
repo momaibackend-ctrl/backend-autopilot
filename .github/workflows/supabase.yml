@@ -1,7 +1,7 @@
 name: Deploy Supabase control plane
 on:
   push:
-    branches: [autopilot/v0.4-remote-runtime, main]
+    branches: [autopilot/v0.5-superadmin-mcp, main]
     paths: ["supabase/**", "packages/project-registry/migrations/**", ".github/workflows/supabase.yml"]
   workflow_dispatch:
 
@@ -21,6 +21,7 @@ jobs:
       SUPABASE_PROJECT_ID: qtyfdzjzmgxtrarpgcmn
       AUTOPILOT_GITHUB_DISPATCH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       AUTOPILOT_MCP_TOKEN: ${{ secrets.AUTOPILOT_MCP_TOKEN }}
+      AUTOPILOT_SUPERADMIN_MCP_TOKEN: ${{ secrets.AUTOPILOT_SUPERADMIN_MCP_TOKEN }}
       AUTOPILOT_RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -37,11 +38,15 @@ jobs:
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
           AUTOPILOT_GITHUB_DISPATCH_TOKEN="$AUTOPILOT_GITHUB_DISPATCH_TOKEN"
           AUTOPILOT_CONTROL_REPOSITORY="momaibackend-ctrl/backend-autopilot"
-          AUTOPILOT_CONTROL_REF="autopilot/v0.4-remote-runtime"
+          AUTOPILOT_CONTROL_REF="autopilot/v0.5-superadmin-mcp"
+          AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
+          AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"
           AUTOPILOT_OPERATOR_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_MCP_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_CONSOLE_ORIGINS="https://momaibackend-ctrl.github.io"
           AUTOPILOT_MCP_TOKEN="$AUTOPILOT_MCP_TOKEN"
+          AUTOPILOT_SUPERADMIN_MCP_TOKEN="$AUTOPILOT_SUPERADMIN_MCP_TOKEN"
+          AUTOPILOT_SUPERADMIN_MCP_ACTOR="momaibackend-ctrl-superadmin"
           AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"
       - run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"

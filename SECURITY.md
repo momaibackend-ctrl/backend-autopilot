@@ -17,8 +17,12 @@
 - IPv4-only sandbox hosts use the official Supavisor session pooler with encrypted `sslmode=require` semantics. CA-pinned `verify-full` remains preferred when the provider certificate is available; production autonomy remains unsupported.
 - Repository/database deletion requires a separate semantic tool plus a resource-bound confirmation object.
 - Capability status distinguishes implemented, configured and live-tested behavior; mocks can never produce live evidence.
+- `SUPERADMIN` bypasses project membership only. It still crosses the same PolicyEngine/resource/workflow/command boundaries, and its credential is distinct from project-scoped MCP and browser Auth.
+- Every superadmin mutation is Zod-validated, operation-ID idempotent and audited as `mcp.<tool>` after recursive secret redaction. Dangerous mutations require typed confirmations and exact object identities.
+- Generic resource administration cannot create or rebind Git/GitHub resources. That authority remains in the dedicated provider identity and exact-repository verification flow.
+- Server-driven Console configuration accepts only escaped `TEXT`, `METRIC` and `JSON` blocks; it cannot name source files or supply HTML/JavaScript.
 
-Security tests cover production disablement, prompt injection, command injection, sensitive argument redaction, migration destruction, provider naming/identity guards, unknown resources, artifact isolation and cross-project repository use.
+Security tests cover production disablement, prompt injection, command injection, sensitive argument redaction, migration destruction, provider naming/identity guards, unknown resources, artifact isolation, cross-project repository use, global superadmin membership behavior, immutable safety settings, forbidden Git binding, forbidden direct READY, MCP audit coverage and idempotent replay.
 
 ## Operator Console controls
 

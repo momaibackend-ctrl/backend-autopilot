@@ -1,8 +1,8 @@
-# Backend Autopilot v0.4
+# Backend Autopilot v0.5
 
 Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a Momna backend and never discovers or trusts existing external resources automatically.
 
-v0.4 moves the production runtime off the developer workstation. The static Operator Console uses Supabase Auth and an authenticated Edge Control API; durable state and artifacts live in Supabase; semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
+v0.5 adds a dedicated `SUPERADMIN` application boundary and authenticated HTTP MCP surface. A superadmin can administer every project and the server-driven Operator Console without project membership, while resource allowlisting, PolicyEngine, secret redaction and the hard production-write denial remain mandatory. The static Console uses Supabase Auth and an authenticated Edge Control API; durable state and artifacts live in Supabase; semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
 
 ## Remote deployment
 
@@ -29,7 +29,7 @@ For local development, open [http://localhost:3000](http://localhost:3000). The 
 
 `pnpm pages:e2e` is the reproducible live browser gate. It requires explicit sandbox URL/ref, the permanent operator email list, and existing gitignored credential references. It creates a confirmed one-use Supabase Auth identity, verifies Pages → Auth → Edge API → live Postgres state, then deletes the identity and restores the permanent allowlist even when the test fails.
 
-The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
+The navigation and safe text/metric/JSON blocks for Dashboard, Projects, Tasks, Runs, Validation Center, API Explorer, Database, Infrastructure, Artifacts, Audit, Capabilities, Settings, and future screens are persisted `ConsoleScreen` objects. `superadmin_screen_*` tools update those objects through the domain layer; the browser never edits or evaluates source code or HTML. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 
 Validation suites: `SMOKE`, `CRUD`, `AUTHENTICATION`, `AUTHORIZATION`, `RLS`, `REGRESSION`, and `FULL`. The API Explorer is generated from persisted OpenAPI artifacts. Request Runner and saved scenarios require an explicitly registered, non-production `HTTP_API` resource. Browser credentials and production validation are technically rejected.
 
@@ -94,7 +94,7 @@ Production MCP is an authenticated, stateless Streamable HTTP endpoint:
 
 ```text
 https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
-Authorization: Bearer <AUTOPILOT_MCP_TOKEN>
+Authorization: Bearer <AUTOPILOT_SUPERADMIN_MCP_TOKEN>
 ```
 
 Local stdio remains available for development:
@@ -110,7 +110,15 @@ Local stdio remains available for development:
 }
 ```
 
-The MCP surface has semantic operations only. External provisioning requires explicit sandbox account resources; deletion requires separate destructive tools and matching confirmation objects. See [MCP_CONTRACT.md](MCP_CONTRACT.md).
+The separate superadmin credential activates 83 semantic tools, including complete project/task/job/run/artifact/scenario/validation/settings/screen/operator/membership administration and `superadmin_system_overview`. The ordinary project token remains project-scoped. External provisioning still requires explicit sandbox resources; destructive operations require operation IDs, exact object identity, confirmation enums and a reason. There is no shell, SQL console, filesystem path or arbitrary repository URL tool. See [MCP_CONTRACT.md](MCP_CONTRACT.md).
+
+The deployed end-to-end proof is invoked only against HTTPS MCP and the live Pages Console:
+
+```bash
+pnpm superadmin:remote:e2e
+```
+
+It creates and edits temporary entities, drives a real task through the durable GitHub runner to `READY`, reads job/run/artifact/audit evidence, changes the Dashboard through `superadmin_screen_upsert`, verifies the rendered value in a real browser, then tombstones/archive-cleans the temporary control-plane records and deletes the temporary sandbox branch.
 
 ## Verification
 

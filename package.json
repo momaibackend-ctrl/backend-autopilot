@@ -1,6 +1,6 @@
 {
   "name": "backend-autopilot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.32.1",
@@ -16,6 +16,7 @@
     "execution:job": "tsx scripts/run-execution-job.ts",
     "remote:e2e": "tsx scripts/remote-e2e.ts",
     "pages:e2e": "tsx scripts/pages-e2e.ts",
+    "superadmin:remote:e2e": "tsx scripts/superadmin-remote-e2e.ts",
     "mcp": "tsx apps/mcp-server/src/main.ts",
     "autopilot": "tsx apps/cli/src/main.ts",
     "db:migrate": "tsx scripts/migrate.ts",

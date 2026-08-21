@@ -1,7 +1,7 @@
 name: Deploy Operator Console to GitHub Pages
 on:
   push:
-    branches: [autopilot/v0.4-remote-runtime, main]
+    branches: [autopilot/v0.5-superadmin-mcp, main]
     paths: ["apps/operator-console/**", "pnpm-lock.yaml", ".github/workflows/pages.yml"]
   workflow_dispatch:
 

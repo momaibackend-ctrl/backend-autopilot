@@ -34,6 +34,7 @@ const project: Project = {
   updatedAt: now,
 };
 await store.createProject(project);
+await store.upsertConsoleScreen({screenId:"dashboard",navigationLabel:"Dashboard",title:"Dashboard",description:"System-wide delivery state",enabled:true,navigationOrder:10,blocks:[{id:"semantic-proof",type:"TEXT",title:"Superadmin MCP",content:"Console content is loaded through the semantic screen configuration layer."}],updatedAt:now,updatedBy:"browser-e2e"});
 const resources: Array<Omit<Resource, "resourceId" | "createdAt">> = [
   {
     type: "GITHUB_REPOSITORY",

@@ -4,11 +4,15 @@
 
 Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Without `DATABASE_URL`, the durable bootstrap registry uses the gitignored `.autopilot/state.json`. If an external control-plane URL is configured, run `pnpm db:migrate` before restart.
 
+For remote MCP, `401` means the bearer does not match either deployed token. Confirm only the reference exists locally; never print it. `403` from a `superadmin_*` tool means the authenticated principal is not `SUPERADMIN`, while a typed policy or `NOT_SUPPORTED` response means the requested semantic operation violates a preserved safety invariant. Use `superadmin_system_overview` to inspect deployment, migrations, jobs, failed gates and recent errors without mutating state.
+
 ## Operator Console will not load
 
 Run `pnpm dev` and open `http://localhost:3000` (use `localhost`, not a different host alias). Confirm `http://127.0.0.1:4310/health` responds. Next proxies `/api/control/*`; the browser must never be configured with provider tokens. If the shell appears but data does not, inspect the redacted API log and use the Retry button.
 
 For the remote service, check GitHub Pages deployment, Supabase Function logs, and authenticated `control-api/health`. `401` means the Supabase session is absent or invalid; `403` means the operator or project membership is not allowlisted. Diagnose execution through its durable job/run and Actions URL. Invoke reconciliation after a cancelled or timed-out job that could not write its callback.
+
+Console navigation/content is persisted, not compiled into the UI. Diagnose it with `superadmin_screen_list`/`superadmin_screen_get`; restore a screen through `superadmin_screen_upsert` using a new operation ID. Only typed text/metric/JSON blocks are valid.
 
 ## Remote boot or redeploy fails
 
@@ -49,3 +53,5 @@ Use `task_status`. Resolve dependencies/open failures. Automatic repairs stop af
 ## E2E diagnosis
 
 Run `pnpm test:e2e`. The test uses an OS temporary directory and leaves no external resources. Run each suite with `node --test <file>` inside the generated demo only while debugging.
+
+For the deployed v0.5 gate, run `pnpm superadmin:remote:e2e`. It requires the ignored local superadmin and GitHub sandbox credentials, calls only the HTTPS MCP for control-plane operations, waits for the durable Actions job, checks the live Pages Console in Chromium and cleans temporary records/branch in `finally`. If cleanup fails, the command reports the exact object IDs; retry only the corresponding semantic tombstone/archive operation and never edit tables directly.

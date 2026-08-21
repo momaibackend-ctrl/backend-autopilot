@@ -20,7 +20,7 @@ The repository and Supabase project existed before registration; Backend Autopil
 | GitHub Pages | static Operator Console | `https://momaibackend-ctrl.github.io/backend-autopilot/` | control-plane staging | active; HTTPS enforced; workflow run `32480823254` passed |
 | Supabase | Auth / Postgres / Storage / Edge | `qtyfdzjzmgxtrarpgcmn` | control-plane sandbox | active |
 | Supabase Edge | Control API | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api` | control-plane sandbox | active |
-| Supabase Edge | HTTP MCP | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp` | control-plane sandbox | active |
+| Supabase Edge | HTTP MCP v0.5 | `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp` | control-plane sandbox | semantic SUPERADMIN surface; no shell/SQL/path |
 | GitHub Actions | ephemeral execution | `autopilot-execution.yml` | sandbox targets only | configured |
 
-The source repository was used only after `gh auth status` and `gh api user` both proved that `momaibackend-ctrl` was active with `ADMIN` authority. Stored accounts including `oopsie-star` were not logged out or modified. The published Console passed a live browser path through Supabase Auth and the authenticated Edge Control API; its temporary test identity and memberships were removed afterward. There is no persistent execution volume or always-on application service.
+The source repository is mutated only after `gh auth status` and `gh api user` both prove that `momaibackend-ctrl` is active with `ADMIN` authority. Stored accounts including `oopsie-star` are never logged out or modified. The published Console and HTTP MCP have separate authentication boundaries. There is no persistent execution volume or always-on application service.

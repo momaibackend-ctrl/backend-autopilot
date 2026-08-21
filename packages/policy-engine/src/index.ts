@@ -29,7 +29,7 @@ export class PolicyEngine {
   async authorize(request: AuthorizationRequest): Promise<void> {
     if (request.project.autonomyMode === "AUTONOMOUS_PRODUCTION")
       throw new UnsupportedOperation(
-        "AUTONOMOUS_PRODUCTION is technically disabled in v0.4",
+        "AUTONOMOUS_PRODUCTION is technically disabled in v0.5",
       );
     if (
       request.action === "EXECUTE" &&
@@ -51,7 +51,7 @@ export class PolicyEngine {
       request.action !== "ARTIFACT_READ"
     )
       throw new UnsupportedOperation(
-        "Production mutation is not supported in v0.4",
+        "Production mutation is not supported in v0.5",
       );
     if (request.resourceId) {
       const resource = await this.store.getResource(request.resourceId);

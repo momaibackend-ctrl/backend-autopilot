@@ -74,6 +74,9 @@ export function buildControlApi(
     (request) => service.taskList(request.params.projectId),
   );
   app.get("/v1/console/overview", () => consoleService().overview());
+  app.get("/v1/console/screens",()=>consoleService().screenList());
+  app.get<{Params:{screenId:string}}>("/v1/console/screens/:screenId",request=>consoleService().screenGet(request.params.screenId));
+  app.get("/v1/console/settings",()=>consoleService().settings());
   app.get<{ Params: { projectId: string } }>(
     "/v1/console/projects/:projectId",
     (request) => consoleService().project(request.params.projectId),

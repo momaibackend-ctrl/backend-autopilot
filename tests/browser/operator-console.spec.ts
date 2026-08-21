@@ -9,6 +9,8 @@ test("operator understands LIVE-1 lifecycle and runs validation without a termin
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible({
     timeout: 20_000,
   });
+  await expect(page.getByRole("heading",{name:"Superadmin MCP"})).toBeVisible();
+  await expect(page.getByText("Console content is loaded through the semantic screen configuration layer.")).toBeVisible();
   await expect(
     page.getByText("Backend Autopilot Live Sandbox").first(),
   ).toBeVisible();

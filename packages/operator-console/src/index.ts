@@ -84,6 +84,9 @@ export class OperatorConsoleService {
     this.audit = new AuditLog(deps.store, deps.ids, deps.clock);
     this.policy = new PolicyEngine(deps.store);
   }
+  screenList(){return this.deps.store.listConsoleScreens();}
+  async screenGet(screenId:string){const value=await this.deps.store.getConsoleScreen(screenId);if(!value)throw new NotFound("Console screen not found");return value;}
+  settings(){return this.deps.store.listSystemSettings();}
   async overview() {
     const projects = await this.deps.service.projectList();
     const views = await Promise.all(

@@ -1,6 +1,6 @@
 # Setup required
 
-No immediate infrastructure setup is required for the v0.4 sandbox runtime. The owner explicitly made `momaibackend-ctrl/backend-autopilot` public, GitHub Pages is active with enforced HTTPS, and Supabase plus GitHub Actions are deployed.
+No immediate human infrastructure setup is required for the v0.5 sandbox runtime. The owner explicitly made `momaibackend-ctrl/backend-autopilot` public, GitHub Pages is active with enforced HTTPS, and Supabase plus GitHub Actions are deployed. The superadmin bearer is generated locally, kept in the ignored `.env`, and deployed only to GitHub Actions/Supabase Edge secret stores.
 
 The sandbox Supabase project and GitHub Actions use the already authorized `momaibackend-ctrl` identity and project `qtyfdzjzmgxtrarpgcmn`. Other stored GitHub accounts were not logged out or modified.
 

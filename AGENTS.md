@@ -14,6 +14,8 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 6. `AUTONOMOUS_PRODUCTION` remains a hard `NOT_SUPPORTED`. Do not add flags, hidden routes or adapter calls that bypass it.
 7. A task is not `READY` until implementation, ArchitectureGuard, required tests, IndependentReview, and mandatory artifacts all pass.
 8. Never run `gh auth logout`. Add a dedicated account through official web login, explicitly switch it active, compare it with the expected login, and register an existing repository only after exact `owner/name`, private visibility, owner, and `ADMIN` checks.
+9. `SUPERADMIN` skips project membership only. It never skips PolicyEngine, Resource Registry, command policy, READY gates, redaction, audit, or the production-write hard stop.
+10. Superadmin MCP additions must be semantic Zod tools backed by `SuperadminService`, use operation-ID idempotency, and emit `mcp.<tool>` audit. Do not expose SQL, shell, paths, arbitrary URLs, source editing, or generic Git binding.
 
 ## Code map
 
@@ -26,6 +28,7 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 - `packages/execution-engine`: file changes, command policy, tests and independent review.
 - `packages/adapters`: provider edges; Core must not depend on provider-specific types.
 - `packages/operator-console`: server-side console read models and semantic validation operations; it may compose Core ports but must not redefine readiness.
+- `packages/superadmin`: global semantic administration, mutation idempotency and MCP audit; it may bypass membership only.
 - `packages/adapters/design-source` and `packages/adapters/frontend-task-source`: future full-product assembly boundaries; no Figma/customer coupling in Core.
 - `apps/operator-console`: Next.js presentation only. It must never read state files, databases, Git or provider APIs directly.
 - `apps`: thin MCP, CLI, API and worker entrypoints. Business logic does not belong here.

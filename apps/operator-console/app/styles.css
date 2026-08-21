@@ -599,6 +599,7 @@ button:disabled {
   padding-left: 18px;
   line-height: 1.9;
 }
+.configuredBlocks{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:16px}.configuredBlocks>.panel,.configuredBlocks>.metric{margin:0}.configuredBlocks p{white-space:pre-wrap;overflow-wrap:anywhere}
 .filterBar {
   display: flex;
   align-items: end;

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 export const PlatformVersions = {
-  platform: "0.4.0",
-  workflow: "3",
-  policy: "3",
+  platform: "0.5.0",
+  workflow: "4",
+  policy: "4",
   context: "1",
-  artifact: "4",
+  artifact: "5",
 } as const;
 
 export const autonomyModeSchema = z.enum([
@@ -44,6 +44,7 @@ export const projectSchema = z.object({
   repository: repositoryIdentitySchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  deletedAt: z.string().datetime().optional(),
 });
 export type Project = z.infer<typeof projectSchema>;
 export const projectCreateSchema = projectSchema.pick({
@@ -88,7 +89,7 @@ export const resourceSchema = z.object({
   projectId: z.string().uuid(),
   environment: environmentSchema,
   permissions: z.array(resourcePermissionSchema).min(1),
-  status: z.enum(["ACTIVE", "DISABLED"]),
+  status: z.enum(["ACTIVE", "DISABLED", "DELETED"]),
   secretRefs: z.array(secretRefSchema).default([]),
   createdAt: z.string().datetime(),
 });
@@ -137,6 +138,7 @@ export const projectContextSchema = z.object({
   version: z.string(),
   sections: z.array(contextSectionSchema),
   createdAt: z.string().datetime(),
+  deletedAt: z.string().datetime().optional(),
 });
 export type ProjectContext = z.infer<typeof projectContextSchema>;
 
@@ -176,6 +178,7 @@ export const taskSchema = z.object({
   repairAttempts: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  deletedAt: z.string().datetime().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 export const taskCreateSchema = taskSchema.pick({
@@ -414,6 +417,8 @@ export const artifactKindSchema = z.enum([
   "SECRETS_MANIFEST",
   "INFRASTRUCTURE_MANIFEST",
   "BOOTSTRAP_REPORT",
+  "ADMIN_NOTE",
+  "CONSOLE_SNAPSHOT",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({
@@ -442,7 +447,7 @@ export const runSchema = z.object({
   projectId: z.string().uuid(),
   taskId: z.string().uuid(),
   operationId: z.string(),
-  status: z.enum(["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED"]),
+  status: z.enum(["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"]),
   baseCommit: z.string().optional(),
   commitSha: z.string().optional(),
   branch: z.string().optional(),
@@ -452,6 +457,7 @@ export const runSchema = z.object({
   contextVersion: z.string().optional(),
   startedAt: z.string().datetime(),
   finishedAt: z.string().datetime().optional(),
+  deletedAt: z.string().datetime().optional(),
 });
 export type Run = z.infer<typeof runSchema>;
 
@@ -622,3 +628,131 @@ export const destructiveAuthorizationSchema = z.object({
 export type DestructiveAuthorization = z.infer<
   typeof destructiveAuthorizationSchema
 >;
+
+export const principalRoleSchema = z.enum(["PROJECT_OPERATOR", "SUPERADMIN"]);
+export type PrincipalRole = z.infer<typeof principalRoleSchema>;
+export const operatorRoleSchema = z.enum(["OPERATOR", "SUPERADMIN"]);
+export const membershipRoleSchema = z.enum(["VIEWER", "OPERATOR", "ADMIN"]);
+export const operatorSchema = z.object({
+  userId: z.string().uuid(),
+  email: z.string().email(),
+  role: operatorRoleSchema,
+  status: z.enum(["ACTIVE", "DISABLED"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type Operator = z.infer<typeof operatorSchema>;
+export const projectMembershipSchema = z.object({
+  userId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  role: membershipRoleSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type ProjectMembership = z.infer<typeof projectMembershipSchema>;
+
+export const systemSettingSchema = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9_.-]{2,127}$/),
+  value: z.unknown(),
+  description: z.string().max(500).default(""),
+  visibility: z.enum(["PUBLIC", "OPERATOR", "SUPERADMIN"]),
+  updatedAt: z.string().datetime(),
+  updatedBy: z.string().min(1),
+});
+export type SystemSetting = z.infer<typeof systemSettingSchema>;
+
+export const consoleBlockSchema = z.discriminatedUnion("type", [
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    type: z.literal("TEXT"),
+    title: z.string().max(120),
+    content: z.string().max(10_000),
+  }),
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    type: z.literal("METRIC"),
+    title: z.string().max(120),
+    value: z.union([z.string().max(500), z.number(), z.boolean()]),
+    note: z.string().max(500).default(""),
+  }),
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    type: z.literal("JSON"),
+    title: z.string().max(120),
+    value: z.unknown(),
+  }),
+]);
+export const consoleScreenSchema = z.object({
+  screenId: z.string().regex(/^[a-z][a-z0-9-]{1,63}$/),
+  navigationLabel: z.string().min(1).max(80),
+  title: z.string().min(1).max(120),
+  description: z.string().max(500).default(""),
+  enabled: z.boolean(),
+  navigationOrder: z.number().int().min(0).max(10_000),
+  blocks: z.array(consoleBlockSchema).max(50),
+  updatedAt: z.string().datetime(),
+  updatedBy: z.string().min(1),
+});
+export type ConsoleScreen = z.infer<typeof consoleScreenSchema>;
+
+export const adminOperationSchema = z.object({
+  operationId: z.string().min(8).max(200),
+  actor: z.string().min(1),
+  tool: z.string().regex(/^[a-z][a-z0-9_]{2,127}$/),
+  projectId: z.string().uuid().optional(),
+  result: z.unknown(),
+  createdAt: z.string().datetime(),
+});
+export type AdminOperation = z.infer<typeof adminOperationSchema>;
+export const migrationMarkerSchema = z.object({
+  key: z.string(),
+  checksum: z.string(),
+  data: z.unknown(),
+  createdAt: z.string().datetime(),
+});
+export type MigrationMarker = z.infer<typeof migrationMarkerSchema>;
+
+export const projectUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  status: z.enum(["ACTIVE", "SUSPENDED", "ARCHIVED"]).optional(),
+  autonomyMode: autonomyModeSchema.optional(),
+  sourceType: z.string().min(1).optional(),
+}).strict();
+export const taskUpdateSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  requirements: z.array(z.string()).optional(),
+  relationships: z.array(taskRelationshipSchema).optional(),
+}).strict();
+export const resourceUpdateSchema = z.object({
+  status: z.enum(["ACTIVE", "DISABLED"]).optional(),
+  permissions: z.array(resourcePermissionSchema).min(1).optional(),
+  secretRefs: z.array(secretRefSchema).optional(),
+}).strict();
+export const consoleScreenUpsertSchema = consoleScreenSchema.omit({
+  updatedAt: true,
+  updatedBy: true,
+});
+export const systemSettingUpsertSchema = systemSettingSchema.omit({
+  updatedAt: true,
+  updatedBy: true,
+});
+export const confirmedDeleteSchema = z.object({
+  operationId: z.string().min(8),
+  confirmation: z.enum([
+    "ARCHIVE_PROJECT",
+    "DELETE_TASK",
+    "DELETE_RESOURCE",
+    "DELETE_CONTEXT",
+    "DELETE_ARTIFACT",
+    "DELETE_RUN",
+    "CANCEL_JOB",
+    "DELETE_SCENARIO",
+    "DELETE_VALIDATION",
+    "DELETE_SETTING",
+    "DELETE_SCREEN",
+    "DELETE_MEMBERSHIP",
+    "DELETE_OPERATOR",
+  ]),
+  reason: z.string().min(8).max(500),
+});

@@ -1,43 +1,59 @@
-# MCP contract v0.4
+# MCP contract v0.5
 
-Local stdio remains compatible with the v0.3 semantic surface. Production uses authenticated stateless Streamable HTTP at `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp`. It never exposes a shell or starts subprocesses; execution tools return durable job/run identities.
+The deployed endpoint is authenticated stateless Streamable HTTP:
 
-The remote surface implements: `system_health`, `project_list`, `project_get`, `resource_list`, `resource_register`, `context_get`, `context_import`, `task_create`, `task_get`, `task_list`, `task_analyze`, `task_plan`, `task_execute`, `task_review`, `task_retry`, `task_status`, `artifact_list`, `artifact_read`, `run_list`, `run_get`, `job_list`, `job_get`, `project_snapshot`, and `runtime_status`. Read-only and mutating tools have MCP annotations; `task_execute` is explicitly idempotent and accepts only an allowlisted resource UUID plus a structured change set.
+```text
+POST https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+Authorization: Bearer <token>
+Accept: application/json, text/event-stream
+```
 
-All inputs are Zod-validated. Results are JSON encoded in MCP text content. Domain failures return `isError: true` with `{error:{code,message,details}}`. Mutating calls are audited and use the shared application service.
+`AUTOPILOT_MCP_TOKEN` creates a `PROJECT_OPERATOR` restricted to configured project IDs. The independent `AUTOPILOT_SUPERADMIN_MCP_TOKEN` creates a global `SUPERADMIN`. Neither credential can bypass PolicyEngine, explicit Resource Registry ownership, production denial, secret redaction, workflow gates or command policy.
 
-| Tool | Kind | Contract/result |
-|---|---|---|
-| `system_health` | read | Version, store, time, production support |
-| `project_create` | write | Name, slug, source type, environment, autonomy mode, workspace → Project |
-| `project_get`, `project_list` | read | Project lookup/list |
-| `resource_register` | write | Explicit project/provider/reference/environment/permissions/secret refs → Resource |
-| `resource_list` | read | Project-owned resources |
-| `context_import` | write | Versioned typed sections with provenance |
-| `context_get` | read | Latest ProjectContext |
-| `task_create` | write | Project, external key, title, description, requirements, relationships → Task |
-| `task_get`, `task_list` | read | Project-scoped task lookup/list |
-| `task_analyze` | write | Dependency gate and requirements artifact |
-| `task_plan` | write | Structured ImplementationPlan and ArchitectureGuard result |
-| `task_execute` | write/idempotent | Project/task/resource/operation ID plus validated file changes → Git run |
-| `task_test` | write | Execute plan-required fixed test classes → TestReport |
-| `task_review` | write | IndependentReview and formal READY gate |
-| `task_retry` | write | Policy-limited retry from BLOCKED/FAILED |
-| `task_status` | read | Task, transitions, runs, artifacts |
-| `artifact_list`, `artifact_read` | read | Project-scoped artifact evidence |
-| `run_list`, `run_get` | read | Reproducible execution records |
-| `git_diff` | read | Diff against recorded base for registered Git resource |
-| `project_snapshot` | read | Machine-readable state/audit/version snapshot |
-| `runtime_capabilities` | read | Evidence-based current environment capability snapshot |
-| `sandbox_github_identity_register` | write | Require an exact expected active GitHub login after dedicated-sandbox confirmation |
-| `sandbox_github_repository_register` | write/open-world | Verify private/admin ownership and explicitly allowlist one existing `owner/name` repository |
-| `sandbox_supabase_identity_register` | write | Discover one sandbox organization after official login/confirmation |
-| `sandbox_supabase_project_register` | write/open-world | Verify and allowlist the exact sole project ref in the dedicated sandbox account |
-| `sandbox_supabase_database_configure` | write/open-world | Generate/rotate a registered sandbox database credential and retain references only |
-| `sandbox_github_ci_verify` | write/idempotent/open-world | Bind a successful GitHub Actions run to the exact task commit SHA and write `CI_REPORT` |
-| `sandbox_github_pull_request_open` | write/idempotent/open-world | For a `READY` task, open/reuse one PR from its exact latest `autopilot/*` branch |
-| `sandbox_bootstrap` | write/idempotent/open-world | Create or use a registered GitHub sandbox, create Supabase sandbox, migrate, verify CI, and write manifests |
-| `sandbox_repository_delete` | destructive | Delete only a registered sandbox repository with matching confirmation |
-| `sandbox_database_delete` | destructive | Delete only a registered sandbox database project with matching confirmation |
+Every input is Zod-validated. Read and mutation annotations are declared on each MCP tool. Domain failures return `isError: true` and a typed `{error:{code,message,details}}`. Every superadmin mutation requires an `operationId`, is replay-safe through `admin_operations`, and records a redacted `mcp.<tool>` audit event with actor, project, object input/result and timestamp.
 
-There is intentionally no `run_any_command`. Read-only annotations are set on reads; mutations use non-destructive semantic annotations. `task_execute` is idempotent by `(projectId, operationId)`.
+## Read-compatible tools
+
+`system_health`, `runtime_status`, `project_list`, `project_get`, `resource_list`, `context_get`, `task_list`, `task_get`, `task_status`, `artifact_list`, `artifact_read`, `run_list`, `run_get`, `job_list`, `job_get`, and `project_snapshot`.
+
+## Superadmin tools
+
+| Domain | Tools |
+|---|---|
+| Whole system | `superadmin_system_overview` |
+| Projects | `superadmin_project_list`, `superadmin_project_get`, `superadmin_project_create`, `superadmin_project_update`, `superadmin_project_delete` |
+| Resources | `superadmin_resource_list`, `superadmin_resource_get`, `superadmin_resource_create`, `superadmin_resource_update`, `superadmin_resource_binding_update`, `superadmin_resource_delete` |
+| Context | `superadmin_context_list`, `superadmin_context_get`, `superadmin_context_create`, `superadmin_context_update`, `superadmin_context_delete` |
+| Tasks/lifecycle | `superadmin_task_list`, `superadmin_task_get`, `superadmin_task_create`, `superadmin_task_update`, `superadmin_task_transition`, `superadmin_task_analyze`, `superadmin_task_plan`, `superadmin_task_execute`, `superadmin_task_retry`, `superadmin_task_review`, `superadmin_task_delete` |
+| Jobs | `superadmin_job_list`, `superadmin_job_get`, `superadmin_job_create`, `superadmin_job_cancel` |
+| Runs | `superadmin_run_list`, `superadmin_run_get`, `superadmin_run_delete` |
+| Artifacts | `superadmin_artifact_list`, `superadmin_artifact_get`, `superadmin_artifact_create`, `superadmin_artifact_update`, `superadmin_artifact_delete` |
+| Scenarios | `superadmin_scenario_list`, `superadmin_scenario_get`, `superadmin_scenario_create`, `superadmin_scenario_update`, `superadmin_scenario_delete` |
+| Validations | `superadmin_validation_list`, `superadmin_validation_get`, `superadmin_validation_run`, `superadmin_validation_delete` |
+| Settings | `superadmin_setting_list`, `superadmin_setting_get`, `superadmin_setting_upsert`, `superadmin_setting_delete` |
+| Console screens | `superadmin_screen_list`, `superadmin_screen_get`, `superadmin_screen_upsert`, `superadmin_screen_delete` |
+| Operators | `superadmin_operator_list`, `superadmin_operator_get`, `superadmin_operator_upsert`, `superadmin_operator_delete` |
+| Memberships | `superadmin_membership_list`, `superadmin_membership_get`, `superadmin_membership_upsert`, `superadmin_membership_delete` |
+| Audit | `superadmin_audit_list`, `superadmin_audit_get` |
+
+There are 83 registered remote tools. `superadmin_system_overview` returns projects, task/job counts and states, failed gates, latest errors, evidence-based capabilities, migration markers, Edge Functions, recent Actions runs and deployment status in one response.
+
+## Mutation rules
+
+- Project deletion archives/tombstones the record and rejects active jobs.
+- Tasks may only be edited before planning. Direct transition to `READY` is rejected; only formal review gates can produce it.
+- Run/artifact/context deletion is a tombstone so audit and reproducibility history remain available.
+- Formal lifecycle artifacts are immutable. Admin-authored CRUD is restricted to `ADMIN_NOTE` and `CONSOLE_SNAPSHOT`.
+- Console blocks are typed `TEXT`, `METRIC` or `JSON`; raw HTML, scripts and file/component paths are not accepted.
+- Safety settings such as production-write denial cannot be changed or deleted.
+- The last active superadmin cannot be deleted.
+- Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution.
+- Delete, membership and resource binding tools require structured identity, confirmation enum and reason fields. No free-form command is interpreted.
+
+## Deliberately absent
+
+There is no shell/subprocess proxy, SQL console, arbitrary filesystem/path tool, arbitrary HTTP fetch, arbitrary GitHub repository URL, policy bypass, production mutation or source-code editing tool. Long execution is a durable job carrying only semantic inputs and a registered resource UUID.
+
+## Client configuration
+
+Use an HTTP/Streamable HTTP MCP client with the endpoint and `Authorization` header above. The superadmin token must be supplied from a local secret manager or ignored `.env`, never committed or placed in Console/browser configuration.
