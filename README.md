@@ -6,7 +6,7 @@ v0.4 moves the production runtime off the developer workstation. The static Oper
 
 ## Remote deployment
 
-The canonical source is the private repository `momaibackend-ctrl/backend-autopilot`. Four reproducible workflows deploy and operate the remote system:
+The canonical source is the public sandbox repository `momaibackend-ctrl/backend-autopilot`. Its visibility was explicitly changed by the owner so the free account can publish Pages. Four reproducible workflows deploy and operate the remote system:
 
 - `pages.yml` builds a Next.js static export and deploys GitHub Pages.
 - `supabase.yml` applies versioned SQL, sets Edge secret references and deploys Edge Functions.
@@ -25,7 +25,9 @@ pnpm bootstrap
 pnpm dev
 ```
 
-For local development, open [http://localhost:3000](http://localhost:3000). The explicit `NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV=true` test/dev composition uses the local Fastify proxy. Production builds never set that flag: they are static files that call the authenticated HTTPS Edge API directly. The configured Pages URL is `https://momaibackend-ctrl.github.io/backend-autopilot/`; activation is currently blocked because the account plan does not support Pages for this private repository (HTTP 422). See `SETUP_REQUIRED.md`.
+For local development, open [http://localhost:3000](http://localhost:3000). The explicit `NEXT_PUBLIC_AUTOPILOT_LOCAL_DEV=true` test/dev composition uses the local Fastify proxy. Production builds never set that flag: they are static files that call the authenticated HTTPS Edge API directly. The live HTTPS Console is [https://momaibackend-ctrl.github.io/backend-autopilot/](https://momaibackend-ctrl.github.io/backend-autopilot/).
+
+`pnpm pages:e2e` is the reproducible live browser gate. It requires explicit sandbox URL/ref, the permanent operator email list, and existing gitignored credential references. It creates a confirmed one-use Supabase Auth identity, verifies Pages → Auth → Edge API → live Postgres state, then deletes the identity and restores the permanent allowlist even when the test fails.
 
 The main sections are Dashboard, Projects, Tasks, Runs, Validation, Infrastructure, Artifacts, Audit, Capabilities, and Settings. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 
