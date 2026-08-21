@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: supabase-control-plane
@@ -50,3 +50,23 @@ jobs:
           AUTOPILOT_SUPERADMIN_MCP_ACTOR="momaibackend-ctrl-superadmin"
           AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"
       - run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Health-check the new deployment (tools/list + system_health)
+        id: health
+        run: pnpm mcp:health-check
+      - name: Roll back the Edge Function to the last known-good deployment
+        if: failure() && steps.health.outcome == 'failure'
+        run: |
+          if ! git fetch origin refs/tags/mcp-last-good:refs/tags/mcp-last-good; then
+            echo "::error::Health check failed and no prior known-good deployment tag exists to roll back to. The live Superadmin MCP may be degraded; human intervention is required." >&2
+            exit 1
+          fi
+          git checkout mcp-last-good -- supabase
+          supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+          pnpm mcp:health-check
+          echo "::error::Deployed commit failed its health check; rolled back the live Superadmin MCP to the last known-good version (tag mcp-last-good)." >&2
+          exit 1
+      - name: Record this deployment as the new known-good rollback point
+        if: success()
+        run: |
+          git tag -f mcp-last-good "$GITHUB_SHA"
+          git push origin refs/tags/mcp-last-good --force

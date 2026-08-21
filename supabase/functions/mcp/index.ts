@@ -2,7 +2,7 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { McpServer } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/webStandardStreamableHttp.js';
 import { z } from 'npm:zod@3.25.76';
-import { DomainError, PolicyViolation } from '../../../packages/core/src/errors.ts';
+import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
@@ -124,10 +124,42 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_audit_list',{description:'List immutable audit events for any project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>admin().auditList(principal,projectId)));
   server.registerTool('superadmin_audit_get',{description:'Read one immutable audit event',inputSchema:{projectId,auditId:entityId},annotations:ro},safe(async({projectId,auditId})=>admin().auditGet(principal,projectId,auditId)));
 
+  // Closes the one remaining step of the remote self-repair loop (task_execute already runs
+  // fully server-side inside the dispatched GitHub Actions job): opening the pull request for a
+  // READY task's autopilot branch. Implemented as a direct GitHub REST call rather than reusing
+  // SandboxBootstrapService/LiveGitHubAdapter, because those shell out to the `gh`/`git` CLIs,
+  // which Supabase's Deno Edge runtime cannot spawn. No tool ever merges a pull request -- a
+  // human (or branch protection) retains that authority, so self-repair can reach a proposed fix
+  // but never apply it to the protected branch unattended.
+  server.registerTool('superadmin_sandbox_pull_request_open',{description:'Open (or return the existing) pull request for a READY task from its exact autopilot branch; never merges',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId,base:z.string().min(1),head:z.string().startsWith('autopilot/'),title:z.string().min(1),body:z.string()},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().executeMutation(principal,'sandbox_pull_request_open',value.projectId,value.operationId,value,()=>openSandboxPullRequest(runtime,value))));
+
   const transport=new WebStandardStreamableHTTPServerTransport({sessionIdGenerator:undefined});
   await server.connect(transport);
   return transport.handleRequest(request);
 });
+
+async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string;base:string;head:string;title:string;body:string}){
+  const task=await runtime.store.getTask(input.projectId,input.taskId);
+  if(!task)throw new NotFound('Task not found');
+  if(task.state!=='READY')throw new PolicyViolation('Pull request creation requires a task that passed all READY gates');
+  const resource=await runtime.store.getResource(input.resourceId);
+  if(!resource||resource.projectId!==input.projectId)throw new NotFound('Resource not found');
+  if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.status!=='ACTIVE')throw new PolicyViolation('An active registered GitHub repository is required for pull request creation');
+  if(resource.environment==='PRODUCTION')throw new UnsupportedOperation('Production resource mutation is not supported');
+  if(!resource.permissions.includes('WRITE'))throw new PolicyViolation('Resource permission denied',{required:'WRITE'});
+  const runs=await runtime.store.listRuns(input.projectId,input.taskId);
+  const latest=runs.at(-1);
+  if(!latest?.branch||latest.branch!==input.head)throw new PolicyViolation('Pull request head must equal the latest task run branch',{expected:latest?.branch,actual:input.head});
+  const response=await fetch(`https://api.github.com/repos/${resource.externalReference}/pulls`,{method:'POST',headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','content-type':'application/json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'},body:JSON.stringify({title:input.title,body:input.body,base:input.base,head:input.head})});
+  if(response.status===422){
+    const existing=await fetch(`https://api.github.com/repos/${resource.externalReference}/pulls?state=open&base=${encodeURIComponent(input.base)}&head=${encodeURIComponent(`${resource.externalReference.split('/')[0]}:${input.head}`)}`,{headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot'}});
+    const matches=existing.ok?await existing.json() as Array<{html_url:string;number:number}>:[];
+    if(matches[0])return {pullRequest:{url:matches[0].html_url,number:matches[0].number},idempotentReplay:true};
+  }
+  if(!response.ok)throw new ExecutionFailed('GitHub pull request creation failed',{status:response.status,body:(await response.text()).slice(0,300)});
+  const created=await response.json() as {html_url:string;number:number};
+  return {pullRequest:{url:created.html_url,number:created.number},idempotentReplay:false};
+}
 
 function protectedResourceMetadata():Response{
   // Supabase's edge runtime rewrites request.url to an internal representation (wrong scheme/host/path),
