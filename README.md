@@ -120,6 +120,8 @@ pnpm superadmin:remote:e2e
 
 It creates and edits temporary entities, drives a real task through the durable GitHub runner to `READY`, reads job/run/artifact/audit evidence, changes the Dashboard through `superadmin_screen_upsert`, verifies the rendered value in a real browser, then tombstones/archive-cleans the temporary control-plane records and deletes the temporary sandbox branch.
 
+The completed v0.5 proof produced task `81aa842b-bdc6-44f0-b363-6d14ccfebf5a`, job `76c10d89-b102-408d-ad13-7dc5d1adfd10`, run `ea95ac09-3455-4f75-9400-c63dd879d727`, target commit `6806c50e21c4d30b320a8a09bd5f059111ac072e`, 24 lifecycle artifacts and successful Actions run `32485647205`. Its temporary project/task were tombstoned, the Console screen restored and the task branch removed after the proof.
+
 ## Verification
 
 ```bash
