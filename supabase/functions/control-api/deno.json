@@ -2,6 +2,7 @@
   "imports": {
     "zod": "npm:zod@3.25.76",
     "drizzle-orm": "npm:drizzle-orm@0.44.4",
+    "yaml": "npm:yaml@2.6.1",
     "../../../packages/schemas/src/index.js": "../../../packages/schemas/src/index.ts",
     "../../../packages/core/src/errors.js": "../../../packages/core/src/errors.ts",
     "../../../packages/core/src/ports.js": "../../../packages/core/src/ports.ts",
