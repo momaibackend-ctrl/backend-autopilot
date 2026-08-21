@@ -20,8 +20,10 @@ const resourceFields={projectId,type:resourceTypeSchema,provider:z.string().min(
 const scenarioFields={taskId:entityId.optional(),resourceId:entityId,name:z.string().min(1).max(120),description:z.string().max(1000).default(''),steps:z.array(validationScenarioStepSchema).min(1).max(20)};
 
 Deno.serve(async request=>{
+  const url=new URL(request.url);
+  if(request.method==='GET'&&url.pathname.endsWith('/.well-known/oauth-protected-resource'))return protectedResourceMetadata();
   const principal=await authenticate(request);
-  if(!principal)return new Response(JSON.stringify({error:'unauthorized'}),{status:401,headers:{'content-type':'application/json','www-authenticate':'Bearer'}});
+  if(!principal)return new Response(JSON.stringify({error:'unauthorized'}),{status:401,headers:{'content-type':'application/json','www-authenticate':`Bearer resource_metadata="${required('SUPABASE_URL')}/functions/v1/mcp/.well-known/oauth-protected-resource"`}});
   const runtime=createEdgeRuntime();
   const server=new McpServer({name:'backend-autopilot',version:'0.5.0'});
   const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:{result:value}});
@@ -126,6 +128,17 @@ Deno.serve(async request=>{
   await server.connect(transport);
   return transport.handleRequest(request);
 });
+
+function protectedResourceMetadata():Response{
+  // Supabase's edge runtime rewrites request.url to an internal representation (wrong scheme/host/path),
+  // so the public resource identity is derived from the known public project URL, not the incoming request.
+  const publicUrl=required('SUPABASE_URL');
+  return new Response(JSON.stringify({
+    resource:`${publicUrl}/functions/v1/mcp`,
+    authorization_servers:[`${publicUrl}/auth/v1`],
+    bearer_methods_supported:['header'],
+  }),{status:200,headers:{'content-type':'application/json','cache-control':'public, max-age=300'}});
+}
 
 async function authenticate(request:Request):Promise<Principal|undefined>{
   const supplied=request.headers.get('authorization')?.replace(/^Bearer\s+/i,'')??'';
