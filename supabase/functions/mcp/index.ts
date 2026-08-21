@@ -133,6 +133,16 @@ Deno.serve(async request=>{
   // but never apply it to the protected branch unattended.
   server.registerTool('superadmin_sandbox_pull_request_open',{description:'Open (or return the existing) pull request for a READY task from its exact autopilot branch; never merges',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId,base:z.string().min(1),head:z.string().startsWith('autopilot/'),title:z.string().min(1),body:z.string()},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().executeMutation(principal,'sandbox_pull_request_open',value.projectId,value.operationId,value,()=>openSandboxPullRequest(runtime,value))));
 
+  // Read-only counterpart to task_execute/pull_request_open: without this, a remote caller can
+  // only write file changes it can already fully guess or reconstruct -- it never had a way to
+  // see what a registered repository's current source actually looks like before proposing a
+  // patch, which made real self-repair (fixing a specific existing file correctly, not guessing)
+  // impossible through the Superadmin MCP alone. Reads directly from the GitHub REST Contents
+  // API (Edge-compatible; no gh/git subprocess), gated by the exact same READ permission already
+  // required elsewhere, and cannot escape the registered repository (path is scoped server-side
+  // to that resource's externalReference, never an arbitrary URL the caller supplies).
+  server.registerTool('superadmin_sandbox_repository_read',{description:'Read a file (returns text content) or list a directory (returns entries) from a registered GitHub repository at an exact ref, defaulting to the repository default branch',inputSchema:{projectId,resourceId:entityId,path:z.string().default(''),ref:z.string().optional()},annotations:ro},safe(async({projectId,resourceId,path,ref})=>{admin();return readSandboxRepository(runtime,{projectId,resourceId,path,ref});}));
+
   const transport=new WebStandardStreamableHTTPServerTransport({sessionIdGenerator:undefined});
   await server.connect(transport);
   return transport.handleRequest(request);
@@ -159,6 +169,34 @@ async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntim
   if(!response.ok)throw new ExecutionFailed('GitHub pull request creation failed',{status:response.status,body:(await response.text()).slice(0,300)});
   const created=await response.json() as {html_url:string;number:number};
   return {pullRequest:{url:created.html_url,number:created.number},idempotentReplay:false};
+}
+
+async function readSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;path:string;ref?:string}){
+  const resource=await runtime.store.getResource(input.resourceId);
+  if(!resource||resource.projectId!==input.projectId)throw new NotFound('Resource not found');
+  if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.status!=='ACTIVE')throw new PolicyViolation('An active registered GitHub repository is required');
+  if(resource.environment==='PRODUCTION')throw new UnsupportedOperation('Production resource access is not supported');
+  if(!resource.permissions.includes('READ'))throw new PolicyViolation('Resource permission denied',{required:'READ'});
+  const cleanPath=input.path.replace(/^\/+|\/+$/g,'');
+  const pathSegment=cleanPath?`/${cleanPath.split('/').map(encodeURIComponent).join('/')}`:'';
+  const query=input.ref?`?ref=${encodeURIComponent(input.ref)}`:'';
+  const response=await fetch(`https://api.github.com/repos/${resource.externalReference}/contents${pathSegment}${query}`,{headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'}});
+  if(response.status===404)throw new NotFound('Path not found in repository',{path:input.path});
+  if(!response.ok)throw new ExecutionFailed('GitHub repository content read failed',{status:response.status,body:(await response.text()).slice(0,300)});
+  const body=await response.json() as {type:string;name:string;path:string;sha?:string;size?:number;content?:string;encoding?:string;download_url?:string}|Array<{name:string;path:string;type:string;size:number}>;
+  if(Array.isArray(body))return {type:'directory',path:cleanPath,entries:body.map(entry=>({name:entry.name,path:entry.path,type:entry.type,size:entry.size}))};
+  if(body.type!=='file')return {type:body.type,path:body.path,name:body.name};
+  let content:string;
+  if(body.content&&body.encoding==='base64'){
+    content=new TextDecoder().decode(Uint8Array.from(atob(body.content.replace(/\n/g,'')),character=>character.charCodeAt(0)));
+  }else if(body.download_url){
+    const raw=await fetch(body.download_url,{headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,'user-agent':'backend-autopilot'}});
+    if(!raw.ok)throw new ExecutionFailed('GitHub raw content download failed',{status:raw.status});
+    content=await raw.text();
+  }else{
+    throw new ExecutionFailed('GitHub repository content read returned no readable content',{path:body.path});
+  }
+  return {type:'file',path:body.path,sha:body.sha,size:body.size,content};
 }
 
 function protectedResourceMetadata():Response{
