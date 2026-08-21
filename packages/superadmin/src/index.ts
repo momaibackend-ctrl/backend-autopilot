@@ -41,6 +41,7 @@ import { z } from "zod";
 export interface SuperadminPrincipal {
   actor: string;
   role: PrincipalRole;
+  authMethod?: "STATIC_TOKEN" | "OAUTH";
 }
 
 export interface SuperadminDependencies {
@@ -448,7 +449,7 @@ export class SuperadminService {
     if(projectId){const project=await this.requireProject(projectId);if(project.environment==="PRODUCTION"||project.autonomyMode==="AUTONOMOUS_PRODUCTION")throw new UnsupportedOperation("Production writes are NOT_SUPPORTED");}
     const value=await action();const safeResult=redact(value);
     await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),result:safeResult,createdAt:this.clock.now()});
-    await this.audit.record({actor:principal.actor,action:`mcp.${tool}` ,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:safeResult,reason:`Authorized SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId});
+    await this.audit.record({actor:principal.actor,action:`mcp.${tool}` ,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:safeResult,reason:`Authorized SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId,...(principal.authMethod?{authMethod:principal.authMethod}:{})});
     return {value,idempotentReplay:false};
   }
 }

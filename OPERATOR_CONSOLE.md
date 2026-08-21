@@ -42,4 +42,4 @@ Later steps may interpolate non-secret values as `{{user_id}}`. Sensitive values
 
 ## UI trust boundary
 
-Task source, repository content, descriptions, OpenAPI, diffs, SQL and artifacts are untrusted data. React renders them as escaped text or JSON. The console does not use raw HTML/Markdown and never receives secret values, `.env`, provider SDK credentials, or database connection strings.
+Task source, repository content, descriptions, OpenAPI, diffs, SQL and artifacts are untrusted data. React renders them as escaped text or JSON. The console does not use raw HTML/Markdown and never receives secret values, `.env`, provider SDK credentials, or database connection strings. The OAuth consent route (`/oauth-consent`) follows the same rule: requesting-client name/scope are rendered as escaped text, it only ever handles the signed-in operator's own Supabase Auth session, and it never has access to the static MCP superadmin token.

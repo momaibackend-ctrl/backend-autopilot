@@ -530,6 +530,7 @@ export const auditEventSchema = z.object({
   result: z.unknown(),
   reason: z.string(),
   correlationId: z.string(),
+  authMethod: z.enum(['STATIC_TOKEN', 'OAUTH']).optional(),
 });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 

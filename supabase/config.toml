@@ -1,5 +1,14 @@
 project_id = "backend-autopilot"
 
+[auth.oauth_server]
+enabled = true
+# site_url is https://momaibackend-ctrl.github.io/backend-autopilot/dashboard/ ; GoTrue on this
+# hosted project concatenates this path onto site_url literally (verified empirically), so a
+# dot-segment is required to land on .../backend-autopilot/oauth-consent/ once the browser
+# normalizes the resulting URL. The value must also start with "/" (server-side validation).
+authorization_url_path = "/../oauth-consent/"
+allow_dynamic_registration = false
+
 [functions.control-api]
 verify_jwt = true
 

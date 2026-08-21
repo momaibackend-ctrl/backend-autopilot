@@ -5,7 +5,7 @@ import { z } from 'npm:zod@3.25.76';
 import { DomainError, PolicyViolation } from '../../../packages/core/src/errors.ts';
 import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
-import { createEdgeRuntime, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
+import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
 
 type Principal=SuperadminPrincipal&{projectScoped:boolean};
 type ToolResult={content:Array<{type:'text';text:string}>;structuredContent?:Record<string,unknown>;isError?:boolean};
@@ -129,10 +129,22 @@ Deno.serve(async request=>{
 
 async function authenticate(request:Request):Promise<Principal|undefined>{
   const supplied=request.headers.get('authorization')?.replace(/^Bearer\s+/i,'')??'';
+  if(!supplied)return undefined;
   const superToken=Deno.env.get('AUTOPILOT_SUPERADMIN_MCP_TOKEN');
-  if(superToken&&await equalToken(supplied,superToken))return {actor:required('AUTOPILOT_SUPERADMIN_MCP_ACTOR'),role:'SUPERADMIN',projectScoped:false};
-  if(await equalToken(supplied,required('AUTOPILOT_MCP_TOKEN')))return {actor:'remote-mcp-project-operator',role:'PROJECT_OPERATOR',projectScoped:true};
-  return undefined;
+  if(superToken&&await equalToken(supplied,superToken))return {actor:required('AUTOPILOT_SUPERADMIN_MCP_ACTOR'),role:'SUPERADMIN',projectScoped:false,authMethod:'STATIC_TOKEN'};
+  if(await equalToken(supplied,required('AUTOPILOT_MCP_TOKEN')))return {actor:'remote-mcp-project-operator',role:'PROJECT_OPERATOR',projectScoped:true,authMethod:'STATIC_TOKEN'};
+  return authenticateOauthSuperadmin(request);
+}
+
+async function authenticateOauthSuperadmin(request:Request):Promise<Principal|undefined>{
+  try{
+    const operator=await authenticatedOperator(request);
+    if(operator.role!=='SUPERADMIN')return undefined;
+    return {actor:operator.email??operator.id,role:'SUPERADMIN',projectScoped:false,authMethod:'OAUTH'};
+  }catch(error){
+    if(error instanceof EdgeHttpError)return undefined;
+    throw error;
+  }
 }
 async function equalToken(left:string,right:string){const [a,b]=await Promise.all([digest(left),digest(right)]);if(a.length!==b.length)return false;let difference=0;for(let index=0;index<a.length;index++)difference|=a[index]!^b[index]!;return difference===0;}
 async function digest(value:string){return new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));}

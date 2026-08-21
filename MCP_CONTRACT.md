@@ -10,6 +10,22 @@ Accept: application/json, text/event-stream
 
 `AUTOPILOT_MCP_TOKEN` creates a `PROJECT_OPERATOR` restricted to configured project IDs. The independent `AUTOPILOT_SUPERADMIN_MCP_TOKEN` creates a global `SUPERADMIN`. Neither credential can bypass PolicyEngine, explicit Resource Registry ownership, production denial, secret redaction, workflow gates or command policy.
 
+## OAuth 2.1 (ChatGPT-compatible) authentication
+
+A bearer token that does not match either static token is tried as a Supabase Auth access token (a normal session, or one issued by Supabase's OAuth 2.1 Authorization Server — both validate identically). The token is verified through the same operator/role check `control-api` already uses (`authenticatedOperator`): identity, active status, and allowlist are all re-checked, and only a resolved `SUPERADMIN` operator is granted an MCP principal — a successful OAuth sign-in that resolves to a non-superadmin operator is rejected with 401, never silently downgraded. OAuth scopes requested by the client are informational only; they are not a security boundary, and are never the sole gate for superadmin access.
+
+Discovery/token endpoints (Supabase Auth, unchanged by this project):
+
+```text
+Authorization Server metadata: https://qtyfdzjzmgxtrarpgcmn.supabase.co/.well-known/oauth-authorization-server/auth/v1
+Authorization endpoint:        https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/authorize
+Token endpoint:                https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/token
+```
+
+PKCE (S256) is mandatory. Dynamic client registration is intentionally left disabled; OAuth clients (e.g. ChatGPT's custom connector) are pre-registered manually via the Supabase Dashboard. The authorization consent screen is served by the Operator Console (`apps/operator-console/app/oauth-consent`), gated by the existing magic-link operator sign-in — it never has access to the static superadmin token.
+
+Every audit event now carries an `authMethod` of `STATIC_TOKEN` or `OAUTH`; OAuth-authenticated events record the real operator email as `actor` instead of a generic token identity.
+
 Every input is Zod-validated. Read and mutation annotations are declared on each MCP tool. Domain failures return `isError: true` and a typed `{error:{code,message,details}}`. Every superadmin mutation requires an `operationId`, is replay-safe through `admin_operations`, and records a redacted `mcp.<tool>` audit event with actor, project, object input/result and timestamp.
 
 ## Read-compatible tools

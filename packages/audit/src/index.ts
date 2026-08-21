@@ -9,7 +9,7 @@ export function redact(value:unknown):unknown{
 }
 export class AuditLog {
   constructor(private store:StateStore,private ids:IdGenerator,private clock:Clock){}
-  async record(input:{actor:string;action:string;projectId:string;taskId?:string;resourceId?:string;input:unknown;result:unknown;reason:string;correlationId:string}){
-    await this.store.appendAudit({id:this.ids.next(),actor:input.actor,action:input.action,projectId:input.projectId,...(input.taskId?{taskId:input.taskId}:{}),...(input.resourceId?{resourceId:input.resourceId}:{}),timestamp:this.clock.now(),input:redact(input.input),result:redact(input.result),reason:input.reason,correlationId:input.correlationId});
+  async record(input:{actor:string;action:string;projectId:string;taskId?:string;resourceId?:string;input:unknown;result:unknown;reason:string;correlationId:string;authMethod?:'STATIC_TOKEN'|'OAUTH'}){
+    await this.store.appendAudit({id:this.ids.next(),actor:input.actor,action:input.action,projectId:input.projectId,...(input.taskId?{taskId:input.taskId}:{}),...(input.resourceId?{resourceId:input.resourceId}:{}),timestamp:this.clock.now(),input:redact(input.input),result:redact(input.result),reason:input.reason,correlationId:input.correlationId,...(input.authMethod?{authMethod:input.authMethod}:{})});
   }
 }
