@@ -17,12 +17,14 @@ A bearer token that does not match either static token is tried as a Supabase Au
 Discovery/token endpoints (Supabase Auth, unchanged by this project):
 
 ```text
+Protected resource metadata:   https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource
 Authorization Server metadata: https://qtyfdzjzmgxtrarpgcmn.supabase.co/.well-known/oauth-authorization-server/auth/v1
 Authorization endpoint:        https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/authorize
 Token endpoint:                https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/token
+Dynamic client registration:   https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/clients/register
 ```
 
-PKCE (S256) is mandatory. Dynamic client registration is intentionally left disabled; OAuth clients (e.g. ChatGPT's custom connector) are pre-registered manually via the Supabase Dashboard. The authorization consent screen is served by the Operator Console (`apps/operator-console/app/oauth-consent`), gated by the existing magic-link operator sign-in — it never has access to the static superadmin token.
+PKCE (S256) is mandatory. A 401 from the MCP endpoint carries `WWW-Authenticate: Bearer resource_metadata="<protected resource metadata URL>"` per RFC 9728, and the MCP endpoint itself serves that metadata (unauthenticated `GET`) at the sub-path above — required because ChatGPT's connector performs automatic discovery against the MCP server's own 401 challenge rather than accepting manually-entered authorization/token URLs. Dynamic client registration (RFC 7591) is enabled, since ChatGPT self-registers via DCR rather than using a pre-registered client (Supabase does not support the newer Client ID Metadata Documents mechanism ChatGPT prefers). Self-registration alone grants no access — every resulting token still requires a signed-in SUPERADMIN operator to approve on the consent screen, and the MCP server independently re-verifies the SUPERADMIN role before any tool call succeeds. The authorization consent screen is served by the Operator Console (`apps/operator-console/app/oauth-consent`), gated by the existing magic-link operator sign-in — it never has access to the static superadmin token.
 
 Every audit event now carries an `authMethod` of `STATIC_TOKEN` or `OAUTH`; OAuth-authenticated events record the real operator email as `actor` instead of a generic token identity.
 

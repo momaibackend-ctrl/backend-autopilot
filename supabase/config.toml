@@ -1,5 +1,13 @@
 project_id = "backend-autopilot"
 
+# WARNING: this file is documentation of intended auth/storage settings, not a source of truth to
+# push. `supabase config push` diffs and overwrites the ENTIRE remote [auth]/[storage] config
+# against whatever is (or isn't) declared here -- since this file only ever declared the
+# [auth.oauth_server] block, a full push would silently reset unrelated production settings
+# (site_url, redirect allowlist, MFA, email confirmation, storage limits, etc.) to CLI defaults.
+# Change auth/storage config via the Supabase Management API (PATCH one field at a time) or the
+# Dashboard, then mirror the change here for documentation.
+
 [auth.oauth_server]
 enabled = true
 # site_url is https://momaibackend-ctrl.github.io/backend-autopilot/dashboard/ ; GoTrue on this
@@ -7,7 +15,12 @@ enabled = true
 # dot-segment is required to land on .../backend-autopilot/oauth-consent/ once the browser
 # normalizes the resulting URL. The value must also start with "/" (server-side validation).
 authorization_url_path = "/../oauth-consent/"
-allow_dynamic_registration = false
+# Enabled so ChatGPT's custom connector (which self-registers via Dynamic Client Registration,
+# RFC 7591, since Supabase does not support the newer CIMD mechanism it prefers) can connect
+# without a manually pre-registered client. Registration alone grants no access: every resulting
+# token still requires a signed-in SUPERADMIN operator to approve on /oauth-consent, and the MCP
+# server independently re-verifies the SUPERADMIN role before any tool call succeeds.
+allow_dynamic_registration = true
 
 [functions.control-api]
 verify_jwt = true
