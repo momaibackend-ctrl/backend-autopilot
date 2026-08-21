@@ -1,6 +1,6 @@
 # Backend Autopilot v0.5
 
-Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a Momna backend and never discovers or trusts existing external resources automatically.
+Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a specific project backend and never discovers or trusts existing external resources automatically.
 
 v0.5 adds a dedicated `SUPERADMIN` application boundary and authenticated HTTP MCP surface. A superadmin can administer every project and the server-driven Operator Console without project membership, while resource allowlisting, PolicyEngine, secret redaction and the hard production-write denial remain mandatory. The static Console uses Supabase Auth and an authenticated Edge Control API; durable state and artifacts live in Supabase; semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
 
