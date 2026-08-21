@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { access, chmod, copyFile, mkdir, mkdtemp } from 'node:fs/promises';
+import { access, chmod, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -12,7 +12,7 @@ import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
 import { AutopilotService } from '../packages/core/src/application.js';
 import { ExecutionFailed, PolicyViolation } from '../packages/core/src/errors.js';
 import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
-import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, detectStack } from '../packages/execution-engine/src/index.js';
+import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, detectStack, provisionGradleWrapper } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
 import { fileChangeSchema, type ExecutionJob } from '../packages/schemas/src/index.js';
@@ -32,7 +32,7 @@ try{
   current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);const resource=await store.getResource(current.resourceId);if(!project||!task||!resource)throw new ExecutionFailed('Execution job references missing registered state');
   await new PolicyEngine(store).authorize({project,action:'EXECUTE',resourceId:resource.resourceId,requiredPermission:'WRITE',actor:owner});if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.environment!=='SANDBOX')throw new PolicyViolation('Execution job target is not an allowlisted sandbox GitHub repository');
   const workspace=await prepareWorkspace(resource.externalReference,current,commands,githubToken);const stack=await detectStack(workspace);await installTargetDependencies(workspace,current,commands,stack);const payload=inputSchema.parse(current.payload);const result=await execution.execute({workspace,task,changes:payload.changes});
-  const provisionedWrapperSha=await provisionGradleWrapper(workspace,current,commands,git);const commitSha=provisionedWrapperSha??result.commitSha;
+  const provisionedWrapperSha=await commitProvisionedGradleWrapper(workspace,current,commands,git);const commitSha=provisionedWrapperSha??result.commitSha;
   current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha,updatedAt:systemClock.now()});
   await artifacts.write(project.id,'CODE_DIFF',{diff:result.diff,changedFiles:result.changedFiles},task.id,current.runId);
   const migrationFiles=payload.changes.filter(value=>/migrations?\//.test(value.path));if(migrationFiles.length)await artifacts.write(project.id,'MIGRATION_MANIFEST',{migrations:migrationFiles.map(value=>({path:value.path,content:value.content})),validation:'Pending migration test gate',rollback:'Implementation plan rollback strategy'},task.id,current.runId);
@@ -56,23 +56,12 @@ async function installTargetDependencies(workspace:string,job:ExecutionJob,comma
   if(stack==='KOTLIN_GRADLE'){await chmod(join(workspace,'gradlew'),0o755).catch(()=>undefined);return;}
   try{await access(join(workspace,'package.json'));}catch{return;}let frozen=false;try{await access(join(workspace,'pnpm-lock.yaml'));frozen=true;}catch{/* install without mutating an untracked lockfile */}await checked(commands,{command:'pnpm',args:['install',...(frozen?['--frozen-lockfile']:['--lockfile=false'])],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
 }
-// A caller (e.g. ChatGPT via MCP) can only submit plain-text file changes, so it cannot produce a
-// genuine, working Gradle Wrapper (gradle-wrapper.jar is a binary distribution bootstrapper).
-// Whenever the applied changes leave a Gradle project marker in the workspace, the execution
-// adapter itself supplies a single pinned, known-good wrapper -- overwriting any submitted
-// gradlew/gradle-wrapper.* text so the real invariant ("uses the Gradle Wrapper", not an
-// arbitrary/fake shim) always holds, regardless of what the caller attempted to write.
-async function provisionGradleWrapper(workspace:string,job:ExecutionJob,commands:CommandRunner,git:LocalGitAdapter):Promise<string|undefined>{
-  const markers=['build.gradle.kts','build.gradle','settings.gradle.kts','settings.gradle'];
-  const hasGradleProject=(await Promise.all(markers.map(name=>access(join(workspace,name)).then(()=>true).catch(()=>false)))).some(Boolean);
-  if(!hasGradleProject)return undefined;
+// Delegates the actual wrapper-file provisioning (the part covered by the MOMNA-990 EACCES
+// regression test) to a pure, unit-testable module, then commits the result only if it actually
+// changed anything -- a no-op for repos that already carried the identical pinned wrapper.
+async function commitProvisionedGradleWrapper(workspace:string,job:ExecutionJob,commands:CommandRunner,git:LocalGitAdapter):Promise<string|undefined>{
   const pinned=fileURLToPath(new URL('../examples/kotlin-sandbox-base/',import.meta.url));
-  await mkdir(join(workspace,'gradle','wrapper'),{recursive:true});
-  await copyFile(join(pinned,'gradlew'),join(workspace,'gradlew'));
-  await copyFile(join(pinned,'gradlew.bat'),join(workspace,'gradlew.bat'));
-  await copyFile(join(pinned,'gradle','wrapper','gradle-wrapper.properties'),join(workspace,'gradle','wrapper','gradle-wrapper.properties'));
-  await copyFile(join(pinned,'gradle','wrapper','gradle-wrapper.jar'),join(workspace,'gradle','wrapper','gradle-wrapper.jar'));
-  await chmod(join(workspace,'gradlew'),0o755);
+  if(!(await provisionGradleWrapper(workspace,pinned)))return undefined;
   const status=await commands.run({command:'git',args:['status','--porcelain'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
   if(!status.stdout.trim())return undefined;
   return git.commit(workspace,job.taskId,'backend-autopilot: provision pinned Gradle Wrapper');
