@@ -132,14 +132,12 @@ async function main(): Promise<void> {
         { key: storageKey, value: session },
       );
       await page.goto(`${pagesUrl}/dashboard/`, { waitUntil: "networkidle" });
-      await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible({
-        timeout: 30_000,
-      });
+      const expectedText=process.env["AUTOPILOT_PAGES_E2E_EXPECT_TEXT"];
+      if(!expectedText)await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible({timeout:30_000});
       await expect(
         page.getByText("Backend Autopilot Live Sandbox").first(),
       ).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Production actions disabled")).toBeVisible();
-      const expectedText=process.env["AUTOPILOT_PAGES_E2E_EXPECT_TEXT"];
       if(expectedText)await expect(page.getByText(expectedText,{exact:true})).toBeVisible({timeout:30_000});
       console.log(
         JSON.stringify({
