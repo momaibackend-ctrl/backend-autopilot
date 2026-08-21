@@ -1,6 +1,7 @@
 import 'dotenv/config';
-import { access, chmod, mkdtemp } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { parse as parseYaml } from 'yaml';
 import { ArtifactStore } from '../packages/artifact-store/src/index.js';
@@ -30,20 +31,22 @@ const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new 
 try{
   current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);const resource=await store.getResource(current.resourceId);if(!project||!task||!resource)throw new ExecutionFailed('Execution job references missing registered state');
   await new PolicyEngine(store).authorize({project,action:'EXECUTE',resourceId:resource.resourceId,requiredPermission:'WRITE',actor:owner});if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.environment!=='SANDBOX')throw new PolicyViolation('Execution job target is not an allowlisted sandbox GitHub repository');
-  const workspace=await prepareWorkspace(resource.externalReference,current,commands,githubToken);const stack=await detectStack(workspace);await installTargetDependencies(workspace,current,commands,stack);const payload=inputSchema.parse(current.payload);const result=await execution.execute({workspace,task,changes:payload.changes});current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha:result.commitSha,updatedAt:systemClock.now()});
+  const workspace=await prepareWorkspace(resource.externalReference,current,commands,githubToken);const stack=await detectStack(workspace);await installTargetDependencies(workspace,current,commands,stack);const payload=inputSchema.parse(current.payload);const result=await execution.execute({workspace,task,changes:payload.changes});
+  const provisionedWrapperSha=await provisionGradleWrapper(workspace,current,commands,git);const commitSha=provisionedWrapperSha??result.commitSha;
+  current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha,updatedAt:systemClock.now()});
   await artifacts.write(project.id,'CODE_DIFF',{diff:result.diff,changedFiles:result.changedFiles},task.id,current.runId);
   const migrationFiles=payload.changes.filter(value=>/migrations?\//.test(value.path));if(migrationFiles.length)await artifacts.write(project.id,'MIGRATION_MANIFEST',{migrations:migrationFiles.map(value=>({path:value.path,content:value.content})),validation:'Pending migration test gate',rollback:'Implementation plan rollback strategy'},task.id,current.runId);
   const apiFiles=payload.changes.filter(value=>/openapi/i.test(value.path));if(apiFiles.length)await artifacts.write(project.id,'API_CONTRACT',{contracts:apiFiles.map(value=>({path:value.path,document:(/\.ya?ml$/i.test(value.path)?parseYaml(value.content):JSON.parse(value.content)) as unknown}))},task.id,current.runId);
   await new LiveGitHubAdapter(commands).push(resource,{workspace,branch:result.branch,correlationId:task.id});
-  if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,baseCommit:result.baseCommit,branch:result.branch,commitSha:result.commitSha});}
+  if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,baseCommit:result.baseCommit,branch:result.branch,commitSha});}
   await service.taskTest(project.id,task.id,owner,current.operationId,workspace);
   const toolchain=stack==='KOTLIN_GRADLE'?await gradleToolchainVersions(workspace,current,commands):undefined;
-  await artifacts.write(project.id,'CI_REPORT',{provider:'github-actions',repository:resource.externalReference,branch:result.branch,expectedSha:result.commitSha,detectedStack:stack,...(toolchain?{toolchain}:{}),ci:{success:true,status:'completed',conclusion:'success',headSha:result.commitSha,url:process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&process.env['GITHUB_RUN_ID']?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${process.env['GITHUB_RUN_ID']}`:undefined}},task.id,current.runId);
+  await artifacts.write(project.id,'CI_REPORT',{provider:'github-actions',repository:resource.externalReference,branch:result.branch,expectedSha:commitSha,detectedStack:stack,...(toolchain?{toolchain}:{}),...(provisionedWrapperSha?{gradleWrapperProvisioned:true}:{}),ci:{success:true,status:'completed',conclusion:'success',headSha:commitSha,url:process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&process.env['GITHUB_RUN_ID']?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${process.env['GITHUB_RUN_ID']}`:undefined}},task.id,current.runId);
   await service.taskReview(project.id,task.id,owner,current.operationId);
-  if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,status:'SUCCEEDED',baseCommit:result.baseCommit,branch:result.branch,commitSha:result.commitSha,finishedAt:systemClock.now()});}
-  current=await store.updateExecutionJob({...current,status:'SUCCEEDED',leaseOwner:owner,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),result:{branch:result.branch,commitSha:result.commitSha,changedFiles:result.changedFiles}});
-  await audit.record({actor:owner,action:'execution.job.succeeded',projectId:project.id,taskId:task.id,resourceId:resource.resourceId,input:{jobId:current.id},result:{runId:current.runId,branch:result.branch,commitSha:result.commitSha},reason:'GitHub Actions execution, tests and review completed',correlationId:current.operationId});
-  console.log(JSON.stringify({level:'info',event:'execution.job.succeeded',jobId:current.id,branch:result.branch,commitSha:result.commitSha}));
+  if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,status:'SUCCEEDED',baseCommit:result.baseCommit,branch:result.branch,commitSha,finishedAt:systemClock.now()});}
+  current=await store.updateExecutionJob({...current,status:'SUCCEEDED',leaseOwner:owner,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),result:{branch:result.branch,commitSha,changedFiles:result.changedFiles}});
+  await audit.record({actor:owner,action:'execution.job.succeeded',projectId:project.id,taskId:task.id,resourceId:resource.resourceId,input:{jobId:current.id},result:{runId:current.runId,branch:result.branch,commitSha},reason:'GitHub Actions execution, tests and review completed',correlationId:current.operationId});
+  console.log(JSON.stringify({level:'info',event:'execution.job.succeeded',jobId:current.id,branch:result.branch,commitSha}));
 }catch(error){
   const task=await store.getTask(current.projectId,current.taskId);const status=task?.state==='BLOCKED'?'BLOCKED':'FAILED';current=await store.updateExecutionJob({...current,status,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),error:{code:error instanceof Error?error.name:'UNKNOWN',message:error instanceof Error?error.message:'Unknown execution failure'}});if(current.runId){const run=await store.getRun(current.projectId,current.runId);if(run&&run.status==='RUNNING')await store.updateRun({...run,status:status==='BLOCKED'?'BLOCKED':'FAILED',finishedAt:systemClock.now(),...(current.branch?{branch:current.branch}:{}),...(current.commitSha?{commitSha:current.commitSha}:{})});}await audit.record({actor:owner,action:'execution.job.failed',projectId:current.projectId,taskId:current.taskId,resourceId:current.resourceId,input:{jobId:current.id},result:{status,error:error instanceof Error?error.name:'UNKNOWN'},reason:'GitHub Actions execution failed; durable state preserved',correlationId:current.operationId});throw error;
 }finally{await store.close();}
@@ -52,6 +55,27 @@ async function prepareWorkspace(repository:string,job:ExecutionJob,commands:Comm
 async function installTargetDependencies(workspace:string,job:ExecutionJob,commands:CommandRunner,stack:Awaited<ReturnType<typeof detectStack>>){
   if(stack==='KOTLIN_GRADLE'){await chmod(join(workspace,'gradlew'),0o755).catch(()=>undefined);return;}
   try{await access(join(workspace,'package.json'));}catch{return;}let frozen=false;try{await access(join(workspace,'pnpm-lock.yaml'));frozen=true;}catch{/* install without mutating an untracked lockfile */}await checked(commands,{command:'pnpm',args:['install',...(frozen?['--frozen-lockfile']:['--lockfile=false'])],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
+}
+// A caller (e.g. ChatGPT via MCP) can only submit plain-text file changes, so it cannot produce a
+// genuine, working Gradle Wrapper (gradle-wrapper.jar is a binary distribution bootstrapper).
+// Whenever the applied changes leave a Gradle project marker in the workspace, the execution
+// adapter itself supplies a single pinned, known-good wrapper -- overwriting any submitted
+// gradlew/gradle-wrapper.* text so the real invariant ("uses the Gradle Wrapper", not an
+// arbitrary/fake shim) always holds, regardless of what the caller attempted to write.
+async function provisionGradleWrapper(workspace:string,job:ExecutionJob,commands:CommandRunner,git:LocalGitAdapter):Promise<string|undefined>{
+  const markers=['build.gradle.kts','build.gradle','settings.gradle.kts','settings.gradle'];
+  const hasGradleProject=(await Promise.all(markers.map(name=>access(join(workspace,name)).then(()=>true).catch(()=>false)))).some(Boolean);
+  if(!hasGradleProject)return undefined;
+  const pinned=fileURLToPath(new URL('../examples/kotlin-sandbox-base/',import.meta.url));
+  await mkdir(join(workspace,'gradle','wrapper'),{recursive:true});
+  await copyFile(join(pinned,'gradlew'),join(workspace,'gradlew'));
+  await copyFile(join(pinned,'gradlew.bat'),join(workspace,'gradlew.bat'));
+  await copyFile(join(pinned,'gradle','wrapper','gradle-wrapper.properties'),join(workspace,'gradle','wrapper','gradle-wrapper.properties'));
+  await copyFile(join(pinned,'gradle','wrapper','gradle-wrapper.jar'),join(workspace,'gradle','wrapper','gradle-wrapper.jar'));
+  await chmod(join(workspace,'gradlew'),0o755);
+  const status=await commands.run({command:'git',args:['status','--porcelain'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
+  if(!status.stdout.trim())return undefined;
+  return git.commit(workspace,job.taskId,'backend-autopilot: provision pinned Gradle Wrapper');
 }
 async function gradleToolchainVersions(workspace:string,job:ExecutionJob,commands:CommandRunner){
   try{
