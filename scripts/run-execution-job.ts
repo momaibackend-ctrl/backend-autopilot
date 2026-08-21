@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { access, chmod, mkdtemp } from 'node:fs/promises';
+import { access, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -53,7 +53,13 @@ try{
 
 async function prepareWorkspace(repository:string,job:ExecutionJob,commands:CommandRunner,token:string){if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new PolicyViolation('Registered repository identity is invalid');const root=process.env['RUNNER_TEMP']??process.cwd();const workspace=await mkdtemp(join(root,'backend-autopilot-'));const env={GH_TOKEN:token};await checked(commands,{command:'gh',args:['auth','setup-git'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'gh',args:['repo','clone',repository,workspace,'--','--no-tags'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['config','user.email','autopilot@localhost.invalid'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});await checked(commands,{command:'git',args:['config','user.name','Backend Autopilot'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});if(job.branch){const remote=await commands.run({command:'git',args:['ls-remote','--exit-code','--heads','origin',job.branch],cwd:workspace,taskId:job.taskId,allowed:['NETWORK'],env});if(remote.record.exitCode===0){await checked(commands,{command:'git',args:['fetch','origin',job.branch],cwd:workspace,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['switch','-C',job.branch,'--track',`origin/${job.branch}`],cwd:workspace,taskId:job.taskId,allowed:['BUILD'],env});if(job.commitSha){const head=await checked(commands,{command:'git',args:['rev-parse','HEAD'],cwd:workspace,taskId:job.taskId,allowed:['READ']});if(head.stdout.trim()!==job.commitSha)throw new ExecutionFailed('Remote task branch no longer matches the persisted exact commit SHA',{expected:job.commitSha,actual:head.stdout.trim()});}}}return workspace;}
 async function installTargetDependencies(workspace:string,job:ExecutionJob,commands:CommandRunner,stack:Awaited<ReturnType<typeof detectStack>>){
-  if(stack==='KOTLIN_GRADLE'){await chmod(join(workspace,'gradlew'),0o755).catch(()=>undefined);return;}
+  // Kotlin/Gradle dependency resolution is deferred to commitProvisionedGradleWrapper below, which
+  // runs AFTER execution.execute() and commits any wrapper fixup atomically -- chmod'ing gradlew
+  // here (before execute()) would leave an uncommitted mode-only diff on a repaired task whose
+  // branch already carries a previously-committed wrapper, tripping ExecutionEngine's clean-tree
+  // precondition (this was the MOMNA-990 "Target repository must have a clean working tree" retry
+  // failure).
+  if(stack==='KOTLIN_GRADLE')return;
   try{await access(join(workspace,'package.json'));}catch{return;}let frozen=false;try{await access(join(workspace,'pnpm-lock.yaml'));frozen=true;}catch{/* install without mutating an untracked lockfile */}await checked(commands,{command:'pnpm',args:['install',...(frozen?['--frozen-lockfile']:['--lockfile=false'])],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
 }
 // Delegates the actual wrapper-file provisioning (the part covered by the MOMNA-990 EACCES
