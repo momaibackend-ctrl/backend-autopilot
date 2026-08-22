@@ -14,6 +14,7 @@
     "../../../packages/policy-engine/src/architecture-guard.js": "../../../packages/policy-engine/src/architecture-guard.ts",
     "../../../packages/workflow-engine/src/index.js": "../../../packages/workflow-engine/src/index.ts",
     "../../../packages/context-engine/src/index.js": "../../../packages/context-engine/src/index.ts",
-    "../../../packages/execution-engine/src/reviewer.js": "../../../packages/execution-engine/src/reviewer.ts"
+    "../../../packages/execution-engine/src/reviewer.js": "../../../packages/execution-engine/src/reviewer.ts",
+    "../../../packages/secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts"
   }
 }
