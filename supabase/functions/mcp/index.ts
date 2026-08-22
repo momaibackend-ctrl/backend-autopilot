@@ -5,6 +5,7 @@ import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
+import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
 import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
 
 type Principal=SuperadminPrincipal&{projectScoped:boolean};
@@ -128,10 +129,24 @@ Deno.serve(async request=>{
   // fully server-side inside the dispatched GitHub Actions job): opening the pull request for a
   // READY task's autopilot branch. Implemented as a direct GitHub REST call rather than reusing
   // SandboxBootstrapService/LiveGitHubAdapter, because those shell out to the `gh`/`git` CLIs,
-  // which Supabase's Deno Edge runtime cannot spawn. No tool ever merges a pull request -- a
-  // human (or branch protection) retains that authority, so self-repair can reach a proposed fix
-  // but never apply it to the protected branch unattended.
+  // which Supabase's Deno Edge runtime cannot spawn.
   server.registerTool('superadmin_sandbox_pull_request_open',{description:'Open (or return the existing) pull request for a READY task from its exact autopilot branch; never merges',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId,base:z.string().min(1),head:z.string().startsWith('autopilot/'),title:z.string().min(1),body:z.string()},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().executeMutation(principal,'sandbox_pull_request_open',value.projectId,value.operationId,value,()=>openSandboxPullRequest(runtime,value))));
+
+  // Guarded closure of the self-repair loop: merging a READY task's pull request into the
+  // registered repository's default branch. This used to be forbidden outright (see git history)
+  // so a human always retained that authority; it is now permitted, but only through a narrow,
+  // fully server-resolved path -- the caller supplies nothing but projectId/taskId/resourceId.
+  // The repository, PR, head branch, and default branch are all determined here, never from
+  // caller input. Merge requires the task to already be READY (which itself requires every
+  // TEST/SECURITY/REVIEW/CI gate and a FINAL_CHANGE_MANIFEST), the resource to be an ACTIVE,
+  // non-production GITHUB_REPOSITORY with both WRITE and ADMIN, and the PR's head SHA to exactly
+  // equal both FINAL_CHANGE_MANIFEST.verifiedCommitSha and the latest successful run's commit SHA.
+  // The GitHub merge call itself is SHA-pinned (expected-SHA protection), uses the `merge` method
+  // so the verified commit becomes a real ancestor of the default branch (not rewritten by
+  // squash/rebase), and is followed by an explicit compare-API check that the verified commit is
+  // actually reachable from the default branch afterward. Already-merged PRs short-circuit to an
+  // idempotent success instead of re-attempting the merge.
+  server.registerTool('superadmin_sandbox_pull_request_merge',{description:'Merge a READY task\'s pull request into the registered repository\'s default branch; repository, PR, head and base are resolved entirely server-side and SHA-pinned to the verified FINAL_CHANGE_MANIFEST commit',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().executeMutation(principal,'sandbox_pull_request_merge',value.projectId,value.operationId,value,()=>mergeSandboxPullRequest(runtime,value))));
 
   // Read-only counterpart to task_execute/pull_request_open: without this, a remote caller can
   // only write file changes it can already fully guess or reconstruct -- it never had a way to
@@ -169,6 +184,34 @@ async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntim
   if(!response.ok)throw new ExecutionFailed('GitHub pull request creation failed',{status:response.status,body:(await response.text()).slice(0,300)});
   const created=await response.json() as {html_url:string;number:number};
   return {pullRequest:{url:created.html_url,number:created.number},idempotentReplay:false};
+}
+
+async function mergeSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string}){
+  const [task,resource]=await Promise.all([runtime.store.getTask(input.projectId,input.taskId),runtime.store.getResource(input.resourceId)]);
+  if(resource&&resource.projectId!==input.projectId)throw new NotFound('Resource not found');
+  const [runs,artifacts]=await Promise.all([runtime.store.listRuns(input.projectId,input.taskId),runtime.store.listArtifacts(input.projectId,input.taskId)]);
+  const {branch,commitSha}=resolveMergeableCommit({task,resource,runs,artifacts});
+  const repository=resource!.externalReference;
+  const githubHeaders={authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'};
+  const repoResponse=await fetch(`https://api.github.com/repos/${repository}`,{headers:githubHeaders});
+  if(!repoResponse.ok)throw new ExecutionFailed('GitHub repository metadata lookup failed',{status:repoResponse.status,body:(await repoResponse.text()).slice(0,300)});
+  const defaultBranch=(await repoResponse.json() as {default_branch:string}).default_branch;
+  const owner=repository.split('/')[0];
+  const pullsResponse=await fetch(`https://api.github.com/repos/${repository}/pulls?state=all&base=${encodeURIComponent(defaultBranch)}&head=${encodeURIComponent(`${owner}:${branch}`)}&sort=created&direction=desc&per_page=1`,{headers:githubHeaders});
+  if(!pullsResponse.ok)throw new ExecutionFailed('GitHub pull request lookup failed',{status:pullsResponse.status,body:(await pullsResponse.text()).slice(0,300)});
+  const [pull]=await pullsResponse.json() as Array<{number:number;html_url:string;merged_at:string|null;state:string;head:{sha:string}}>;
+  if(!pull)throw new NotFound('No pull request found for the task\'s verified branch',{branch,base:defaultBranch});
+  if(pull.head.sha!==commitSha)throw new PolicyViolation('Pull request head SHA no longer matches the verified commit',{expected:commitSha,actual:pull.head.sha});
+  if(!pull.merged_at){
+    if(pull.state==='closed')throw new PolicyViolation('Pull request was closed without merging; human review required',{number:pull.number});
+    const mergeResponse=await fetch(`https://api.github.com/repos/${repository}/pulls/${pull.number}/merge`,{method:'PUT',headers:{...githubHeaders,'content-type':'application/json'},body:JSON.stringify({sha:commitSha,merge_method:'merge'})});
+    if(!mergeResponse.ok)throw new ExecutionFailed('GitHub pull request merge failed',{status:mergeResponse.status,body:(await mergeResponse.text()).slice(0,300)});
+  }
+  const compareResponse=await fetch(`https://api.github.com/repos/${repository}/compare/${encodeURIComponent(defaultBranch)}...${commitSha}`,{headers:githubHeaders});
+  if(!compareResponse.ok)throw new ExecutionFailed('Post-merge verification lookup failed',{status:compareResponse.status,body:(await compareResponse.text()).slice(0,300)});
+  const compare=await compareResponse.json() as {status:string};
+  if(compare.status!=='identical'&&compare.status!=='behind')throw new ExecutionFailed('Verified commit is not present on the default branch after merge',{defaultBranch,commitSha,compareStatus:compare.status});
+  return {merged:true,pullRequest:{url:pull.html_url,number:pull.number},defaultBranch,verifiedCommitSha:commitSha,idempotentReplay:Boolean(pull.merged_at)};
 }
 
 async function readSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;path:string;ref?:string}){

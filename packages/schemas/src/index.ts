@@ -494,6 +494,8 @@ export const executionJobSchema = z.object({
   workflowRunUrl: z.string().url().optional(),
   branch: z.string().optional(),
   baseCommit: z.string().optional(),
+  baseBranch: z.string().optional(),
+  baseCommitSha: z.string().optional(),
   commitSha: z.string().optional(),
   attempt: z.number().int().nonnegative(),
   leaseOwner: z.string().optional(),
