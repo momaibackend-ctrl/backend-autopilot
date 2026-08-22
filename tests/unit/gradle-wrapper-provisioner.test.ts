@@ -26,23 +26,26 @@ describe('provisionGradleWrapper', () => {
     expect(provisioned.size).toBe(pinned.size);
   });
 
-  // Second MOMNA-990 regression: wrapper normalization must remain strictly after the
-  // ExecutionEngine snapshot/clean-tree guard. A previous retry chmod'ed gradlew during
-  // dependency preparation, producing " M gradlew" before snapshot() and making the runtime
-  // reject its own controlled preparation. Lock the runner ordering so that cannot regress.
-  it('keeps Gradle wrapper normalization after clean-tree validation and semantic execution', async () => {
+  // Second MOMNA-990 regression: the runtime call sequence must validate/snapshot through
+  // execution.execute() before wrapper normalization. Separately, Kotlin dependency preparation
+  // must return before package-manager preparation so it cannot mutate gradlew pre-snapshot.
+  it('keeps Gradle wrapper normalization after semantic execution and skips pre-execution Kotlin preparation', async () => {
     const source = await readFile(join(process.cwd(), 'scripts', 'run-execution-job.ts'), 'utf8');
-    const kotlinPreparationSkip = source.indexOf("if(stack==='KOTLIN_GRADLE')return;");
+    const dependencyPreparation = source.indexOf('await installTargetDependencies(workspace,current,commands,stack)');
     const semanticExecution = source.indexOf('const result=await execution.execute');
     const wrapperNormalization = source.indexOf('const provisionedWrapperSha=await commitProvisionedGradleWrapper');
 
-    expect(kotlinPreparationSkip).toBeGreaterThan(-1);
-    expect(semanticExecution).toBeGreaterThan(kotlinPreparationSkip);
+    expect(dependencyPreparation).toBeGreaterThan(-1);
+    expect(semanticExecution).toBeGreaterThan(dependencyPreparation);
     expect(wrapperNormalization).toBeGreaterThan(semanticExecution);
 
-    const beforeSemanticExecution = source.slice(kotlinPreparationSkip, semanticExecution);
-    expect(beforeSemanticExecution).not.toContain('chmod');
-    expect(beforeSemanticExecution).not.toContain('provisionGradleWrapper');
+    const installStart = source.indexOf('async function installTargetDependencies');
+    const installEnd = source.indexOf('async function commitProvisionedGradleWrapper');
+    const installBody = source.slice(installStart, installEnd);
+    const kotlinSkip = installBody.indexOf("if(stack==='KOTLIN_GRADLE')return;");
+    const packagePreparation = installBody.indexOf("access(join(workspace,'package.json'))");
+    expect(kotlinSkip).toBeGreaterThan(-1);
+    expect(packagePreparation).toBeGreaterThan(kotlinSkip);
   });
 
   it('is a no-op when no Gradle project marker is present in the workspace', async () => {
