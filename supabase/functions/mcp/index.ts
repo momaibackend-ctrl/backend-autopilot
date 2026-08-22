@@ -6,6 +6,7 @@ import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOpe
 import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
+import { scenarioRunToolAnnotations, scenarioRunToolDescription, scenarioRunToolInputSchema, scenarioRunToolName } from '../../../packages/http-runner/src/index.ts';
 import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
 
 type Principal=SuperadminPrincipal&{projectScoped:boolean};
@@ -100,6 +101,11 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_scenario_create',{description:'Create a structured validation scenario bound to a registered HTTP_API resource',inputSchema:{operationId,projectId,...scenarioFields},annotations:mut},safe(async({operationId,projectId,...value})=>admin().scenarioCreate(principal,projectId,{...value,operationId},operationId)));
   server.registerTool('superadmin_scenario_update',{description:'Update a structured validation scenario',inputSchema:{operationId,projectId,scenarioId:entityId,...scenarioFields},annotations:mut},safe(async({operationId,projectId,scenarioId,...value})=>admin().scenarioUpdate(principal,projectId,scenarioId,{...value,operationId},operationId)));
   server.registerTool('superadmin_scenario_delete',{description:'Tombstone a validation scenario',inputSchema:{...deleteInput,projectId,scenarioId:entityId,confirmation:z.literal('DELETE_SCENARIO')},annotations:destructive},safe(async({projectId,scenarioId,...input})=>admin().scenarioDelete(principal,projectId,scenarioId,input)));
+  // Executable Postman-style HTTP runner for a saved scenario. Distinct from
+  // superadmin_validation_run, which stays a semantic control-state check and is unchanged.
+  // Only the persisted scenario ID is accepted: the HTTP_API resource, base URL, steps and
+  // credentials are all resolved server-side, so this can never become an arbitrary-URL fetch.
+  server.registerTool(scenarioRunToolName,{description:scenarioRunToolDescription,inputSchema:scenarioRunToolInputSchema,annotations:scenarioRunToolAnnotations},safe(async({operationId,projectId,scenarioId})=>admin().scenarioRun(principal,projectId,{scenarioId,operationId})));
   server.registerTool('superadmin_validation_list',{description:'List validation results',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>admin().validationList(principal,projectId,taskId)));
   server.registerTool('superadmin_validation_get',{description:'Read one validation result',inputSchema:{projectId,validationId:entityId},annotations:ro},safe(async({projectId,validationId})=>admin().validationGet(principal,projectId,validationId)));
   server.registerTool('superadmin_validation_run',{description:'Run semantic control-state validation and persist a report',inputSchema:{operationId,projectId,taskId:entityId,suite:validationSuiteSchema},annotations:mut},safe(async value=>admin().validationRun(principal,value.projectId,value)));

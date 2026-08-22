@@ -354,6 +354,28 @@ export const apiRequestInputSchema = z.object({
 });
 export type ApiRequestInput = z.infer<typeof apiRequestInputSchema>;
 const scenarioVariableNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+const responseBodyPathSchema = z
+  .string()
+  .regex(/^response\.body(?:\.[a-zA-Z0-9_-]+)+$/);
+// Additive, always-optional step assertions for the executable HTTP validation runner.
+// `expectedStatus` remains the primary assertion; these are evaluated in addition to it.
+export const validationAssertionSchema = z.object({
+  type: z.enum([
+    "HEADER_EQUALS",
+    "HEADER_EXISTS",
+    "BODY_FIELD_EQUALS",
+    "BODY_FIELD_EXISTS",
+    "MAX_DURATION_MS",
+  ]),
+  header: z
+    .string()
+    .regex(/^[A-Za-z0-9-]{1,64}$/)
+    .optional(),
+  path: responseBodyPathSchema.optional(),
+  value: z.unknown().optional(),
+  maxDurationMs: z.number().int().positive().max(600_000).optional(),
+});
+export type ValidationAssertion = z.infer<typeof validationAssertionSchema>;
 export const validationScenarioStepSchema = z.object({
   name: z.string().min(1).max(120),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
@@ -365,7 +387,7 @@ export const validationScenarioStepSchema = z.object({
   extract: z
     .record(
       z.object({
-        path: z.string().regex(/^response\.body(?:\.[a-zA-Z0-9_-]+)+$/),
+        path: responseBodyPathSchema,
         sensitive: z.boolean().default(false),
       }),
     )
@@ -378,7 +400,9 @@ export const validationScenarioStepSchema = z.object({
       "Invalid extracted variable name",
     ),
   bearerFrom: scenarioVariableNameSchema.optional(),
+  assertions: z.array(validationAssertionSchema).max(20).default([]),
 });
+export type ValidationScenarioStep = z.infer<typeof validationScenarioStepSchema>;
 export const validationScenarioSaveInputSchema = z.object({
   taskId: z.string().uuid().optional(),
   resourceId: z.string().uuid(),

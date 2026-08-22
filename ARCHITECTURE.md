@@ -84,7 +84,7 @@ The HTTP MCP has two distinct credentials. The ordinary token creates a `PROJECT
 
 Remote source and deployment are GitHub-driven. Pages and Edge are short-lived/serverless. Execution runs only in fixed GitHub Actions workflows, and workflow inputs contain a job UUID rather than repository paths, URLs or credentials. Database claim/lease and operation-id uniqueness prevent duplicate concurrent work; scheduled reconciliation handles lost callbacks without an always-on worker.
 
-The API Explorer derives endpoints from `API_CONTRACT` OpenAPI artifacts. Validation and API requests create immutable artifacts and audit events. Saved scenarios support sequential steps, extraction of response values, non-secret `{{variable}}` interpolation, and server-memory-only bearer handoff. Production and unregistered targets fail before network access.
+The API Explorer derives endpoints from `API_CONTRACT` OpenAPI artifacts. Validation and API requests create immutable artifacts and audit events. Saved scenarios support sequential steps, extraction of response values, non-secret `{{variable}}` interpolation, and server-memory-only bearer handoff. Production and unregistered targets fail before network access. `HttpScenarioRunner` is the single executable implementation behind both the Console scenario route and the published `superadmin_scenario_run` MCP tool; it resolves its target only from the scenario's own registered `HTTP_API` resource and is bounded by timeout, redirect, response-size and step limits.
 
 ## Future full product assembly
 

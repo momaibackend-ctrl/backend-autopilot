@@ -35,6 +35,13 @@ import {
   type Resource,
   type TaskState,
 } from "../../schemas/src/index.js";
+import {
+  HttpScenarioRunner,
+  scenarioForStorage,
+  type FetchLike,
+  type ScenarioExecutionResult,
+  type SecretResolver,
+} from "../../http-runner/src/index.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { z } from "zod";
 
@@ -53,6 +60,10 @@ export interface SuperadminDependencies {
   ids?: IdGenerator;
   artifactBlobs?: ArtifactBlobStore;
   deploymentStatus?: () => Promise<unknown>;
+  /** Resolves HTTP_API resource secretRefs for the executable validation runner. */
+  secrets?: SecretResolver;
+  /** Injectable transport, used by tests; production uses global fetch. */
+  fetchImpl?: FetchLike;
 }
 
 const operationIdSchema = z.string().min(8).max(200);
@@ -406,9 +417,24 @@ export class SuperadminService {
 
   async scenarioList(principal:SuperadminPrincipal,projectId:string){return (await this.artifactList(principal,projectId)).filter(v=>v.kind==="VALIDATION_SCENARIO"&&v.status!=="DELETED");}
   async scenarioGet(principal:SuperadminPrincipal,projectId:string,id:string){const value=await this.artifactGet(principal,projectId,id);if(value.kind!=="VALIDATION_SCENARIO")throw new NotFound("Validation scenario not found");return value;}
-  scenarioCreate(principal:SuperadminPrincipal,projectId:string,input:unknown,operationId:string){const value=validationScenarioSaveInputSchema.parse(input);return this.mutate(principal,"scenario_create",projectId,operationId,value,()=>this.artifacts.write(projectId,"VALIDATION_SCENARIO",{...value,createdAt:this.clock.now()},value.taskId));}
-  async scenarioUpdate(principal:SuperadminPrincipal,projectId:string,id:string,input:unknown,operationId:string){const value=validationScenarioSaveInputSchema.parse(input);return this.mutate(principal,"scenario_update",projectId,operationId,{id,value},async()=>{const current=await this.scenarioGet(principal,projectId,id);return this.deps.store.updateArtifact({...current,taskId:value.taskId,content:{...value,updatedAt:this.clock.now()},contentHash:hash(value)});});}
+  scenarioCreate(principal:SuperadminPrincipal,projectId:string,input:unknown,operationId:string){const value=validationScenarioSaveInputSchema.parse(input);return this.mutate(principal,"scenario_create",projectId,operationId,value,()=>this.artifacts.write(projectId,"VALIDATION_SCENARIO",{...scenarioForStorage(value),createdAt:this.clock.now()},value.taskId));}
+  async scenarioUpdate(principal:SuperadminPrincipal,projectId:string,id:string,input:unknown,operationId:string){const value=validationScenarioSaveInputSchema.parse(input);return this.mutate(principal,"scenario_update",projectId,operationId,{id,value},async()=>{const current=await this.scenarioGet(principal,projectId,id);const content={...scenarioForStorage(value),updatedAt:this.clock.now()};return this.deps.store.updateArtifact({...current,taskId:value.taskId,content,contentHash:hash(content)});});}
   async scenarioDelete(principal:SuperadminPrincipal,projectId:string,id:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="DELETE_SCENARIO")throw new PolicyViolation("DELETE_SCENARIO confirmation is required");return this.mutate(principal,"scenario_delete",projectId,data.operationId,{id,...data},async()=>{const current=await this.scenarioGet(principal,projectId,id);return this.deps.store.updateArtifact({...current,status:"DELETED"});});}
+
+  // Executes a persisted scenario as real HTTP requests. The caller supplies only the saved
+  // scenario ID: the HTTP_API resource, base URL, steps, extractions and bearer handoff all
+  // come from the stored definition, so no tool input can retarget the request. Wrapped in
+  // mutate() so it inherits SUPERADMIN enforcement, operationId replay protection, production
+  // denial and the immutable mcp.scenario_run audit event.
+  scenarioRun(principal:SuperadminPrincipal,projectId:string,input:{scenarioId:string;operationId:string}){
+    return this.mutate(principal,"scenario_run",projectId,input.operationId,{scenarioId:input.scenarioId},():Promise<ScenarioExecutionResult>=>new HttpScenarioRunner({
+      store:this.deps.store,
+      artifacts:this.artifacts,
+      clock:this.clock,
+      ...(this.deps.secrets?{secrets:this.deps.secrets}:{}),
+      ...(this.deps.fetchImpl?{fetchImpl:this.deps.fetchImpl}:{}),
+    }).run({projectId,scenarioId:input.scenarioId,operationId:input.operationId,actor:principal.actor}));
+  }
 
   async validationList(principal:SuperadminPrincipal,projectId:string,taskId?:string){return (await this.artifactList(principal,projectId,taskId)).filter(v=>v.kind==="VALIDATION_REPORT"&&v.status!=="DELETED");}
   async validationGet(principal:SuperadminPrincipal,projectId:string,id:string){const value=await this.artifactGet(principal,projectId,id);if(value.kind!=="VALIDATION_REPORT")throw new NotFound("Validation result not found");return value;}

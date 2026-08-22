@@ -31,7 +31,7 @@ For local development, open [http://localhost:3000](http://localhost:3000). The 
 
 The navigation and safe text/metric/JSON blocks for Dashboard, Projects, Tasks, Runs, Validation Center, API Explorer, Database, Infrastructure, Artifacts, Audit, Capabilities, Settings, and future screens are persisted `ConsoleScreen` objects. `superadmin_screen_*` tools update those objects through the domain layer; the browser never edits or evaluates source code or HTML. Project and task drill-downs expose the complete evidence chain from requirements and plan through branch/commit, migration, tests, exact-SHA CI, IndependentReview, and final manifest.
 
-Validation suites: `SMOKE`, `CRUD`, `AUTHENTICATION`, `AUTHORIZATION`, `RLS`, `REGRESSION`, and `FULL`. The API Explorer is generated from persisted OpenAPI artifacts. Request Runner and saved scenarios require an explicitly registered, non-production `HTTP_API` resource. Browser credentials and production validation are technically rejected.
+Validation suites: `SMOKE`, `CRUD`, `AUTHENTICATION`, `AUTHORIZATION`, `RLS`, `REGRESSION`, and `FULL`. Saved scenarios are also executable as real HTTP requests through `superadmin_scenario_run` (see [`docs/http-validation-runner.md`](docs/http-validation-runner.md)). The API Explorer is generated from persisted OpenAPI artifacts. Request Runner and saved scenarios require an explicitly registered, non-production `HTTP_API` resource. Browser credentials and production validation are technically rejected.
 
 ## Lightweight start — Docker is optional
 

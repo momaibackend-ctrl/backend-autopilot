@@ -26,6 +26,8 @@ Open Validation History and expand the failed report. The human summary identifi
 
 API Request Runner requires an active `HTTP_API` resource owned by the selected project and `AUTONOMOUS_STAGING`. Register the exact sandbox base URL through the normal Resource Registry; do not work around origin or credential checks. Saved scenarios stop after the first failed step and persist skipped steps.
 
+To execute a saved scenario as real HTTP requests, call `superadmin_scenario_run({operationId, projectId, scenarioId})`. A `POLICY_VIOLATION` before any step ran means the target was rejected up front (wrong project, disabled/production resource, non-HTTPS non-loopback base URL, or a private/link-local/metadata address). A step with `status: "ERROR"` means transport failure or a policy rejection during execution (blocked cross-origin redirect, missing chained variable); `status: "FAILED"` means the request succeeded but the expected status or an assertion did not match. See `docs/http-validation-runner.md`.
+
 ## Browser E2E diagnosis
 
 Run `pnpm console:e2e:seed` and `pnpm test:browser`. The fixture is written only under ignored `tests/.tmp`, contains sanitized LIVE-1-shaped evidence, starts both services, and performs no external provider calls. Use `pnpm exec playwright show-trace <trace.zip>` for a retained failure trace.

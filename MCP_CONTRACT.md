@@ -46,7 +46,7 @@ Every input is Zod-validated. Read and mutation annotations are declared on each
 | Jobs | `superadmin_job_list`, `superadmin_job_get`, `superadmin_job_create`, `superadmin_job_cancel` |
 | Runs | `superadmin_run_list`, `superadmin_run_get`, `superadmin_run_delete` |
 | Artifacts | `superadmin_artifact_list`, `superadmin_artifact_get`, `superadmin_artifact_create`, `superadmin_artifact_update`, `superadmin_artifact_delete` |
-| Scenarios | `superadmin_scenario_list`, `superadmin_scenario_get`, `superadmin_scenario_create`, `superadmin_scenario_update`, `superadmin_scenario_delete` |
+| Scenarios | `superadmin_scenario_list`, `superadmin_scenario_get`, `superadmin_scenario_create`, `superadmin_scenario_update`, `superadmin_scenario_delete`, `superadmin_scenario_run` |
 | Validations | `superadmin_validation_list`, `superadmin_validation_get`, `superadmin_validation_run`, `superadmin_validation_delete` |
 | Settings | `superadmin_setting_list`, `superadmin_setting_get`, `superadmin_setting_upsert`, `superadmin_setting_delete` |
 | Console screens | `superadmin_screen_list`, `superadmin_screen_get`, `superadmin_screen_upsert`, `superadmin_screen_delete` |
@@ -54,7 +54,7 @@ Every input is Zod-validated. Read and mutation annotations are declared on each
 | Memberships | `superadmin_membership_list`, `superadmin_membership_get`, `superadmin_membership_upsert`, `superadmin_membership_delete` |
 | Audit | `superadmin_audit_list`, `superadmin_audit_get` |
 
-There are 83 registered remote tools. `superadmin_system_overview` returns projects, task/job counts and states, failed gates, latest errors, evidence-based capabilities, migration markers, Edge Functions, recent Actions runs and deployment status in one response.
+There are 87 registered remote tools. `superadmin_system_overview` returns projects, task/job counts and states, failed gates, latest errors, evidence-based capabilities, migration markers, Edge Functions, recent Actions runs and deployment status in one response.
 
 ## Mutation rules
 
@@ -68,9 +68,27 @@ There are 83 registered remote tools. `superadmin_system_overview` returns proje
 - Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution.
 - Delete, membership and resource binding tools require structured identity, confirmation enum and reason fields. No free-form command is interpreted.
 
+## Executable HTTP scenario runner
+
+`superadmin_scenario_run({operationId, projectId, scenarioId})` executes a saved validation
+scenario as real HTTP requests against its own registered `HTTP_API` resource, and is the
+backend-testing subset of what Postman does. It is distinct from `superadmin_validation_run`,
+which is unchanged and still performs semantic control-state validation.
+
+The caller supplies nothing but the persisted scenario ID: the resource, base URL, steps,
+headers, body, assertions, extractions and bearer handoff all come from the stored definition,
+so the tool can never become an arbitrary-URL fetch. Targets must be HTTPS (or loopback HTTP for
+a `LOCAL`/`SANDBOX` resource); private, link-local and cloud metadata addresses, origin escape,
+base-path escape and cross-origin redirects are all rejected. Timeout, redirect count, response
+size and step count are bounded, and secret material never reaches the tool result, evidence,
+audit or logs. Each run persists a redacted `VALIDATION_REPORT` artifact readable through
+`superadmin_validation_get`, and appends one `mcp.scenario_run` audit event.
+
+Full contract, safety boundary and worked example: [`docs/http-validation-runner.md`](docs/http-validation-runner.md).
+
 ## Deliberately absent
 
-There is no shell/subprocess proxy, SQL console, arbitrary filesystem/path tool, arbitrary HTTP fetch, arbitrary GitHub repository URL, policy bypass, production mutation or source-code editing tool. Long execution is a durable job carrying only semantic inputs and a registered resource UUID.
+There is no shell/subprocess proxy, SQL console, arbitrary filesystem/path tool, arbitrary HTTP fetch (the scenario runner only replays a persisted scenario against its own registered resource), arbitrary GitHub repository URL, policy bypass, production mutation or source-code editing tool. Long execution is a durable job carrying only semantic inputs and a registered resource UUID.
 
 ## Client configuration
 
