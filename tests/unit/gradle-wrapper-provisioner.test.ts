@@ -1,4 +1,4 @@
-import { mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,28 @@ describe('provisionGradleWrapper', () => {
 
     const pinned = await stat(join(pinnedTemplateDir, 'gradlew'));
     expect(provisioned.size).toBe(pinned.size);
+  });
+
+  // Second MOMNA-990 regression: the runtime call sequence must validate/snapshot through
+  // execution.execute() before wrapper normalization. Separately, Kotlin dependency preparation
+  // must return before package-manager preparation so it cannot mutate gradlew pre-snapshot.
+  it('keeps Gradle wrapper normalization after semantic execution and skips pre-execution Kotlin preparation', async () => {
+    const source = await readFile(join(process.cwd(), 'scripts', 'run-execution-job.ts'), 'utf8');
+    const dependencyPreparation = source.indexOf('await installTargetDependencies(workspace,current,commands,stack)');
+    const semanticExecution = source.indexOf('const result=await execution.execute');
+    const wrapperNormalization = source.indexOf('const provisionedWrapperSha=await commitProvisionedGradleWrapper');
+
+    expect(dependencyPreparation).toBeGreaterThan(-1);
+    expect(semanticExecution).toBeGreaterThan(dependencyPreparation);
+    expect(wrapperNormalization).toBeGreaterThan(semanticExecution);
+
+    const installStart = source.indexOf('async function installTargetDependencies');
+    const installEnd = source.indexOf('async function commitProvisionedGradleWrapper');
+    const installBody = source.slice(installStart, installEnd);
+    const kotlinSkip = installBody.indexOf("if(stack==='KOTLIN_GRADLE')return;");
+    const packagePreparation = installBody.indexOf("access(join(workspace,'package.json'))");
+    expect(kotlinSkip).toBeGreaterThan(-1);
+    expect(packagePreparation).toBeGreaterThan(kotlinSkip);
   });
 
   it('is a no-op when no Gradle project marker is present in the workspace', async () => {
