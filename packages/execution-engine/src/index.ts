@@ -14,7 +14,7 @@ export function hasRawCredentialMaterial(path:string,content:string):boolean{
   if(name.startsWith('.env')&&!safeTemplateNames.has(name))return true;
   if(knownCredentialPrefix.test(content))return true;
   for(const line of content.split(/\r?\n/)){
-    const match=line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.+?)\s*[,;]?\s*$/);
+    const match=line.match(/^\s*(?:(?:const|let|var)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.+?)\s*[,;]?\s*$/);
     if(!match||!sensitiveAssignmentName.test(match[1]??''))continue;
     const rhs=(match[2]??'').trim();
     if(!rhs||rhs.startsWith('process.env')||rhs.startsWith('required(')||rhs.startsWith('optional(')||rhs.startsWith('env.')||rhs.startsWith('${')||rhs.startsWith('<'))continue;
