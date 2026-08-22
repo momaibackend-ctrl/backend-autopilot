@@ -1,4 +1,4 @@
-import { mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,25 @@ describe('provisionGradleWrapper', () => {
 
     const pinned = await stat(join(pinnedTemplateDir, 'gradlew'));
     expect(provisioned.size).toBe(pinned.size);
+  });
+
+  // Second MOMNA-990 regression: wrapper normalization must remain strictly after the
+  // ExecutionEngine snapshot/clean-tree guard. A previous retry chmod'ed gradlew during
+  // dependency preparation, producing " M gradlew" before snapshot() and making the runtime
+  // reject its own controlled preparation. Lock the runner ordering so that cannot regress.
+  it('keeps Gradle wrapper normalization after clean-tree validation and semantic execution', async () => {
+    const source = await readFile(join(process.cwd(), 'scripts', 'run-execution-job.ts'), 'utf8');
+    const kotlinPreparationSkip = source.indexOf("if(stack==='KOTLIN_GRADLE')return;");
+    const semanticExecution = source.indexOf('const result=await execution.execute');
+    const wrapperNormalization = source.indexOf('const provisionedWrapperSha=await commitProvisionedGradleWrapper');
+
+    expect(kotlinPreparationSkip).toBeGreaterThan(-1);
+    expect(semanticExecution).toBeGreaterThan(kotlinPreparationSkip);
+    expect(wrapperNormalization).toBeGreaterThan(semanticExecution);
+
+    const beforeSemanticExecution = source.slice(kotlinPreparationSkip, semanticExecution);
+    expect(beforeSemanticExecution).not.toContain('chmod');
+    expect(beforeSemanticExecution).not.toContain('provisionGradleWrapper');
   });
 
   it('is a no-op when no Gradle project marker is present in the workspace', async () => {
