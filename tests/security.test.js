@@ -6,5 +6,5 @@ test('clean-working-tree guard remains enforced', async () => {
   const source = await readFile(new URL('../packages/adapters/git/src/index.ts', import.meta.url), 'utf8');
   assert.match(source, /status','--porcelain/);
   assert.match(source, /Target repository must have a clean working tree/);
-  assert.match(source, /async snapshot\(workspace:string,taskId:string\).*ensureClean/s);
+  assert.match(source, /async snapshot\([^)]*\).*?await this\.ensureClean\(/s);
 });
