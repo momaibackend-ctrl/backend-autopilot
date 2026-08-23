@@ -112,10 +112,47 @@ describe("rebase plan resolution", () => {
     expect(plan.sourceCommitSha).toBe(verified);
   });
 
-  it("requires a task that already reached READY", () => {
+  it("requires a task that already reached READY to START a transfer", () => {
+    for (const state of ["IMPLEMENTING", "BLOCKED", "TESTING"] as const)
+      expect(() =>
+        resolveRebasePlan({ ...history(), task: task({ state }) }),
+      ).toThrowError(/already passed every READY gate/);
+  });
+
+  it("resumes a transfer already under way without weakening the evidence gate", () => {
+    // A reported conflict leaves the task BLOCKED and adds its own still-running run; resolving
+    // it has to remain possible, and must still resolve to the SAME verified source commit.
+    const input = history();
+    const inFlight = {
+      ...input,
+      task: task({ state: "BLOCKED" }),
+      runs: [
+        ...input.runs,
+        run({
+          id: "44444444-4444-4444-8444-44444444444f",
+          status: "RUNNING",
+          baseCommit: originalBase,
+          startedAt: "2026-08-24T00:00:00.000Z",
+        }),
+      ],
+      rebaseInProgress: true,
+    };
+    expect(resolveRebasePlan(inFlight)).toMatchObject({
+      sourceCommitSha: verified,
+      sourceBranch: branch,
+      originalBaseCommit: originalBase,
+    });
+    // Without a transfer under way the same state is still refused.
     expect(() =>
-      resolveRebasePlan({ ...history(), task: task({ state: "IMPLEMENTING" }) }),
+      resolveRebasePlan({ ...inFlight, rebaseInProgress: false }),
     ).toThrowError(/already passed every READY gate/);
+    // And a resumption still cannot invent a verified commit that never succeeded.
+    expect(() =>
+      resolveRebasePlan({
+        ...inFlight,
+        runs: inFlight.runs.filter((value) => value.status !== "SUCCEEDED"),
+      }),
+    ).toThrowError(/No successful run matches/);
   });
 
   it("requires an active non-production sandbox repository with WRITE and ADMIN", () => {
@@ -144,7 +181,7 @@ describe("rebase plan resolution", () => {
         ...history(),
         runs: [run({ baseCommit: originalBase, commitSha: "d".repeat(40), branch })],
       }),
-    ).toThrowError(/does not match the task's verified commit/);
+    ).toThrowError(/No successful run matches/);
     expect(() =>
       resolveRebasePlan({
         ...history(),

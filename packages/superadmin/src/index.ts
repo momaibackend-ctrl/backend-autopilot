@@ -445,13 +445,14 @@ export class SuperadminService {
   async taskRebaseOntoCurrentBase(principal:SuperadminPrincipal,input:{projectId:string;taskId:string;resourceId:string;operationId:string;resolutions?:Array<{path:string;content:string}>}){
     return this.mutate(principal,"task_rebase_onto_current_base",input.projectId,input.operationId,{taskId:input.taskId,resourceId:input.resourceId,resolvedPaths:(input.resolutions??[]).map(value=>value.path)},async()=>{
       if(!this.deps.asyncExecution)throw new UnsupportedOperation("Asynchronous execution is not configured");
-      const [task,resource,runs,artifacts]=await Promise.all([
+      const [task,resource,runs,artifacts,jobs]=await Promise.all([
         this.deps.store.getTask(input.projectId,input.taskId),
         this.requireResource(input.projectId,input.resourceId),
         this.deps.store.listRuns(input.projectId,input.taskId),
         this.deps.store.listArtifacts(input.projectId,input.taskId),
+        this.deps.store.listExecutionJobs(input.projectId,input.taskId),
       ]);
-      const plan=resolveRebasePlan({...(task?{task}:{}),resource,runs,artifacts});
+      const plan=resolveRebasePlan({...(task?{task}:{}),resource,runs,artifacts,rebaseInProgress:jobs.some(job=>job.kind==='REBASE')});
       return this.deps.asyncExecution.enqueueRebase({projectId:input.projectId,taskId:input.taskId,operationId:input.operationId,resolutions:input.resolutions??[]},input.resourceId,plan,principal.actor);
     });
   }

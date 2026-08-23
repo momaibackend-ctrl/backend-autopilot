@@ -35,10 +35,20 @@ export function resolveRebasePlan(input: {
   resource?: Resource;
   runs: Run[];
   artifacts: Artifact[];
+  /**
+   * True when a transfer for this task is already under way. A transfer can only ever be
+   * STARTED from READY; once it is running, the task has necessarily left READY (and a reported
+   * conflict leaves it BLOCKED), so resuming it must remain possible. The evidence gate below is
+   * unchanged either way -- the verified manifest and its successful run still have to match.
+   */
+  rebaseInProgress?: boolean;
 }): RebasePlan {
   const { task, resource, runs, artifacts } = input;
   if (!task) throw new NotFound("Task not found");
-  if (task.state !== "READY")
+  const resumable =
+    input.rebaseInProgress === true &&
+    (task.state === "IMPLEMENTING" || task.state === "BLOCKED");
+  if (task.state !== "READY" && !resumable)
     throw new PolicyViolation(
       "Rebase onto the current base requires a task that already passed every READY gate",
       { state: task.state },
@@ -80,16 +90,20 @@ export function resolveRebasePlan(input: {
   const ordered = [...runs].sort((a, b) =>
     a.startedAt.localeCompare(b.startedAt),
   );
-  const latest = ordered.at(-1);
-  if (
-    !latest ||
-    latest.status !== "SUCCEEDED" ||
-    latest.commitSha !== verifiedCommitSha ||
-    !latest.branch?.startsWith("autopilot/")
-  )
+  // The run that produced the verified commit, not merely the most recent run: a transfer that
+  // is already under way has itself added a newer, still-running run for the same task.
+  const verifiedRun = [...ordered]
+    .reverse()
+    .find(
+      (run) =>
+        run.status === "SUCCEEDED" &&
+        run.commitSha === verifiedCommitSha &&
+        run.branch?.startsWith("autopilot/"),
+    );
+  if (!verifiedRun?.branch)
     throw new PolicyViolation(
-      "Latest run does not match the task's verified commit SHA",
-      { expected: verifiedCommitSha, actual: latest?.commitSha },
+      "No successful run matches the task's verified commit SHA",
+      { expected: verifiedCommitSha, actual: ordered.at(-1)?.commitSha },
     );
   const originalBaseCommit = ordered.find((run) => run.baseCommit)?.baseCommit;
   if (!originalBaseCommit)
@@ -101,11 +115,11 @@ export function resolveRebasePlan(input: {
       "Task's original base equals its verified commit; there is nothing to transfer",
     );
   return {
-    sourceBranch: latest.branch,
+    sourceBranch: verifiedRun.branch,
     sourceCommitSha: verifiedCommitSha,
     originalBaseCommit,
     manifestArtifactId: manifest.id,
-    rebaseBranchPrefix: latest.branch,
+    rebaseBranchPrefix: verifiedRun.branch,
   };
 }
 
