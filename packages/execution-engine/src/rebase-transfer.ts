@@ -3,7 +3,7 @@ import { ExecutionFailed, PolicyViolation } from "../../core/src/errors.js";
 
 // Transfers an already-verified task onto a newer base branch after its dependency was merged.
 //
-// The mechanism is a real 3-way replay (`git cherry-pick` of the task's own commit range), never
+// The mechanism is a real 3-way merge of the task's own net change (`git merge --squash`), never
 // a file copy and never an ours/theirs shortcut. Everything git can merge safely, git merges;
 // what remains is a genuine semantic conflict, which is reported with full three-sided evidence
 // (base / current code / task intent) so it can be resolved deliberately and then re-verified.
@@ -43,10 +43,10 @@ export interface RebaseConflict {
 }
 
 export interface RebaseTransfer {
-  method: "CHERRY_PICK_RANGE";
+  method: "SQUASH_MERGE";
+  /** The task's own commits, recorded as evidence of exactly what was transferred. */
   replayedCommits: string[];
   conflicts: RebaseConflict[];
-  stoppedAtCommit?: string;
 }
 
 async function checked(git: RebaseGit, args: string[], failure: string) {
@@ -149,9 +149,16 @@ export async function collectConflicts(
 }
 
 /**
- * Replays exactly the task's own commits onto the branch that is currently checked out. The
- * range is `originalBase..sourceCommit`, so the state the task merely inherited is never
- * carried over -- only what the task itself changed.
+ * Applies exactly the task's own net change onto the branch that is currently checked out.
+ *
+ * Because the task's original base is an ancestor of the target base, git's merge base between
+ * the target base and the task head IS that original base -- so `git merge --squash` performs
+ * precisely the right 3-way merge: current base as ours, original base as the common ancestor,
+ * the task's verified end state as theirs. The state the task merely inherited is never carried
+ * over, work the base gained since the fork is preserved, and the result is a single clean
+ * commit rather than a replay of intermediate repair states that the verified result already
+ * superseded. Squashing also means a genuine overlap is reported once, against the task's final
+ * intent, instead of once per intermediate commit.
  */
 export async function transferTaskCommits(
   git: RebaseGit,
@@ -179,25 +186,30 @@ export async function transferTaskCommits(
   // diff3 keeps the original-base side in the markers, which is what makes a conflict
   // resolvable on intent rather than by picking a side.
   await git(["config", "merge.conflictStyle", "diff3"]);
-  const picked = await git([
-    "cherry-pick",
-    "--allow-empty",
-    `${input.originalBaseCommit}..${input.sourceCommitSha}`,
-  ]);
-  if (picked.exitCode === 0)
-    return { method: "CHERRY_PICK_RANGE", replayedCommits, conflicts: [] };
-  const conflicts = await collectConflicts(git, input.readFile);
-  if (!conflicts.length)
-    throw new ExecutionFailed("Commit transfer failed without a conflict", {
-      stderr: String(redact(picked.stderr)).slice(0, 800),
+  const merged = await git(["merge", "--squash", input.sourceCommitSha]);
+  const conflicts =
+    merged.exitCode === 0 ? [] : await collectConflicts(git, input.readFile);
+  if (merged.exitCode !== 0 && !conflicts.length)
+    throw new ExecutionFailed("Transfer failed without a reported conflict", {
+      stderr: String(redact(merged.stderr)).slice(0, 800),
     });
-  const head = await git(["rev-parse", "CHERRY_PICK_HEAD"]);
-  return {
-    method: "CHERRY_PICK_RANGE",
-    replayedCommits,
-    conflicts,
-    ...(head.exitCode === 0 ? { stoppedAtCommit: head.stdout.trim() } : {}),
-  };
+  return { method: "SQUASH_MERGE", replayedCommits, conflicts };
+}
+
+/** Commits the transferred result once every conflict is resolved and staged. */
+export async function commitTransfer(git: RebaseGit, message: string) {
+  const remaining = await git(["diff", "--name-only", "--diff-filter=U"]);
+  if (remaining.stdout.trim())
+    throw new ExecutionFailed("Conflicts remain unresolved", {
+      paths: lines(remaining.stdout),
+    });
+  await checked(git, ["add", "-A"], "Could not stage the transferred result");
+  const staged = await git(["diff", "--cached", "--name-only"]);
+  if (!staged.stdout.trim())
+    throw new ExecutionFailed("Transfer produced no change against the target base");
+  await checked(git, ["commit", "-m", message], "Could not commit the transfer");
+  const head = await checked(git, ["rev-parse", "HEAD"], "Could not read the transferred commit");
+  return head.stdout.trim();
 }
 
 export interface AppliedResolution {

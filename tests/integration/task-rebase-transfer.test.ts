@@ -5,10 +5,10 @@
 //   * task T was already completed and verified on top of D's branch, so its pull request now
 //     conflicts and cannot be merged.
 //
-// The transfer must replay only T's own commits onto the current main, keep the merged work that
-// arrived after T forked, surface the genuine overlap as a conflict with three-sided evidence
-// rather than picking a side, accept a semantic resolution for exactly that path, and refuse any
-// result that reverts something the base already carried.
+// The transfer must apply only T's own net change onto the current main, keep the merged work
+// that arrived after T forked, surface the genuine overlap as a conflict with three-sided
+// evidence rather than picking a side, accept a semantic resolution for exactly that path, and
+// refuse any result that reverts something the base already carried.
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ import {
   applyResolutions,
   assertBaseChangesPreserved,
   assertDependencyMerged,
+  commitTransfer,
   taskChangedPaths,
   transferTaskCommits,
   type RebaseGit,
@@ -109,7 +110,7 @@ describe("transfer of a verified task onto the current base", () => {
     });
   });
 
-  it("replays only the task's own commits and reports the genuine conflict with three-sided evidence", async () => {
+  it("applies only the task's own change and reports the genuine conflict with three-sided evidence", async () => {
     const branch = rebaseBranchName("autopilot/TASK-04-platform", targetBase);
     sh(["switch", "-C", branch, targetBase]);
     const paths = await taskChangedPaths(git, originalBase, taskHead);
@@ -122,7 +123,7 @@ describe("transfer of a verified task onto the current base", () => {
       sourceCommitSha: taskHead,
       readFile: (path) => readFile(join(repo, path), "utf8"),
     });
-    expect(transfer.method).toBe("CHERRY_PICK_RANGE");
+    expect(transfer.method).toBe("SQUASH_MERGE");
     expect(transfer.replayedCommits).toHaveLength(2);
     expect(transfer.conflicts.map((c) => c.path)).toEqual(["src/app.kt"]);
     expect(transfer.conflicts[0]?.kind).toBe("CONTENT");
@@ -136,8 +137,9 @@ describe("transfer of a verified task onto the current base", () => {
     expect(merged).toContain("Role.WORKER -> runWorker()");
     expect(merged).toContain("    serve()");
 
-    // The conflict-free part of the task already landed.
+    // The conflict-free part of the task landed in the same single pass.
     expect(await readFile(join(repo, "src/jobs.kt"), "utf8")).toContain("queue");
+    expect(await readFile(join(repo, "src/worker.kt"), "utf8")).toContain("runWorker");
   });
 
   it("refuses resolutions outside the conflict set or still carrying markers", async () => {
@@ -176,15 +178,8 @@ describe("transfer of a verified task onto the current base", () => {
     });
     expect(applied).toEqual([{ path: "src/app.kt", kind: "CONTENT", bytes: Buffer.byteLength(resolved, "utf8") }]);
 
-    execFileSync("git", ["-c", "core.editor=true", "cherry-pick", "--continue"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, GIT_EDITOR: "true" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const rebasedCommitSha = await commitTransfer(git, "autopilot: TASK-04 transferred");
     expect(sh(["diff", "--name-only", "--diff-filter=U"]).trim()).toBe("");
-
-    const rebasedCommitSha = sha("HEAD");
     const preserved = await assertBaseChangesPreserved(git, {
       originalBaseCommit: originalBase,
       targetBaseCommit: targetBase,
@@ -201,7 +196,8 @@ describe("transfer of a verified task onto the current base", () => {
     expect(app).toContain("Role.WORKER -> runWorker()");
     expect(app).toContain("serve(port())");
     expect(await readFile(join(repo, "src/worker.kt"), "utf8")).toContain("runWorker");
-    expect(sh(["rev-list", "--count", `${targetBase}..${rebasedCommitSha}`]).trim()).toBe("2");
+    // A single clean commit on top of the current base, not a replay of intermediate states.
+    expect(sh(["rev-list", "--count", `${targetBase}..${rebasedCommitSha}`]).trim()).toBe("1");
   });
 
   it("rejects a transfer that reverts work the target base already carried", async () => {

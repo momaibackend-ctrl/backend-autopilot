@@ -12,7 +12,7 @@ import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
 import { AutopilotService } from '../packages/core/src/application.js';
 import { ExecutionFailed, PolicyViolation } from '../packages/core/src/errors.js';
 import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
-import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
+import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
 import { fileChangeSchema, rebaseConflictResolutionSchema, type ExecutionJob } from '../packages/schemas/src/index.js';
@@ -132,7 +132,7 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
   const taskPaths=await taskChangedPaths(git,rebase.originalBaseCommit,rebase.sourceCommitSha);
   const transfer=await transferTaskCommits(git,{originalBaseCommit:rebase.originalBaseCommit,sourceCommitSha:rebase.sourceCommitSha,readFile});
 
-  const report={jobId:input.job.id,operationId:input.job.operationId,method:transfer.method,sourceBranch:rebase.sourceBranch,sourceCommitSha:rebase.sourceCommitSha,originalBaseCommit:rebase.originalBaseCommit,manifestArtifactId:rebase.manifestArtifactId,targetBaseBranch,targetBaseCommit,rebaseBranch:branch,replayedCommits:transfer.replayedCommits,taskChangedPaths:taskPaths,conflicts:transfer.conflicts,...(transfer.stoppedAtCommit?{stoppedAtCommit:transfer.stoppedAtCommit}:{})};
+  const report={jobId:input.job.id,operationId:input.job.operationId,method:transfer.method,sourceBranch:rebase.sourceBranch,sourceCommitSha:rebase.sourceCommitSha,originalBaseCommit:rebase.originalBaseCommit,manifestArtifactId:rebase.manifestArtifactId,targetBaseBranch,targetBaseCommit,rebaseBranch:branch,replayedCommits:transfer.replayedCommits,taskChangedPaths:taskPaths,conflicts:transfer.conflicts};
 
   let resolved:Array<{path:string;kind:string;bytes:number}>=[];
   if(transfer.conflicts.length){
@@ -145,14 +145,8 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
       throw new DependencyBlocked('Rebase requires semantic conflict resolution',{artifactId:artifact.id,conflicts:transfer.conflicts.map(value=>value.path)});
     }
     resolved=await applyResolutions(git,{conflicts:transfer.conflicts,resolutions:rebase.resolutions,writeFile});
-    const continued=await commands.run({command:'git',args:['-c','core.editor=true','cherry-pick','--continue'],cwd:workspace,taskId:task.id,allowed:['BUILD'],env:{...env,GIT_EDITOR:'true'}});
-    if(continued.record.exitCode!==0)throw new ExecutionFailed('Cherry-pick could not continue after resolution',{stderr:continued.stderr.slice(0,600)});
-    const remaining=await git(['diff','--name-only','--diff-filter=U']);
-    if(remaining.stdout.trim())throw new ExecutionFailed('Conflicts remain after resolution',{paths:remaining.stdout.trim().split(/\r?\n/)});
   }
-
-  const head=await checked(commands,{command:'git',args:['rev-parse','HEAD'],cwd:workspace,taskId:task.id,allowed:['READ']});
-  const rebasedCommitSha=head.stdout.trim();
+  const rebasedCommitSha=await commitTransfer(git,`autopilot: ${task.externalKey} ${task.title} (transferred onto ${targetBaseBranch}@${targetBaseCommit.slice(0,12)})`);
   const preserved=await assertBaseChangesPreserved(git,{originalBaseCommit:rebase.originalBaseCommit,targetBaseCommit,rebasedCommitSha,taskPaths});
   const diff=await checked(commands,{command:'git',args:['diff',targetBaseCommit,rebasedCommitSha,'--'],cwd:workspace,taskId:task.id,allowed:['READ']});
   const changed=await checked(commands,{command:'git',args:['diff','--name-only',targetBaseCommit,rebasedCommitSha],cwd:workspace,taskId:task.id,allowed:['READ']});

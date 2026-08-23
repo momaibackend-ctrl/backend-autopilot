@@ -52,12 +52,12 @@ export class AsyncExecutionCoordinator {
     let task=await this.store.getTask(data.projectId,data.taskId);if(!task)throw new NotFound('Task not found');
     const existing=await this.store.findExecutionJobByOperation(project.id,data.operationId);
     if(existing)return {job:existing,run:existing.runId?await this.store.getRun(project.id,existing.runId):undefined,idempotentReplay:true};
-    if(!['READY','IMPLEMENTING'].includes(task.state))throw new InvalidState('Only a READY task (or one already being re-verified) can be transferred onto a newer base');
+    if(!['READY','IMPLEMENTING','BLOCKED'].includes(task.state))throw new InvalidState('Only a READY task (or one already being re-verified, or blocked awaiting conflict resolution) can be transferred onto a newer base');
     await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
     const resource=await this.store.getResource(resourceId);
     if(!resource||resource.projectId!==project.id||resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github')throw new ArchitectureViolation('Remote execution requires a project-owned registered GitHub repository');
     for(const resolution of data.resolutions)assertSafeChange(resolution.path,resolution.content);
-    if(task.state==='READY')task=await this.workflow.transition(task,'IMPLEMENTING',`Transferring verified work onto the current base of ${resource.externalReference}`,actor);
+    if(task.state!=='IMPLEMENTING')task=await this.workflow.transition(task,'IMPLEMENTING',`Transferring verified work onto the current base of ${resource.externalReference}`,actor);
     const now=this.clock.now();
     const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,baseCommit:plan.originalBaseCommit,startedAt:now};
     await this.store.saveRun(run);

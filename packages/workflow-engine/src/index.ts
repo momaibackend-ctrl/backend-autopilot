@@ -3,7 +3,7 @@ import type { Clock, IdGenerator, StateStore } from '../../core/src/ports.js';
 import type { Task, TaskState } from '../../schemas/src/index.js';
 
 const transitions:Record<TaskState,TaskState[]>={
-  INGESTED:['ANALYZING','BLOCKED'],ANALYZING:['PLANNED','BLOCKED','FAILED'],BLOCKED:['ANALYZING','PLANNED'],PLANNED:['IMPLEMENTING','BLOCKED'],
+  INGESTED:['ANALYZING','BLOCKED'],ANALYZING:['PLANNED','BLOCKED','FAILED'],BLOCKED:['ANALYZING','PLANNED','IMPLEMENTING'],PLANNED:['IMPLEMENTING','BLOCKED'],
   IMPLEMENTING:['TESTING','FAILED','BLOCKED'],TESTING:['REVIEWING','IMPLEMENTING','BLOCKED','FAILED'],REVIEWING:['READY','IMPLEMENTING','BLOCKED','FAILED'],
   // READY is terminal for ordinary work. The one way out is re-verification of already-verified
   // work on a newer base (a merged dependency invalidated the base it was proven against), which
