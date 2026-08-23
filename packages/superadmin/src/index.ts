@@ -35,6 +35,7 @@ import {
   type Resource,
   type TaskState,
 } from "../../schemas/src/index.js";
+import { resolveRebasePlan } from "./rebase-eligibility.js";
 import {
   HttpScenarioRunner,
   scenarioForStorage,
@@ -434,6 +435,25 @@ export class SuperadminService {
       ...(this.deps.secrets?{secrets:this.deps.secrets}:{}),
       ...(this.deps.fetchImpl?{fetchImpl:this.deps.fetchImpl}:{}),
     }).run({projectId,scenarioId:input.scenarioId,operationId:input.operationId,actor:principal.actor}));
+  }
+
+  // Transfers an already-verified task onto the repository's current base branch after its
+  // dependency was merged and its pull request went stale. Everything that identifies WHAT is
+  // moved -- branch, verified commit, original base, manifest -- is resolved server-side from
+  // durable evidence by resolveRebasePlan; the caller only names the task and repository. The
+  // task keeps its identity and plan and is re-verified, never recreated.
+  async taskRebaseOntoCurrentBase(principal:SuperadminPrincipal,input:{projectId:string;taskId:string;resourceId:string;operationId:string;resolutions?:Array<{path:string;content:string}>}){
+    return this.mutate(principal,"task_rebase_onto_current_base",input.projectId,input.operationId,{taskId:input.taskId,resourceId:input.resourceId,resolvedPaths:(input.resolutions??[]).map(value=>value.path)},async()=>{
+      if(!this.deps.asyncExecution)throw new UnsupportedOperation("Asynchronous execution is not configured");
+      const [task,resource,runs,artifacts]=await Promise.all([
+        this.deps.store.getTask(input.projectId,input.taskId),
+        this.requireResource(input.projectId,input.resourceId),
+        this.deps.store.listRuns(input.projectId,input.taskId),
+        this.deps.store.listArtifacts(input.projectId,input.taskId),
+      ]);
+      const plan=resolveRebasePlan({...(task?{task}:{}),resource,runs,artifacts});
+      return this.deps.asyncExecution.enqueueRebase({projectId:input.projectId,taskId:input.taskId,operationId:input.operationId,resolutions:input.resolutions??[]},input.resourceId,plan,principal.actor);
+    });
   }
 
   async validationList(principal:SuperadminPrincipal,projectId:string,taskId?:string){return (await this.artifactList(principal,projectId,taskId)).filter(v=>v.kind==="VALIDATION_REPORT"&&v.status!=="DELETED");}

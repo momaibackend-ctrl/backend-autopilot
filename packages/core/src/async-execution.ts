@@ -1,6 +1,6 @@
 import { AuditLog } from '../../audit/src/index.js';
 import { PolicyEngine } from '../../policy-engine/src/index.js';
-import { executeInputSchema, PlatformVersions, type ExecutionJob, type Run, type Task } from '../../schemas/src/index.js';
+import { executeInputSchema, PlatformVersions, taskRebaseInputSchema, type ExecutionJob, type Run, type Task } from '../../schemas/src/index.js';
 import { WorkflowEngine } from '../../workflow-engine/src/index.js';
 import { ArchitectureViolation, DependencyBlocked, InvalidState, NotFound } from './errors.js';
 import type { Clock, IdGenerator, StateStore } from './ports.js';
@@ -37,6 +37,38 @@ export class AsyncExecutionCoordinator {
     try{
       job=await this.store.updateExecutionJob({...job,status:'DISPATCHING',updatedAt:this.clock.now()});const dispatched=await this.dispatcher.dispatch(job);job=await this.store.updateExecutionJob({...job,status:'DISPATCHED',...dispatched,updatedAt:this.clock.now()});
       await this.audit.record({actor:'github-actions-dispatcher',action:'execution.job.dispatched',projectId:project.id,taskId:task.id,resourceId,input:{jobId:job.id},result:{workflowRunId:job.workflowRunId??'pending'},reason:'Execution workflow accepted the safe job identifier',correlationId:data.operationId});
+      return {job,run,idempotentReplay:false};
+    }catch(error){job=await this.store.updateExecutionJob({...job,status:'QUEUED',error:{code:'DISPATCH_FAILED',message:error instanceof Error?error.message:'Unknown dispatch error'},updatedAt:this.clock.now()});throw error;}
+  }
+  // Queues the transfer of an already-verified task onto the repository's current base branch,
+  // for the case where the task's dependency has since been merged and its pull request now
+  // conflicts. The caller supplies no branch, base, commit or manifest: `plan` is resolved
+  // entirely from durable evidence by the superadmin layer, and the runner re-resolves the
+  // target base head itself. The task is NOT recreated -- it keeps its identity, plan,
+  // requirements and history, and simply leaves READY to be re-verified on the newer base.
+  async enqueueRebase(input:unknown,resourceId:string,plan:{sourceBranch:string;sourceCommitSha:string;originalBaseCommit:string;manifestArtifactId:string;rebaseBranchPrefix:string},actor='external-agent'){
+    const data=taskRebaseInputSchema.parse(input);
+    const project=await this.store.getProject(data.projectId);if(!project)throw new NotFound('Project not found');
+    let task=await this.store.getTask(data.projectId,data.taskId);if(!task)throw new NotFound('Task not found');
+    const existing=await this.store.findExecutionJobByOperation(project.id,data.operationId);
+    if(existing)return {job:existing,run:existing.runId?await this.store.getRun(project.id,existing.runId):undefined,idempotentReplay:true};
+    if(!['READY','IMPLEMENTING'].includes(task.state))throw new InvalidState('Only a READY task (or one already being re-verified) can be transferred onto a newer base');
+    await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
+    const resource=await this.store.getResource(resourceId);
+    if(!resource||resource.projectId!==project.id||resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github')throw new ArchitectureViolation('Remote execution requires a project-owned registered GitHub repository');
+    for(const resolution of data.resolutions)assertSafeChange(resolution.path,resolution.content);
+    if(task.state==='READY')task=await this.workflow.transition(task,'IMPLEMENTING',`Transferring verified work onto the current base of ${resource.externalReference}`,actor);
+    const now=this.clock.now();
+    const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,baseCommit:plan.originalBaseCommit,startedAt:now};
+    await this.store.saveRun(run);
+    let job:ExecutionJob={id:this.ids.next(),projectId:project.id,taskId:task.id,resourceId,runId:run.id,operationId:data.operationId,kind:'REBASE',status:'QUEUED',payload:{rebase:{...plan,resolutions:data.resolutions}},branch:plan.sourceBranch,commitSha:plan.sourceCommitSha,baseCommitSha:plan.originalBaseCommit,attempt:task.repairAttempts,queuedAt:now,updatedAt:now};
+    job=await this.store.createExecutionJob(job);
+    await this.audit.record({actor,action:'execution.rebase.queued',projectId:project.id,taskId:task.id,resourceId,input:{operationId:data.operationId,sourceBranch:plan.sourceBranch,sourceCommitSha:plan.sourceCommitSha,originalBaseCommit:plan.originalBaseCommit,resolvedPaths:data.resolutions.map(value=>value.path)},result:{jobId:job.id,runId:run.id},reason:'Authorized transfer of verified task work onto the current base branch',correlationId:data.operationId});
+    try{
+      job=await this.store.updateExecutionJob({...job,status:'DISPATCHING',updatedAt:this.clock.now()});
+      const dispatched=await this.dispatcher.dispatch(job);
+      job=await this.store.updateExecutionJob({...job,status:'DISPATCHED',...dispatched,updatedAt:this.clock.now()});
+      await this.audit.record({actor:'github-actions-dispatcher',action:'execution.job.dispatched',projectId:project.id,taskId:task.id,resourceId,input:{jobId:job.id,kind:'REBASE'},result:{workflowRunId:job.workflowRunId??'pending'},reason:'Execution workflow accepted the safe job identifier',correlationId:data.operationId});
       return {job,run,idempotentReplay:false};
     }catch(error){job=await this.store.updateExecutionJob({...job,status:'QUEUED',error:{code:'DISPATCH_FAILED',message:error instanceof Error?error.message:'Unknown dispatch error'},updatedAt:this.clock.now()});throw error;}
   }

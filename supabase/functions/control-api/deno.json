@@ -17,6 +17,8 @@
     "../../../packages/execution-engine/src/reviewer.js": "../../../packages/execution-engine/src/reviewer.ts",
     "../../../packages/secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts",
     "../../../packages/http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
+    "../../../packages/superadmin/src/rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
+    "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts"
   }

@@ -42,7 +42,7 @@ Every input is Zod-validated. Read and mutation annotations are declared on each
 | Projects | `superadmin_project_list`, `superadmin_project_get`, `superadmin_project_create`, `superadmin_project_update`, `superadmin_project_delete` |
 | Resources | `superadmin_resource_list`, `superadmin_resource_get`, `superadmin_resource_create`, `superadmin_resource_update`, `superadmin_resource_binding_update`, `superadmin_resource_delete` |
 | Context | `superadmin_context_list`, `superadmin_context_get`, `superadmin_context_create`, `superadmin_context_update`, `superadmin_context_delete` |
-| Tasks/lifecycle | `superadmin_task_list`, `superadmin_task_get`, `superadmin_task_create`, `superadmin_task_update`, `superadmin_task_transition`, `superadmin_task_analyze`, `superadmin_task_plan`, `superadmin_task_execute`, `superadmin_task_retry`, `superadmin_task_review`, `superadmin_task_delete` |
+| Tasks/lifecycle | `superadmin_task_list`, `superadmin_task_get`, `superadmin_task_create`, `superadmin_task_update`, `superadmin_task_transition`, `superadmin_task_analyze`, `superadmin_task_plan`, `superadmin_task_execute`, `superadmin_task_retry`, `superadmin_task_review`, `superadmin_task_rebase_onto_current_base`, `superadmin_task_delete` |
 | Jobs | `superadmin_job_list`, `superadmin_job_get`, `superadmin_job_create`, `superadmin_job_cancel` |
 | Runs | `superadmin_run_list`, `superadmin_run_get`, `superadmin_run_delete` |
 | Artifacts | `superadmin_artifact_list`, `superadmin_artifact_get`, `superadmin_artifact_create`, `superadmin_artifact_update`, `superadmin_artifact_delete` |
@@ -54,7 +54,7 @@ Every input is Zod-validated. Read and mutation annotations are declared on each
 | Memberships | `superadmin_membership_list`, `superadmin_membership_get`, `superadmin_membership_upsert`, `superadmin_membership_delete` |
 | Audit | `superadmin_audit_list`, `superadmin_audit_get` |
 
-There are 87 registered remote tools. `superadmin_system_overview` returns projects, task/job counts and states, failed gates, latest errors, evidence-based capabilities, migration markers, Edge Functions, recent Actions runs and deployment status in one response.
+There are 88 registered remote tools. `superadmin_system_overview` returns projects, task/job counts and states, failed gates, latest errors, evidence-based capabilities, migration markers, Edge Functions, recent Actions runs and deployment status in one response.
 
 ## Mutation rules
 
@@ -67,6 +67,31 @@ There are 87 registered remote tools. `superadmin_system_overview` returns proje
 - The last active superadmin cannot be deleted.
 - Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution.
 - Delete, membership and resource binding tools require structured identity, confirmation enum and reason fields. No free-form command is interpreted.
+
+## Rebase onto the current base
+
+`superadmin_task_rebase_onto_current_base({operationId, projectId, taskId, resourceId, resolutions?})`
+transfers an already-verified READY task onto the registered repository's current default branch,
+for the case where the task's dependency has since been merged and its pull request now conflicts.
+The task is never recreated and its scope is never touched: it keeps its identity, plan,
+requirements and history and is re-verified on the newer base.
+
+Branch, verified commit, original fork point and manifest are all resolved server-side from
+durable run/artifact evidence -- the caller supplies none of them. The transfer is a real 3-way
+`git cherry-pick` of the task's own commit range in a disposable clean workspace, so the state the
+task merely inherited is not carried over and work the base gained since the fork is preserved.
+Two invariants fail the job closed: the original base must be an ancestor of the target base (the
+dependency really is merged), and every path the base changed since the fork that the task never
+touched must be byte-identical afterwards (nothing merged is reverted).
+
+A first call with no `resolutions` stops at any genuine semantic conflict and persists a
+`REBASE_REPORT` artifact carrying three-sided diff3 evidence -- current base, original base and
+task intent -- leaving the task `BLOCKED`. `ours`/`theirs` is never chosen automatically. A second
+call carries `resolutions` for exactly those paths (any other path, or content still holding
+conflict markers, is rejected), after which the full build/test/contract/migration/security/
+regression pipeline re-runs, a new `FINAL_CHANGE_MANIFEST` and commit SHA are produced, a fresh
+pull request is opened against the current base and every still-open pull request from the stale
+branch is commented and closed as superseded -- never merged.
 
 ## Executable HTTP scenario runner
 

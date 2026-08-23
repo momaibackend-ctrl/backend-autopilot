@@ -4,7 +4,12 @@ import type { Task, TaskState } from '../../schemas/src/index.js';
 
 const transitions:Record<TaskState,TaskState[]>={
   INGESTED:['ANALYZING','BLOCKED'],ANALYZING:['PLANNED','BLOCKED','FAILED'],BLOCKED:['ANALYZING','PLANNED'],PLANNED:['IMPLEMENTING','BLOCKED'],
-  IMPLEMENTING:['TESTING','FAILED','BLOCKED'],TESTING:['REVIEWING','IMPLEMENTING','BLOCKED','FAILED'],REVIEWING:['READY','IMPLEMENTING','BLOCKED','FAILED'],READY:[],FAILED:['ANALYZING','IMPLEMENTING']
+  IMPLEMENTING:['TESTING','FAILED','BLOCKED'],TESTING:['REVIEWING','IMPLEMENTING','BLOCKED','FAILED'],REVIEWING:['READY','IMPLEMENTING','BLOCKED','FAILED'],
+  // READY is terminal for ordinary work. The one way out is re-verification of already-verified
+  // work on a newer base (a merged dependency invalidated the base it was proven against), which
+  // re-enters the identical IMPLEMENTING -> TESTING -> REVIEWING -> READY gate chain. Manual
+  // superadmin transitions still cannot leave READY: that table is separate and unchanged.
+  READY:['IMPLEMENTING'],FAILED:['ANALYZING','IMPLEMENTING']
 };
 export class DependencyEngine {
   constructor(private store:StateStore){}

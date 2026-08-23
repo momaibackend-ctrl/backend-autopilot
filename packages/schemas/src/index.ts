@@ -418,6 +418,31 @@ export const validationScenarioRunInputSchema = z.object({
 export type ValidationScenarioSaveInput = z.infer<
   typeof validationScenarioSaveInputSchema
 >;
+// Transfer of an already-verified task onto the current base branch after its dependency was
+// merged. The caller never supplies a branch, base, commit or manifest: all of it is resolved
+// from durable task/run/artifact evidence. `resolutions` carries the agent's semantic conflict
+// resolutions for the exact paths a previous attempt reported as conflicted, and nothing else.
+export const rebaseConflictResolutionSchema = z.object({
+  path: z.string().min(1).max(400),
+  content: z.string().max(400_000),
+});
+export type RebaseConflictResolution = z.infer<
+  typeof rebaseConflictResolutionSchema
+>;
+export const taskRebaseInputSchema = z.object({
+  projectId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  operationId: z.string().min(8),
+  resolutions: z.array(rebaseConflictResolutionSchema).max(50).default([]),
+});
+export type TaskRebaseInput = z.infer<typeof taskRebaseInputSchema>;
+export const rebaseStatusSchema = z.enum([
+  "REBASED",
+  "CONFLICTS_REQUIRE_RESOLUTION",
+  "FAILED",
+]);
+export type RebaseStatus = z.infer<typeof rebaseStatusSchema>;
+
 export const artifactKindSchema = z.enum([
   "REQUIREMENTS_SNAPSHOT",
   "IMPLEMENTATION_PLAN",
@@ -444,6 +469,7 @@ export const artifactKindSchema = z.enum([
   "ADMIN_NOTE",
   "CONSOLE_SNAPSHOT",
   "WORKSPACE_QUARANTINE",
+  "REBASE_REPORT",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({
@@ -492,6 +518,7 @@ export const executionJobKindSchema = z.enum([
   "VALIDATION",
   "REPAIR",
   "RECONCILIATION",
+  "REBASE",
 ]);
 export const executionJobStatusSchema = z.enum([
   "QUEUED",
