@@ -443,6 +443,7 @@ export const artifactKindSchema = z.enum([
   "BOOTSTRAP_REPORT",
   "ADMIN_NOTE",
   "CONSOLE_SNAPSHOT",
+  "WORKSPACE_QUARANTINE",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({

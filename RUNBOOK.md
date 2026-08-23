@@ -28,6 +28,12 @@ API Request Runner requires an active `HTTP_API` resource owned by the selected 
 
 To execute a saved scenario as real HTTP requests, call `superadmin_scenario_run({operationId, projectId, scenarioId})`. A `POLICY_VIOLATION` before any step ran means the target was rejected up front (wrong project, disabled/production resource, non-HTTPS non-loopback base URL, or a private/link-local/metadata address). A step with `status: "ERROR"` means transport failure or a policy rejection during execution (blocked cross-origin redirect, missing chained variable); `status: "FAILED"` means the request succeeded but the expected status or an assertion did not match. See `docs/http-validation-runner.md`.
 
+## Quarantined workspace
+
+Execution workspaces are disposable. If an interrupted run leaves uncommitted or untracked files behind, the next run does not fail on the clean-tree precondition any more: it writes a `WORKSPACE_QUARANTINE` artifact holding the exact `git status --porcelain` and `git diff HEAD` (redacted and size-capped), appends an `execution.workspace.quarantined` audit event, deletes the directory and takes a fresh checkout for the same job, resuming from the persisted task-branch checkpoint. No provider step (push, CI, pull request) is repeated.
+
+The clean-tree precondition itself is unchanged and is what detects the problem. Recovery is bounded: if a second clean checkout is still unclean the job fails with `EXECUTION_FAILED` and both quarantine artifacts remain for diagnosis -- that pattern means the dirt is deterministic (typically a setup step writing a tracked file), not leftover state, and needs a code fix rather than another retry.
+
 ## Browser E2E diagnosis
 
 Run `pnpm console:e2e:seed` and `pnpm test:browser`. The fixture is written only under ignored `tests/.tmp`, contains sanitized LIVE-1-shaped evidence, starts both services, and performs no external provider calls. Use `pnpm exec playwright show-trace <trace.zip>` for a retained failure trace.

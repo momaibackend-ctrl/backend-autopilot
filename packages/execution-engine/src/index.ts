@@ -23,4 +23,5 @@ export * from './gradle-test-engine.js';
 export * from './stack-aware-test-executor.js';
 export * from './stack-detection.js';
 export * from './gradle-wrapper-provisioner.js';
+export * from './disposable-workspace.js';
 export * from './reviewer.js';

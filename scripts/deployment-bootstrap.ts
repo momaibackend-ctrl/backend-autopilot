@@ -3,6 +3,10 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
+import { ArtifactStore } from '../packages/artifact-store/src/index.js';
+import { AuditLog } from '../packages/audit/src/index.js';
+import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
+import { disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, workspaceCheckoutExists } from '../packages/execution-engine/src/index.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
 import type { Project, Resource, Run } from '../packages/schemas/src/index.js';
 import { materializeSnapshot, readDeploymentSnapshot, type DeploymentSnapshot } from './deployment-state.js';
@@ -80,19 +84,51 @@ async function restoreWorkspace(store:PostgresStateStore,project:Project) {
   if (actual.toLowerCase()!==account.externalReference.toLowerCase()) {
     throw new Error(`Configured GitHub identity does not match the registered sandbox account (${actual||'unknown'})`);
   }
-  if (!(await exists(join(project.workspacePath,'.git')))) {
-    await mkdir(dirname(project.workspacePath),{recursive:true});
-    await run('gh',['repo','clone',repository.externalReference,project.workspacePath],process.cwd());
-    const latest=latestBranch(await store.listRuns(project.id));
-    if (latest) await run('git',['switch','--track',`origin/${latest}`],project.workspacePath);
-    await run('git',['config','user.email','autopilot@localhost.invalid'],project.workspacePath);
-    await run('git',['config','user.name','Backend Autopilot'],project.workspacePath);
-    if (await exists(join(project.workspacePath,'pnpm-lock.yaml'))) {
-      await run('pnpm',['install','--frozen-lockfile','--ignore-scripts'],project.workspacePath);
-    }
-    console.log(JSON.stringify({level:'info',event:'deployment.workspace_restored',projectId:project.id,repository:repository.externalReference,branch:latest}));
-  } else {
-    console.log(JSON.stringify({level:'info',event:'deployment.workspace_reused',projectId:project.id}));
+  // The restored workspace is disposable. A reused directory left unclean by an interrupted run
+  // would otherwise fail ExecutionEngine's clean-tree precondition on the next execution, before
+  // the payload is applied. The precondition stays; the dirty tree is captured as evidence, the
+  // attempt is quarantined, the directory is deleted and a clean checkout is restored for the
+  // same project -- resuming from the persisted task branch checkpoint, repeating no external
+  // provisioning step.
+  const artifacts=new ArtifactStore(store,uuidGenerator,systemClock);
+  const audit=new AuditLog(store,uuidGenerator,systemClock);
+  const result=await ensureDisposableCleanWorkspace({
+    workspace:project.workspacePath,
+    now:()=>systemClock.now(),
+    exists:workspaceCheckoutExists,
+    create:async()=>{
+      await mkdir(dirname(project.workspacePath),{recursive:true});
+      await run('gh',['repo','clone',repository.externalReference,project.workspacePath],process.cwd());
+      const latest=latestBranch(await store.listRuns(project.id));
+      if (latest) await run('git',['switch','--track',`origin/${latest}`],project.workspacePath);
+      await run('git',['config','user.email','autopilot@localhost.invalid'],project.workspacePath);
+      await run('git',['config','user.name','Backend Autopilot'],project.workspacePath);
+      if (await exists(join(project.workspacePath,'pnpm-lock.yaml'))) {
+        await run('pnpm',['install','--frozen-lockfile','--ignore-scripts'],project.workspacePath);
+      }
+      console.log(JSON.stringify({level:'info',event:'deployment.workspace_restored',projectId:project.id,repository:repository.externalReference,branch:latest}));
+      return project.workspacePath;
+    },
+    inspect:async workspace=>{
+      const status=await capture(workspace,['status','--porcelain']);
+      const diff=await capture(workspace,['diff','HEAD']);
+      return {status:status.ok?status.output:`!! git status failed\n${status.output}`,diff:diff.ok?diff.output:''};
+    },
+    dispose:workspace=>disposeWorkspaceDirectory(workspace,workspaceRoot),
+    quarantine:async record=>{
+      const artifact=await artifacts.write(project.id,'WORKSPACE_QUARANTINE',{quarantined:true,scope:'DEPLOYMENT_WORKSPACE_RESTORE',...record});
+      await audit.record({actor:'deployment-bootstrap',action:'execution.workspace.quarantined',projectId:project.id,resourceId:repository.resourceId,input:{workspace:record.workspace,attempt:record.attempt},result:{artifactId:artifact.id,statusTruncated:record.statusTruncated,diffTruncated:record.diffTruncated},reason:'Interrupted run left an unclean reused workspace; the attempt is quarantined and a clean checkout restored',correlationId:`workspace-quarantine-${project.id}-${record.attempt}`});
+      console.log(JSON.stringify({level:'warn',event:'deployment.workspace_quarantined',projectId:project.id,attempt:record.attempt,artifactId:artifact.id}));
+    },
+  });
+  if (!result.created) console.log(JSON.stringify({level:'info',event:'deployment.workspace_reused',projectId:project.id}));
+}
+
+async function capture(cwd:string,args:string[]) {
+  try {
+    return {ok:true,output:(await run('git',args,cwd)).stdout};
+  } catch(error) {
+    return {ok:false,output:error instanceof Error?error.message:'git command failed'};
   }
 }
 
