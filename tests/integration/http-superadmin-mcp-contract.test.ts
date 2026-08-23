@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { scenarioRunToolName } from "../../packages/http-runner/src/index.js";
 import { publishedMcpTools, searchTools } from "../helpers/mcp-registry.js";
@@ -21,6 +22,18 @@ describe("HTTP SUPERADMIN MCP contract",()=>{
     expect(service).toContain("GitHub/Git bindings require the dedicated verified provider registration flow");
     expect(source).toContain("AUTOPILOT_SUPERADMIN_MCP_TOKEN");
     expect(source).toContain("productionWrites:'NOT_SUPPORTED'");
+  });
+
+  // A syntax error in an Edge entry point is only discovered by `supabase functions deploy`
+  // failing to build the module graph, which costs a deploy cycle. Parsing them here turns that
+  // into a normal test failure (an unescaped apostrophe in a tool description caused exactly this).
+  it("keeps every deployed Edge Function entry point parseable",async()=>{
+    for(const name of ["mcp","control-api","reconcile"]){
+      const path=`supabase/functions/${name}/index.ts`;
+      const source=ts.createSourceFile(path,await readFile(path,"utf8"),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+      const diagnostics=(source as unknown as {parseDiagnostics?:ts.Diagnostic[]}).parseDiagnostics??[];
+      expect(diagnostics.map(value=>ts.flattenDiagnosticMessageText(value.messageText,"; ")),path).toEqual([]);
+    }
   });
 
   // Regression guard for the failure mode this capability was added to avoid: an executable
