@@ -1,4 +1,4 @@
-import type { AdminOperation, Artifact, AuditEvent, CommandRecord, ConsoleScreen, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CommandRecord, ConsoleScreen, ExecutionCheckpoint, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
 
 export interface StateStore {
   createProject(project:Project):Promise<Project>; updateProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
@@ -9,6 +9,8 @@ export interface StateStore {
   saveRun(run:Run):Promise<Run>; updateRun(run:Run):Promise<Run>; getRun(projectId:string,id:string):Promise<Run|undefined>; findRunByOperation(projectId:string,operationId:string):Promise<Run|undefined>; listRuns(projectId:string,taskId?:string):Promise<Run[]>;
   createExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; updateExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; getExecutionJob(projectId:string,id:string):Promise<ExecutionJob|undefined>; getExecutionJobById(id:string):Promise<ExecutionJob|undefined>; findExecutionJobByOperation(projectId:string,operationId:string):Promise<ExecutionJob|undefined>; listExecutionJobs(projectId:string,taskId?:string):Promise<ExecutionJob[]>;
   claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string):Promise<ExecutionJob|undefined>;
+  touchExecutionJobHeartbeat(projectId:string,id:string,heartbeatAt:string):Promise<void>;
+  saveCheckpoint(value:ExecutionCheckpoint):Promise<ExecutionCheckpoint>; listCheckpoints(projectId:string,jobId:string):Promise<ExecutionCheckpoint[]>;
   transitionTask(task:Task,transition:Transition):Promise<Task>;
   appendTransition(transition:Transition):Promise<void>; listTransitions(taskId:string):Promise<Transition[]>;
   appendAudit(event:AuditEvent):Promise<void>; getAudit(projectId:string,id:string):Promise<AuditEvent|undefined>; listAudit(projectId:string):Promise<AuditEvent[]>;

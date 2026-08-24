@@ -2,7 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionCheckpoint, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
 export class PostgresStateStore implements StateStore {
@@ -43,6 +43,9 @@ export class PostgresStateStore implements StateStore {
   async findExecutionJobByOperation(projectId:string,operationId:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.operationId,operationId))).limit(1))[0]);}
   async listExecutionJobs(projectId:string,taskId?:string){const rows=taskId?await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId))):await this.db.select().from(s.executionJobs).where(eq(s.executionJobs.projectId,projectId));return rows.map(r=>r.data as ExecutionJob);}
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){if(!await this.getExecutionJob(projectId,id))return undefined;const requestedSeconds=Math.max(60,Math.round((new Date(leaseExpiresAt).getTime()-new Date(now).getTime())/1000));const result=await this.pool.query<{job:ExecutionJob|null}>('select claim_execution_job($1::uuid,$2::text,$3::integer) as job',[id,leaseOwner,requestedSeconds]);const job=result.rows[0]?.job??undefined;return job?.projectId===projectId?job:undefined;}
+  async touchExecutionJobHeartbeat(projectId:string,id:string,heartbeatAt:string){await this.pool.query('select touch_execution_job_heartbeat($1::uuid,$2::uuid,$3::timestamptz)',[id,projectId,heartbeatAt]);}
+  async saveCheckpoint(v:ExecutionCheckpoint){await this.pool.query('insert into execution_checkpoints(id,job_id,project_id,task_id,seq,step,data,created_at) values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(job_id,seq) do nothing',[v.id,v.jobId,v.projectId,v.taskId,v.seq,v.step,v,v.createdAt]);return v;}
+  async listCheckpoints(projectId:string,jobId:string){return (await this.pool.query<{data:ExecutionCheckpoint}>('select data from execution_checkpoints where project_id=$1 and job_id=$2 order by seq',[projectId,jobId])).rows.map(v=>v.data);}
   async transitionTask(task:Task,transition:Transition){await this.db.transaction(async tx=>{await tx.update(s.tasks).set({data:task}).where(and(eq(s.tasks.id,task.id),eq(s.tasks.projectId,task.projectId)));await tx.insert(s.transitions).values({id:transition.id,taskId:transition.taskId,data:transition,createdAt:new Date(transition.timestamp)});});return task;}
   async appendTransition(v:Transition){await this.db.insert(s.transitions).values({id:v.id,taskId:v.taskId,data:v,createdAt:new Date(v.timestamp)});}
   async listTransitions(taskId:string){return (await this.db.select().from(s.transitions).where(eq(s.transitions.taskId,taskId)).orderBy(s.transitions.createdAt)).map(r=>r.data as Transition);}

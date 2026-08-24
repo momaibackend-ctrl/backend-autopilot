@@ -1,6 +1,6 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
 import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionCheckpoint, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class PostgrestStateStore implements StateStore {
   constructor(private readonly url:string,private readonly serviceKey:string){if(!/^https:\/\/[a-z]{20}\.supabase\.co$/.test(url)||!serviceKey)throw new ExecutionFailed('Valid Supabase URL and server credential are required');}
@@ -39,6 +39,9 @@ export class PostgrestStateStore implements StateStore {
   findExecutionJobByOperation(projectId:string,operationId:string){return this.one<ExecutionJob>('execution_jobs',`project_id=eq.${projectId}&operation_id=eq.${encodeURIComponent(operationId)}`);}
   listExecutionJobs(projectId:string,taskId?:string){return this.many<ExecutionJob>('execution_jobs',`project_id=eq.${projectId}${taskId?`&task_id=eq.${taskId}`:''}&order=created_at.asc`);}
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){const seconds=Math.max(60,Math.round((new Date(leaseExpiresAt).getTime()-new Date(now).getTime())/1000));const value=await this.rpc<ExecutionJob|null>('claim_execution_job',{requested_job_id:id,requested_owner:leaseOwner,lease_seconds:seconds});return value?.projectId===projectId?value:undefined;}
+  async touchExecutionJobHeartbeat(projectId:string,id:string,heartbeatAt:string){await this.rpc('touch_execution_job_heartbeat',{requested_job_id:id,requested_project_id:projectId,at:heartbeatAt});}
+  async saveCheckpoint(v:ExecutionCheckpoint){const existing=await this.one<ExecutionCheckpoint>('execution_checkpoints',`job_id=eq.${v.jobId}&seq=eq.${v.seq}`);if(existing)return existing;await this.insert<ExecutionCheckpoint>('execution_checkpoints',{id:v.id,job_id:v.jobId,project_id:v.projectId,task_id:v.taskId,seq:v.seq,step:v.step,data:v,created_at:v.createdAt});return v;}
+  async listCheckpoints(projectId:string,jobId:string){return this.many<ExecutionCheckpoint>('execution_checkpoints',`project_id=eq.${projectId}&job_id=eq.${jobId}&order=seq.asc`);}
   transitionTask(task:Task,transition:Transition){return this.rpc<Task>('transition_task_atomic',{task_data:task,transition_data:transition});}
   async appendTransition(v:Transition){await this.insert<Transition>('task_transitions',{id:v.id,task_id:v.taskId,data:v,created_at:v.timestamp});}
   listTransitions(taskId:string){return this.many<Transition>('task_transitions',`task_id=eq.${taskId}&order=created_at.asc`);}

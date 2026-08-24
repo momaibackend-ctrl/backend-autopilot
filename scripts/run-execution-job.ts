@@ -32,6 +32,15 @@ const store=new PostgresStateStore(databaseUrl);const owner=`github-actions:${pr
 const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error('Execution job not found');
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
 const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);const blobs=new SupabaseStorageArtifactBlobStore(supabaseUrl,serviceRoleKey);const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
+// A background heartbeat, decoupled from whichever step is currently running, so a long but
+// live git/test/build subprocess (non-blocking async I/O) does not itself starve the signal
+// the watchdog relies on. The touch is a narrow, dedicated update (touch_execution_job_heartbeat)
+// that only ever writes heartbeatAt, so it can never race with or clobber the much larger
+// updateExecutionJob writes the main flow makes to the same row.
+let checkpointSeq=0;
+const writeCheckpoint=(step:'WORKSPACE_READY'|'IMPLEMENTATION_COMPLETE'|'PUSHED'|'TESTED'|'REVIEWED',data:unknown)=>store.saveCheckpoint({id:uuidGenerator.next(),jobId:current.id,projectId:current.projectId,taskId:current.taskId,seq:checkpointSeq++,step,data,createdAt:systemClock.now()});
+await store.touchExecutionJobHeartbeat(current.projectId,current.id,systemClock.now());
+const heartbeat=setInterval(()=>{store.touchExecutionJobHeartbeat(current.projectId,current.id,systemClock.now()).catch(()=>{});},30_000);
 try{
   current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);const resource=await store.getResource(current.resourceId);if(!project||!task||!resource)throw new ExecutionFailed('Execution job references missing registered state');
   await new PolicyEngine(store).authorize({project,action:'EXECUTE',resourceId:resource.resourceId,requiredPermission:'WRITE',actor:owner});if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.environment!=='SANDBOX')throw new PolicyViolation('Execution job target is not an allowlisted sandbox GitHub repository');
@@ -61,19 +70,24 @@ try{
     },
   });
   const workspace=acquired.workspace;const stack=await detectStack(workspace);
+  await writeCheckpoint('WORKSPACE_READY',{stack});
   const rebaseOutcome=rebase?await performRebase({workspace,job:current,commands,rebase,githubToken,artifacts,audit,store,project,task,resource,owner}):undefined;
   const result=rebaseOutcome?rebaseOutcome.result:await execution.execute({workspace,task,changes:payload.changes});
   const provisionedWrapperSha=await commitProvisionedGradleWrapper(workspace,current,commands,git);const commitSha=provisionedWrapperSha??result.commitSha;
   current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha,updatedAt:systemClock.now()});
+  await writeCheckpoint('IMPLEMENTATION_COMPLETE',{baseCommit:result.baseCommit,branch:result.branch,commitSha,changedFiles:result.changedFiles.length});
   await artifacts.write(project.id,'CODE_DIFF',{diff:result.diff,changedFiles:result.changedFiles},task.id,current.runId);
   const migrationFiles=rebaseOutcome?[]:payload.changes.filter(value=>/migrations?\//.test(value.path));if(migrationFiles.length)await artifacts.write(project.id,'MIGRATION_MANIFEST',{migrations:migrationFiles.map(value=>({path:value.path,content:value.content})),validation:'Pending migration test gate',rollback:'Implementation plan rollback strategy'},task.id,current.runId);
   const apiFiles=rebaseOutcome?[]:payload.changes.filter(value=>/openapi/i.test(value.path));if(apiFiles.length)await artifacts.write(project.id,'API_CONTRACT',{contracts:apiFiles.map(value=>({path:value.path,document:(/\.ya?ml$/i.test(value.path)?parseYaml(value.content):JSON.parse(value.content)) as unknown}))},task.id,current.runId);
   await new LiveGitHubAdapter(commands).push(resource,{workspace,branch:result.branch,correlationId:task.id});
+  await writeCheckpoint('PUSHED',{branch:result.branch,commitSha});
   if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,baseCommit:result.baseCommit,branch:result.branch,commitSha});}
   await service.taskTest(project.id,task.id,owner,current.operationId,workspace);
+  await writeCheckpoint('TESTED',{taskId:task.id});
   const toolchain=stack==='KOTLIN_GRADLE'?await gradleToolchainVersions(workspace,current,commands):undefined;
   await artifacts.write(project.id,'CI_REPORT',{provider:'github-actions',repository:resource.externalReference,branch:result.branch,expectedSha:commitSha,detectedStack:stack,...(toolchain?{toolchain}:{}),...(provisionedWrapperSha?{gradleWrapperProvisioned:true}:{}),ci:{success:true,status:'completed',conclusion:'success',headSha:commitSha,url:process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&process.env['GITHUB_RUN_ID']?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${process.env['GITHUB_RUN_ID']}`:undefined}},task.id,current.runId);
   await service.taskReview(project.id,task.id,owner,current.operationId);
+  await writeCheckpoint('REVIEWED',{taskId:task.id});
   const publication=rebaseOutcome?await publishRebasedPullRequest({repository:resource.externalReference,token:githubToken,head:result.branch,base:rebaseOutcome.targetBaseBranch,task,staleHead:rebase!.sourceBranch}):undefined;
   if(rebaseOutcome)await artifacts.write(project.id,'REBASE_REPORT',{...rebaseOutcome.report,status:'REBASED',rebasedCommitSha:commitSha,pullRequest:publication?.opened,supersededPullRequests:publication?.superseded??[]},task.id,current.runId);
   if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,status:'SUCCEEDED',baseCommit:result.baseCommit,branch:result.branch,commitSha,finishedAt:systemClock.now()});}
@@ -82,7 +96,7 @@ try{
   console.log(JSON.stringify({level:'info',event:'execution.job.succeeded',jobId:current.id,branch:result.branch,commitSha}));
 }catch(error){
   const task=await store.getTask(current.projectId,current.taskId);const status=task?.state==='BLOCKED'?'BLOCKED':'FAILED';current=await store.updateExecutionJob({...current,status,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),error:{code:error instanceof Error?error.name:'UNKNOWN',message:error instanceof Error?error.message:'Unknown execution failure'}});if(current.runId){const run=await store.getRun(current.projectId,current.runId);if(run&&run.status==='RUNNING')await store.updateRun({...run,status:status==='BLOCKED'?'BLOCKED':'FAILED',finishedAt:systemClock.now(),...(current.branch?{branch:current.branch}:{}),...(current.commitSha?{commitSha:current.commitSha}:{})});}await audit.record({actor:owner,action:'execution.job.failed',projectId:current.projectId,taskId:current.taskId,resourceId:current.resourceId,input:{jobId:current.id},result:{status,error:error instanceof Error?error.name:'UNKNOWN'},reason:'GitHub Actions execution failed; durable state preserved',correlationId:current.operationId});throw error;
-}finally{await store.close();}
+}finally{clearInterval(heartbeat);await store.close();}
 
 function workspaceRoot(){return process.env['RUNNER_TEMP']??process.cwd();}
 async function prepareWorkspace(repository:string,job:ExecutionJob,commands:CommandRunner,token:string){if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new PolicyViolation('Registered repository identity is invalid');const root=workspaceRoot();const workspace=await mkdtemp(join(root,'backend-autopilot-'));const env={GH_TOKEN:token};await checked(commands,{command:'gh',args:['auth','setup-git'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'gh',args:['repo','clone',repository,workspace,'--','--no-tags'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['config','user.email','autopilot@localhost.invalid'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});await checked(commands,{command:'git',args:['config','user.name','Backend Autopilot'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});

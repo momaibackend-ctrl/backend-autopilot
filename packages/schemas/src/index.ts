@@ -558,10 +558,33 @@ export const executionJobSchema = z.object({
   startedAt: z.string().datetime().optional(),
   finishedAt: z.string().datetime().optional(),
   updatedAt: z.string().datetime(),
+  heartbeatAt: z.string().datetime().optional(),
   error: z.unknown().optional(),
   result: z.unknown().optional(),
 });
 export type ExecutionJob = z.infer<typeof executionJobSchema>;
+
+export const executionCheckpointStepSchema = z.enum([
+  "WORKSPACE_READY",
+  "IMPLEMENTATION_COMPLETE",
+  "PUSHED",
+  "TESTED",
+  "REVIEWED",
+  "WATCHDOG_STALE_SUSPECTED",
+  "WATCHDOG_HEARTBEAT_RECOVERED",
+  "WATCHDOG_PRESUMED_DEAD",
+]);
+export const executionCheckpointSchema = z.object({
+  id: z.string().uuid(),
+  jobId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  seq: z.number().int().nonnegative(),
+  step: executionCheckpointStepSchema,
+  data: z.unknown(),
+  createdAt: z.string().datetime(),
+});
+export type ExecutionCheckpoint = z.infer<typeof executionCheckpointSchema>;
 export const transitionSchema = z.object({
   id: z.string().uuid(),
   taskId: z.string().uuid(),

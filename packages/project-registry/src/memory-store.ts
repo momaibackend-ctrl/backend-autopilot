@@ -1,6 +1,6 @@
 import { Conflict } from '../../core/src/errors.js';
 import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionCheckpoint, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
   private projects=new Map<string,Project>(); private resources=new Map<string,Resource>(); private contexts:ProjectContext[]=[];
@@ -9,6 +9,7 @@ export class MemoryStateStore implements StateStore {
   private transitions:Transition[]=[]; private audit:AuditEvent[]=[];
   private settings=new Map<string,SystemSetting>(); private screens=new Map<string,ConsoleScreen>();
   private operators=new Map<string,Operator>(); private memberships=new Map<string,ProjectMembership>(); private operations=new Map<string,AdminOperation>();
+  private checkpoints:ExecutionCheckpoint[]=[];
   async createProject(v:Project){if([...this.projects.values()].some(p=>p.slug===v.slug))throw new Conflict('Project slug already exists');this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateProject(v:Project){this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async getProject(id:string){return clone(this.projects.get(id));} async listProjects(){return clones([...this.projects.values()]);}
@@ -42,6 +43,9 @@ export class MemoryStateStore implements StateStore {
   async findExecutionJobByOperation(projectId:string,operationId:string){return clone([...this.jobs.values()].find(v=>v.projectId===projectId&&v.operationId===operationId));}
   async listExecutionJobs(projectId:string,taskId?:string){return clones([...this.jobs.values()].filter(v=>v.projectId===projectId&&(!taskId||v.taskId===taskId)));}
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){const value=await this.getExecutionJob(projectId,id);if(!value||!["QUEUED","DISPATCHED","CLAIMED"].includes(value.status))return undefined;if(value.leaseExpiresAt&&value.leaseExpiresAt>now&&value.leaseOwner!==leaseOwner)return undefined;const claimed:ExecutionJob={...value,status:"CLAIMED",leaseOwner,leaseExpiresAt,startedAt:value.startedAt??now,updatedAt:now};this.jobs.set(id,structuredClone(claimed));return structuredClone(claimed);}
+  async touchExecutionJobHeartbeat(projectId:string,id:string,heartbeatAt:string){const value=this.jobs.get(id);if(value&&value.projectId===projectId)this.jobs.set(id,{...value,heartbeatAt,updatedAt:heartbeatAt});}
+  async saveCheckpoint(v:ExecutionCheckpoint){this.checkpoints.push(structuredClone(v));return structuredClone(v);}
+  async listCheckpoints(projectId:string,jobId:string){return clones(this.checkpoints.filter(v=>v.projectId===projectId&&v.jobId===jobId).sort((a,b)=>a.seq-b.seq));}
   async transitionTask(task:Task,transition:Transition){this.tasks.set(task.id,structuredClone(task));this.transitions.push(structuredClone(transition));return structuredClone(task);}
   async appendTransition(v:Transition){this.transitions.push(structuredClone(v));} async listTransitions(taskId:string){return clones(this.transitions.filter(t=>t.taskId===taskId));}
   async appendAudit(v:AuditEvent){this.audit.push(structuredClone(v));} async listAudit(projectId:string){return clones(this.audit.filter(a=>a.projectId===projectId));}
