@@ -9,6 +9,7 @@ import {
   NotFound,
   PolicyViolation,
   UnsupportedOperation,
+  UnverifiedOperation,
 } from "../../core/src/errors.js";
 import type {
   ArtifactBlobStore,
@@ -492,12 +493,24 @@ export class SuperadminService {
   private async mutate<T>(principal:SuperadminPrincipal,tool:string,projectId:string|undefined,operationId:string,input:unknown,action:()=>Promise<T>):Promise<{value:T|unknown;idempotentReplay:boolean}> {
     this.requireSuperadmin(principal);operationIdSchema.parse(operationId);
     const existing=await this.deps.store.getAdminOperation(operationId);
-    if(existing){if(existing.actor!==principal.actor||existing.tool!==tool||existing.projectId!==projectId)throw new Conflict("Admin operation ID was already used for a different mutation");return {value:existing.result,idempotentReplay:true};}
+    if(existing){
+      if(existing.actor!==principal.actor||existing.tool!==tool||existing.projectId!==projectId)throw new Conflict("Admin operation ID was already used for a different mutation");
+      if(existing.status==="PENDING")throw new UnverifiedOperation(`Operation ${operationId} started but its outcome was never confirmed (the caller likely disconnected or the process crashed mid-call). Inspect current state with a read tool before retrying, or supply a new operationId to attempt again.`,{operationId,tool});
+      if(existing.status!=="FAILED")return {value:existing.result,idempotentReplay:true};
+    }
     if(projectId){const project=await this.requireProject(projectId);if(project.environment==="PRODUCTION"||project.autonomyMode==="AUTONOMOUS_PRODUCTION")throw new UnsupportedOperation("Production writes are NOT_SUPPORTED");}
-    const value=await action();const safeResult=redact(value);
-    await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),result:safeResult,createdAt:this.clock.now()});
-    await this.audit.record({actor:principal.actor,action:`mcp.${tool}` ,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:safeResult,reason:`Authorized SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId,...(principal.authMethod?{authMethod:principal.authMethod}:{})});
-    return {value,idempotentReplay:false};
+    const createdAt=existing?.createdAt??this.clock.now();
+    await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),status:"PENDING",createdAt});
+    try{
+      const value=await action();const safeResult=redact(value);
+      await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),status:"COMPLETED",result:safeResult,createdAt});
+      await this.audit.record({actor:principal.actor,action:`mcp.${tool}` ,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:safeResult,reason:`Authorized SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId,...(principal.authMethod?{authMethod:principal.authMethod}:{})});
+      return {value,idempotentReplay:false};
+    }catch(error){
+      const message=error instanceof Error?error.message:String(error);
+      await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),status:"FAILED",result:{error:message},createdAt}).catch(()=>{});
+      throw error;
+    }
   }
 }
 

@@ -498,7 +498,7 @@ export const runSchema = z.object({
   projectId: z.string().uuid(),
   taskId: z.string().uuid(),
   operationId: z.string(),
-  status: z.enum(["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"]),
+  status: z.enum(["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED", "PARTIAL_SUCCESS", "UNVERIFIED"]),
   baseCommit: z.string().optional(),
   commitSha: z.string().optional(),
   branch: z.string().optional(),
@@ -531,6 +531,8 @@ export const executionJobStatusSchema = z.enum([
   "CANCELLED",
   "TIMED_OUT",
   "BLOCKED",
+  "PARTIAL_SUCCESS",
+  "UNVERIFIED",
 ]);
 export const executionJobSchema = z.object({
   id: z.string().uuid(),
@@ -755,7 +757,8 @@ export const adminOperationSchema = z.object({
   actor: z.string().min(1),
   tool: z.string().regex(/^[a-z][a-z0-9_]{2,127}$/),
   projectId: z.string().uuid().optional(),
-  result: z.unknown(),
+  status: z.enum(["PENDING", "COMPLETED", "FAILED"]).default("COMPLETED"),
+  result: z.unknown().optional(),
   createdAt: z.string().datetime(),
 });
 export type AdminOperation = z.infer<typeof adminOperationSchema>;

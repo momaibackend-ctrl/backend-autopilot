@@ -46,4 +46,26 @@ describe("SUPERADMIN semantic control",()=>{
     await admin.projectDelete(superadmin,project.id,project.slug,{operationId:"project-delete-2",confirmation:"ARCHIVE_PROJECT",reason:"Remove temporary E2E project"});
     expect((await admin.projectGet(superadmin,project.id)).status).toBe("ARCHIVED");
   });
+
+  it("treats a stuck PENDING operation as unverified instead of silently replaying or re-running it",async()=>{
+    const {store,admin}=await fixture();
+    const operationId="project-create-stuck-1";
+    await store.saveAdminOperation({operationId,actor:superadmin.actor,tool:"project_create",status:"PENDING",createdAt:new Date().toISOString()});
+    await expect(admin.projectCreate(superadmin,{name:"Stuck",slug:"stuck-project",sourceType:"MCP",environment:"SANDBOX",autonomyMode:"AUTONOMOUS_STAGING",workspacePath:""},operationId)).rejects.toMatchObject({code:"UNVERIFIED_OPERATION"});
+    const stored=await store.getAdminOperation(operationId);
+    expect(stored?.status).toBe("PENDING");
+    expect((await store.listProjects()).some(value=>value.slug==="stuck-project")).toBe(false);
+  });
+
+  it("allows a clean retry with the same operationId after a genuine failure, instead of returning a stale result",async()=>{
+    const {store,admin}=await fixture();
+    const operationId="project-create-retry-1";
+    await admin.projectCreate(superadmin,{name:"Original",slug:"taken-slug",sourceType:"MCP",environment:"SANDBOX",autonomyMode:"AUTONOMOUS_STAGING",workspacePath:""},"project-create-original");
+    await expect(admin.projectCreate(superadmin,{name:"Colliding",slug:"taken-slug",sourceType:"MCP",environment:"SANDBOX",autonomyMode:"AUTONOMOUS_STAGING",workspacePath:""},operationId)).rejects.toMatchObject({code:"CONFLICT"});
+    expect((await store.getAdminOperation(operationId))?.status).toBe("FAILED");
+    const retried=await admin.projectCreate(superadmin,{name:"Corrected",slug:"corrected-slug",sourceType:"MCP",environment:"SANDBOX",autonomyMode:"AUTONOMOUS_STAGING",workspacePath:""},operationId);
+    expect(retried.idempotentReplay).toBe(false);
+    expect((retried.value as {slug:string}).slug).toBe("corrected-slug");
+    expect((await store.getAdminOperation(operationId))?.status).toBe("COMPLETED");
+  });
 });

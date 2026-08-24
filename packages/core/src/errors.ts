@@ -1,4 +1,4 @@
-export type ErrorCode = 'POLICY_VIOLATION'|'UNKNOWN_RESOURCE'|'DEPENDENCY_BLOCKED'|'ARCHITECTURE_VIOLATION'|'EXECUTION_FAILED'|'TEST_FAILED'|'REVIEW_FAILED'|'CREDENTIAL_MISSING'|'HUMAN_ACTION_REQUIRED'|'NOT_SUPPORTED'|'NOT_FOUND'|'INVALID_STATE'|'CONFLICT';
+export type ErrorCode = 'POLICY_VIOLATION'|'UNKNOWN_RESOURCE'|'DEPENDENCY_BLOCKED'|'ARCHITECTURE_VIOLATION'|'EXECUTION_FAILED'|'TEST_FAILED'|'REVIEW_FAILED'|'CREDENTIAL_MISSING'|'HUMAN_ACTION_REQUIRED'|'NOT_SUPPORTED'|'NOT_FOUND'|'INVALID_STATE'|'CONFLICT'|'UNVERIFIED_OPERATION';
 
 export class DomainError extends Error {
   constructor(public readonly code: ErrorCode, message: string, public readonly details: Record<string, unknown> = {}) {
@@ -18,3 +18,4 @@ export class UnsupportedOperation extends DomainError { constructor(message:stri
 export class NotFound extends DomainError { constructor(message:string,details:Record<string,unknown>={}){super('NOT_FOUND',message,details);} }
 export class InvalidState extends DomainError { constructor(message:string,details:Record<string,unknown>={}){super('INVALID_STATE',message,details);} }
 export class Conflict extends DomainError { constructor(message:string,details:Record<string,unknown>={}){super('CONFLICT',message,details);} }
+export class UnverifiedOperation extends DomainError { constructor(message:string,details:Record<string,unknown>={}){super('UNVERIFIED_OPERATION',message,details);} }
