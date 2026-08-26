@@ -3,7 +3,7 @@ import type { ExecutionJobDispatcher } from '../../../core/src/async-execution.j
 import type { ExecutionJob } from '../../../schemas/src/index.js';
 
 export class GitHubActionsDispatcher implements ExecutionJobDispatcher {
-  constructor(private readonly token:string,private readonly controlRepository:string,private readonly workflow='autopilot-execution.yml',private readonly ref='autopilot/v0.5-superadmin-mcp'){
+  constructor(private readonly token:string,private readonly controlRepository:string,private readonly workflow='autopilot-execution.yml',private readonly ref='main'){
     if(!token)throw new PolicyViolation('GitHub Actions dispatch credential is required');
     if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(controlRepository))throw new PolicyViolation('Invalid control repository identity');
   }

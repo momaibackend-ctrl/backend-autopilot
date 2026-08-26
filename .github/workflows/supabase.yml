@@ -38,7 +38,7 @@ jobs:
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
           AUTOPILOT_GITHUB_DISPATCH_TOKEN="$AUTOPILOT_GITHUB_DISPATCH_TOKEN"
           AUTOPILOT_CONTROL_REPOSITORY="momaibackend-ctrl/backend-autopilot"
-          AUTOPILOT_CONTROL_REF="autopilot/v0.5-superadmin-mcp"
+          AUTOPILOT_CONTROL_REF="main"
           AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
           AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"
