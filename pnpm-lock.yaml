@@ -127,6 +127,8 @@ importers:
 
   packages/execution-engine: {}
 
+  packages/http-runner: {}
+
   packages/observability: {}
 
   packages/operator-console: {}
@@ -136,6 +138,8 @@ importers:
   packages/project-registry: {}
 
   packages/schemas: {}
+
+  packages/secret-scanner: {}
 
   packages/superadmin: {}
 
