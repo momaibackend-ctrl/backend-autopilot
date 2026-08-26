@@ -21,7 +21,7 @@ jobs:
       NEXT_PUBLIC_GITHUB_PAGES_BASE_PATH: /backend-autopilot
       NEXT_PUBLIC_SUPABASE_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_PUBLISHABLE_KEY }}
-      NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api
+      NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL: ${{ vars.AUTOPILOT_PUBLIC_CONTROL_API_URL || 'https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

@@ -15,4 +15,8 @@ tests/.tmp/
 supabase/.temp/
 test-results/
 playwright-report/
+.kamal/secrets
+.kamal/secrets-common
+.kamal/secrets.*
+!.kamal/secrets.example
 Промт для создания Backend Autopilot v0.1.md

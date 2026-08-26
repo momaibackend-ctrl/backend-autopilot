@@ -1,0 +1,63 @@
+name: Deploy portable runtime with Kamal
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: First server bootstrap or ordinary deployment
+        required: true
+        type: choice
+        options: [deploy, setup]
+        default: deploy
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: backend-autopilot-portable-production
+  cancel-in-progress: false
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    environment: portable-runtime
+    env:
+      AUTOPILOT_SERVER_IP: ${{ vars.AUTOPILOT_SERVER_IP }}
+      AUTOPILOT_SSH_USER: ${{ vars.AUTOPILOT_SSH_USER }}
+      AUTOPILOT_PUBLIC_HOST: ${{ vars.AUTOPILOT_PUBLIC_HOST }}
+      AUTOPILOT_UPSTREAM_MCP_URL: ${{ vars.AUTOPILOT_UPSTREAM_MCP_URL }}
+      AUTOPILOT_UPSTREAM_CONTROL_API_URL: ${{ vars.AUTOPILOT_UPSTREAM_CONTROL_API_URL }}
+      AUTOPILOT_OAUTH_AUTHORIZATION_SERVER_URL: ${{ vars.AUTOPILOT_OAUTH_AUTHORIZATION_SERVER_URL }}
+      KAMAL_REGISTRY_USERNAME: ${{ github.actor }}
+      KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      AUTOPILOT_SSH_PRIVATE_KEY: ${{ secrets.AUTOPILOT_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.32.1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: ruby/setup-ruby@v1
+        with: { ruby-version: '3.3' }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint && pnpm typecheck && pnpm test && pnpm build
+      - name: Install pinned Kamal
+        run: gem install kamal --version 2.12.0 --no-document
+      - name: Load ephemeral SSH deploy key
+        shell: bash
+        run: |
+          eval "$(ssh-agent -s)"
+          install -m 600 /dev/null "$RUNNER_TEMP/backend-autopilot-deploy-key"
+          printf '%s' "$AUTOPILOT_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/backend-autopilot-deploy-key"
+          ssh-add "$RUNNER_TEMP/backend-autopilot-deploy-key"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - name: Deploy through Kamal
+        run: kamal ${{ inputs.command }}
+      - name: Verify public liveness, readiness, and OAuth discovery
+        shell: bash
+        run: |
+          curl --fail-with-body --retry 6 --retry-delay 5 "https://${AUTOPILOT_PUBLIC_HOST}/health/live"
+          curl --fail-with-body --retry 6 --retry-delay 5 "https://${AUTOPILOT_PUBLIC_HOST}/health/ready"
+          curl --fail-with-body --retry 6 --retry-delay 5 "https://${AUTOPILOT_PUBLIC_HOST}/mcp/.well-known/oauth-protected-resource"

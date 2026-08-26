@@ -1,0 +1,52 @@
+<% server = ENV.fetch("AUTOPILOT_SERVER_IP") %>
+<% public_host = ENV.fetch("AUTOPILOT_PUBLIC_HOST") %>
+
+service: backend-autopilot
+image: momaibackend-ctrl/backend-autopilot
+minimum_version: 2.12.0
+retain_containers: 5
+deploy_timeout: 60
+drain_timeout: 30
+
+servers:
+  web:
+    hosts:
+      - <%= server %>
+    options:
+      restart: unless-stopped
+
+proxy:
+  host: <%= public_host %>
+  app_port: 4310
+  ssl: true
+  forward_headers: true
+  healthcheck:
+    path: /up
+    interval: 2
+    timeout: 5
+
+registry:
+  server: ghcr.io
+  username: <%= ENV.fetch("KAMAL_REGISTRY_USERNAME") %>
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+  dockerfile: docker/Dockerfile
+  cache:
+    type: registry
+
+env:
+  clear:
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    PORT: 4310
+    AUTOPILOT_PUBLIC_BASE_URL: https://<%= public_host %>
+    AUTOPILOT_UPSTREAM_MCP_URL: <%= ENV.fetch("AUTOPILOT_UPSTREAM_MCP_URL") %>
+    AUTOPILOT_UPSTREAM_CONTROL_API_URL: <%= ENV.fetch("AUTOPILOT_UPSTREAM_CONTROL_API_URL") %>
+    AUTOPILOT_OAUTH_AUTHORIZATION_SERVER_URL: <%= ENV.fetch("AUTOPILOT_OAUTH_AUTHORIZATION_SERVER_URL") %>
+    AUTOPILOT_UPSTREAM_TIMEOUT_MS: 120000
+
+ssh:
+  user: <%= ENV.fetch("AUTOPILOT_SSH_USER", "root") %>

@@ -35,3 +35,23 @@ jobs:
       - run: pnpm test:e2e
       - run: pnpm build
       - run: pnpm test:browser
+  portable-container:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build provider-neutral runtime image
+        run: docker build --file docker/Dockerfile --tag backend-autopilot:${GITHUB_SHA} .
+      - name: Validate Kamal 2.12 configuration
+        run: >-
+          docker run --rm
+          --volume "${PWD}:/workdir"
+          --workdir /workdir
+          --env AUTOPILOT_SERVER_IP=192.0.2.10
+          --env AUTOPILOT_PUBLIC_HOST=backend.example.com
+          --env AUTOPILOT_UPSTREAM_MCP_URL=https://upstream.example.com/mcp
+          --env AUTOPILOT_UPSTREAM_CONTROL_API_URL=https://upstream.example.com/control-api
+          --env AUTOPILOT_OAUTH_AUTHORIZATION_SERVER_URL=https://upstream.example.com/auth/v1
+          --env KAMAL_REGISTRY_USERNAME=ci
+          --env KAMAL_REGISTRY_PASSWORD=not-a-secret
+          ghcr.io/basecamp/kamal:v2.12.0 config > /dev/null
