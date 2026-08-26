@@ -12,7 +12,8 @@ import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
 import { AutopilotService } from '../packages/core/src/application.js';
 import { ExecutionFailed, PolicyViolation } from '../packages/core/src/errors.js';
 import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
-import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
+import type { StateStore } from '../packages/core/src/ports.js';
+import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, resolveBranchContinuity, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
 import { requireProjectGithubRepository } from '../packages/core/src/repository-guard.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
@@ -52,7 +53,7 @@ try{
   const acquired=await ensureDisposableCleanWorkspace({
     now:()=>systemClock.now(),
     exists:workspaceCheckoutExists,
-    create:async()=>{const created=await prepareWorkspace(resource.externalReference,current,commands,githubToken);await installTargetDependencies(created,current,commands,await detectStack(created));return created;},
+    create:async()=>{const created=await prepareWorkspace(resource.externalReference,current,commands,githubToken,store);await installTargetDependencies(created,current,commands,await detectStack(created));return created;},
     inspect:async workspace=>{
       const status=await commands.run({command:'git',args:['status','--porcelain'],cwd:workspace,taskId:current.taskId,allowed:['READ']});
       const diff=await commands.run({command:'git',args:['diff','HEAD'],cwd:workspace,taskId:current.taskId,allowed:['READ']});
@@ -90,12 +91,26 @@ try{
 }finally{await store.close();}
 
 function workspaceRoot(){return process.env['RUNNER_TEMP']??process.cwd();}
-async function prepareWorkspace(repository:string,job:ExecutionJob,commands:CommandRunner,token:string){if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new PolicyViolation('Registered repository identity is invalid');const root=workspaceRoot();const workspace=await mkdtemp(join(root,'backend-autopilot-'));const env={GH_TOKEN:token};await checked(commands,{command:'gh',args:['auth','setup-git'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'gh',args:['repo','clone',repository,workspace,'--','--no-tags'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['config','user.email','autopilot@localhost.invalid'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});await checked(commands,{command:'git',args:['config','user.name','Backend Autopilot'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
+async function prepareWorkspace(repository:string,job:ExecutionJob,commands:CommandRunner,token:string,store:StateStore){if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new PolicyViolation('Registered repository identity is invalid');const root=workspaceRoot();const workspace=await mkdtemp(join(root,'backend-autopilot-'));const env={GH_TOKEN:token};await checked(commands,{command:'gh',args:['auth','setup-git'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'gh',args:['repo','clone',repository,workspace,'--','--no-tags'],cwd:root,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['config','user.email','autopilot@localhost.invalid'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});await checked(commands,{command:'git',args:['config','user.name','Backend Autopilot'],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
   if(job.branch){
     const remote=await commands.run({command:'git',args:['ls-remote','--exit-code','--heads','origin',job.branch],cwd:workspace,taskId:job.taskId,allowed:['NETWORK'],env});
     if(remote.record.exitCode===0){
       await checked(commands,{command:'git',args:['fetch','origin',job.branch],cwd:workspace,taskId:job.taskId,allowed:['NETWORK'],env});await checked(commands,{command:'git',args:['switch','-C',job.branch,'--track',`origin/${job.branch}`],cwd:workspace,taskId:job.taskId,allowed:['BUILD'],env});
-      if(job.commitSha){const head=await checked(commands,{command:'git',args:['rev-parse','HEAD'],cwd:workspace,taskId:job.taskId,allowed:['READ']});if(head.stdout.trim()!==job.commitSha)throw new ExecutionFailed('Remote task branch no longer matches the persisted exact commit SHA',{expected:job.commitSha,actual:head.stdout.trim()});}
+      if(job.commitSha){
+        const head=await checked(commands,{command:'git',args:['rev-parse','HEAD'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
+        const actualHeadSha=head.stdout.trim();
+        if(actualHeadSha!==job.commitSha){
+          const ancestry=await commands.run({command:'git',args:['merge-base','--is-ancestor',job.commitSha,'HEAD'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
+          const decision=resolveBranchContinuity({expectedSha:job.commitSha,actualHeadSha,isAncestor:ancestry.record.exitCode===0});
+          if(decision.status!=='FAST_FORWARD')throw new ExecutionFailed('Remote task branch no longer matches the persisted exact commit SHA',{expected:job.commitSha,actual:actualHeadSha});
+          // FAST_FORWARD: heal the persisted commitSha to the new HEAD so this job -- and any
+          // future retry that inherits it for continuity -- doesn't deadlock against a value that
+          // can now never match again.
+          console.log(JSON.stringify({level:'warn',event:'execution.branch.fast_forward_adopted',jobId:job.id,taskId:job.taskId,expected:job.commitSha,actual:actualHeadSha}));
+          job={...job,commitSha:decision.healedSha};
+          await store.updateExecutionJob({...job,updatedAt:systemClock.now()});
+        }
+      }
     }else if(job.baseBranch){
       // First run of a task that DEPENDS_ON an already-READY predecessor: branch from the
       // predecessor's own verified autopilot/* branch (server-resolved, never a caller-controlled

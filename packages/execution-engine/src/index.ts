@@ -24,5 +24,6 @@ export * from './stack-aware-test-executor.js';
 export * from './stack-detection.js';
 export * from './gradle-wrapper-provisioner.js';
 export * from './disposable-workspace.js';
+export * from './branch-continuity.js';
 export * from './rebase-transfer.js';
 export * from './reviewer.js';
