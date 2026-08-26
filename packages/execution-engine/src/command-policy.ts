@@ -15,7 +15,7 @@ export class CommandPolicy {
     if(name==='git'&&args[0]==='config')return 'BUILD';
     if(name==='git'&&args[0]==='branch'&&args[1]==='--show-current')return 'READ';
     if(name==='git'&&['checkout','switch','branch','add','commit','cherry-pick','merge','restore'].includes(args[0]??''))return 'BUILD';
-    if(name==='pnpm'||name==='npm'||name==='npx')return (args[0]==='test'||args.includes('vitest'))?'TEST':'BUILD';
+    if(name==='pnpm'||name==='npm'||name==='npx')return (args[0]==='test'||(args[0]??'').startsWith('test:')||args.includes('vitest'))?'TEST':'BUILD';
     if(name==='gradlew'||name==='gradle')return args.some(gradleTaskIsTest)?'TEST':'BUILD';
     return allowed[name]??'UNKNOWN';
   }
