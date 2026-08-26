@@ -12,4 +12,7 @@ artifacts
 tests/.tmp
 test-results
 playwright-report
+.kamal/secrets
+.kamal/secrets-common
+.kamal/secrets.*
 *.log

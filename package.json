@@ -11,6 +11,8 @@
     "dev:api": "tsx apps/control-api/src/main.ts",
     "dev:console": "pnpm --dir apps/operator-console dev",
     "dev:worker": "tsx apps/worker/src/main.ts",
+    "dev:portable": "tsx apps/portable-runtime/src/main.ts",
+    "start:portable": "node dist/apps/portable-runtime/src/main.js",
     "deployment:export-state": "tsx scripts/export-deployment-state.ts",
     "deployment:bootstrap": "tsx scripts/deployment-bootstrap.ts",
     "execution:job": "tsx scripts/run-execution-job.ts",
