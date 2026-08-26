@@ -11,7 +11,14 @@ export class TestEngine {
   async run(workspace:string,taskId:string,plan:ImplementationPlan):Promise<TestReport>{
     const suites:TestReport['suites']=[];
     let packageScripts:Record<string,string>={};
-    try{const pkg=JSON.parse(await readFile(join(workspace,'package.json'),'utf8')) as {scripts?:Record<string,string>};packageScripts=pkg.scripts??{};}catch{/* no package.json or unreadable -- falls through to the file-existence suite below */}
+    try{const pkg=JSON.parse(await readFile(join(workspace,'package.json'),'utf8')) as {scripts?:Record<string,string>};packageScripts=pkg.scripts??{};}catch(error){
+      // Silently falling through to the file-existence suite below (tests/unit.test.js etc.) is
+      // correct for a genuinely missing package.json, but swallowing the real reason otherwise
+      // makes every other read failure indistinguishable from that -- and, precisely because the
+      // suites below never shell out, leaves no COMMAND_LOG evidence either. Log the real cause so
+      // a future occurrence is diagnosable from the raw job log instead of another guessing session.
+      console.log(JSON.stringify({level:'warn',event:'test_engine.package_json_unreadable',workspace,taskId,error:error instanceof Error?error.message:String(error)}));
+    }
     for(const type of plan.testsRequired){
       const preferred=scripts[type];
       const script=preferred&&packageScripts[preferred]?preferred:packageScripts.test?'test':undefined;
