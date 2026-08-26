@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AsyncExecutionCoordinator } from '../../packages/core/src/async-execution.js';
+import { ArchitectureGuard } from '../../packages/policy-engine/src/architecture-guard.js';
 import { testService } from '../helpers/service.js';
 
 async function fixture(){
@@ -56,5 +57,12 @@ describe('deterministic asynchronous execution contract',()=>{
     await store.createExecutionJob(broken);
     const coordinator=new AsyncExecutionCoordinator(store,{dispatch:vi.fn(async()=>({}))});
     await expect(coordinator.enqueueImplementation({projectId:project.id,taskId:task.id,operationId:'broken-identity-op',changes},resource.resourceId)).rejects.toMatchObject({code:'EXECUTION_FAILED',details:{blockingReport:{code:'EXECUTION_IDENTITY_MISSING'}}});
+  });
+
+  it('architecture guard represents canon/API violations as blocking evidence before execution',()=>{
+    const guard=new ArchitectureGuard();
+    const review=guard.review({taskId:'00000000-0000-0000-0000-000000000001',goal:'g',requirements:['r'],affectedDomains:['core'],dataOwners:['owner'],filesExpectedToChange:['src/**'],databaseChanges:[],apiChanges:['Machine-readable REST contract'],events:[],securityConsiderations:['ownership'],dependencies:[],testsRequired:['UNIT','SECURITY'],rollbackStrategy:'revert',openQuestions:[],riskLevel:'LOW',approved:false,createdAt:new Date().toISOString()},[{id:'required-contract-test',type:'REQUIRE_TEST',test:'CONTRACT',message:'API changes require contract tests'}]);
+    expect(review.passed).toBe(false);
+    expect(review.violations).toEqual(expect.arrayContaining([expect.objectContaining({ruleId:'required-contract-test'})]));
   });
 });

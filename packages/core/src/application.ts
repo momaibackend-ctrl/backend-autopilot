@@ -301,11 +301,18 @@ export class AutopilotService {
       context?.sections.find((s) => s.type === "ARCHITECTURE_CANON")?.content,
     );
     const architecture = this.guard.review(plan, rules);
-    if (!architecture.passed)
-      throw new ArchitectureViolation(
-        "ArchitectureGuard rejected implementation plan",
-        { violations: architecture.violations },
-      );
+    if (!architecture.passed) {
+      const reason = "ArchitectureGuard rejected implementation plan";
+      throw new ArchitectureViolation(reason, {
+        violations: architecture.violations,
+        blockingReport: {
+          code: "CANON_OR_API_CONFLICT",
+          reason,
+          evidence: architecture.violations,
+          remediation: "Resolve the reported canon/API violations in the task requirements or architecture context, then analyze and plan again before execution.",
+        },
+      });
+    }
     const approved = { ...plan, approved: true };
     const planArtifact = await this.artifacts.write(
       projectId,
