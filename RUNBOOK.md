@@ -1,5 +1,13 @@
 # Runbook
 
+## Portable public runtime will not start
+
+Validate the four required URL variables in `.env.example`. Public and upstream URLs must be HTTPS except for loopback development. `PORT` is preferred by generic container platforms and falls back to `AUTOPILOT_PORT`; `HOST` falls back to `AUTOPILOT_HOST` and defaults to `0.0.0.0` in the portable entrypoint.
+
+`/health/live` proves only that the process accepts requests. `/health/ready` and Kamal's `/up` fetch the upstream MCP protected-resource metadata and return 503 when that dependency is unreachable or misconfigured. A 502 from `/mcp` or `/control-api` means the configured upstream request failed; logs contain only the upstream origin and error class, never bearer values or response bodies.
+
+Use `kamal app details`, `kamal app logs --follow`, and `kamal audit`. For a bad image, list retained containers and run `kamal rollback <git-sha>`. For total server loss, follow `BOOTSTRAP_NEW_SERVER.md`; do not create a second database or re-dispatch existing jobs.
+
 ## API/MCP will not start
 
 Check Node `>=22`, run `pnpm bootstrap`, then `pnpm autopilot capabilities`. Without `DATABASE_URL`, the durable bootstrap registry uses the gitignored `.autopilot/state.json`. If an external control-plane URL is configured, run `pnpm db:migrate` before restart.

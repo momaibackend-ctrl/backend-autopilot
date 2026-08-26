@@ -66,6 +66,10 @@ Architecture decisions are in `docs/adr/`.
 Browser (GitHub Pages static export)
         | Supabase Auth JWT; exact-origin CORS
         v
+Cloudflare DNS/proxy (optional; stable public hostname)
+        |
+Kamal proxy -> stateless portable runtime (/control-api, /mcp, OAuth metadata)
+        v
 Supabase Edge Control API / HTTP MCP
         | service-role PostgREST and Storage
         v
@@ -78,11 +82,15 @@ AutopilotService -> PolicyEngine -> durable ExecutionJob
                          Postgres + private Storage
 ```
 
+The container is a provider-neutral public origin, not a second control plane. It forwards the existing authenticated protocols and owns only stable public discovery URLs. Its only state is readiness cache data; it can be destroyed or moved without data migration. Direct Supabase Edge URLs remain available as emergency endpoints. Cloudflare Tunnel is not required, and Render is not part of the request path or deployment architecture. See `docs/adr/014-portable-public-runtime.md` and `BOOTSTRAP_NEW_SERVER.md`.
+
 The browser never receives a service-role key, GitHub credential, target secret or direct table policy. Edge validates the Supabase JWT and operator/project membership before using its service role. Polling every five seconds reads durable state; large artifact bodies are hydrated from the private bucket by the server-side adapter.
 
 The HTTP MCP has two distinct credentials. The ordinary token creates a `PROJECT_OPERATOR` principal restricted to an explicit project ID list. The dedicated superadmin token creates a `SUPERADMIN` principal and is never accepted by the browser. Operator Console users have persisted `OPERATOR`/`SUPERADMIN` roles; only the latter may skip membership checks. Dashboard aggregation is membership-filtered for ordinary operators.
 
 Remote source and deployment are GitHub-driven. Pages and Edge are short-lived/serverless. Execution runs only in fixed GitHub Actions workflows, and workflow inputs contain a job UUID rather than repository paths, URLs or credentials. Database claim/lease and operation-id uniqueness prevent duplicate concurrent work; scheduled reconciliation handles lost callbacks without an always-on worker.
+
+The optional always-on public gateway is deployed by Kamal to a standard Linux Docker host. Kamal health-gates and drains each replacement container through `/up`; the container also exposes `/health/live` and `/health/ready`. Restarting it cannot enqueue or repeat work because dispatch/idempotency/checkpoint/heartbeat/terminal state remains in PostgreSQL and GitHub Actions.
 
 The API Explorer derives endpoints from `API_CONTRACT` OpenAPI artifacts. Validation and API requests create immutable artifacts and audit events. Saved scenarios support sequential steps, extraction of response values, non-secret `{{variable}}` interpolation, and server-memory-only bearer handoff. Production and unregistered targets fail before network access. `HttpScenarioRunner` is the single executable implementation behind both the Console scenario route and the published `superadmin_scenario_run` MCP tool; it resolves its target only from the scenario's own registered `HTTP_API` resource and is bounded by timeout, redirect, response-size and step limits.
 

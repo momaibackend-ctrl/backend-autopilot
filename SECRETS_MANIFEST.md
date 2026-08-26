@@ -23,5 +23,9 @@ The project-scoped `SECRETS_MANIFEST` artifact contains the same references and 
 | `AUTOPILOT_MCP_TOKEN` | Supabase Edge and authorized MCP client only | remote semantic MCP | rotate both endpoints; never send to the browser |
 | `AUTOPILOT_SUPERADMIN_MCP_TOKEN` | Supabase Edge and one authorized superadmin MCP client only | global semantic administration; separate from project-scoped MCP | rotate both endpoints; never send to the browser or use as a project token |
 | `AUTOPILOT_RECONCILE_TOKEN` | Supabase Edge and reconciliation workflow only | scheduled recovery endpoint | rotate both endpoints |
+| `AUTOPILOT_SSH_PRIVATE_KEY` | GitHub Environment `portable-runtime` only | SSH access to the explicitly configured Kamal server | rotate on the server and replace the environment secret |
+| `KAMAL_REGISTRY_PASSWORD` | ephemeral workflow token or local ignored `.kamal/secrets` | push/pull only the GHCR runtime image | rotate/revoke in GitHub; never pass to the application container |
 
 Local copies use the gitignored `.env` under their `AUTOPILOT_CONTROL_*` names. Deployed copies are server-side only. Workflow inputs contain only a job UUID, never any value above.
+
+The portable application container receives no new credential: client bearer/OAuth headers are forwarded to the already authorized upstream. Its public hostname, server IP, upstream URLs, and OAuth authorization-server URL are non-secret deployment variables.

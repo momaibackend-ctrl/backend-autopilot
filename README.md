@@ -17,6 +17,19 @@ Remote state uses project `qtyfdzjzmgxtrarpgcmn`: PostgreSQL stores envelopes an
 
 Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The browser receives only the Supabase URL and publishable key. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
 
+### Provider-neutral public runtime
+
+The repository now also contains a stateless OCI runtime and Kamal 2 deployment for a standard Linux VPS. It publishes stable `/mcp` and `/control-api` paths, OAuth protected-resource discovery, and `/health`, `/health/live`, `/health/ready`, while preserving the existing Supabase Edge/Auth/Postgres/Storage and GitHub Actions execution architecture. The Docker image has no Render or VPS-provider code; server IP, public hostname, upstream URLs, and OAuth server are configuration.
+
+```bash
+kamal setup
+kamal deploy
+kamal app logs --follow
+kamal rollback <git-sha>
+```
+
+Cloudflare may proxy the stable hostname but is not an application runtime dependency, and Cloudflare Tunnel is optional. See [`BOOTSTRAP_NEW_SERVER.md`](BOOTSTRAP_NEW_SERVER.md), [`docs/adr/014-portable-public-runtime.md`](docs/adr/014-portable-public-runtime.md), and [`docs/render-dependency-audit.md`](docs/render-dependency-audit.md).
+
 ## Operator Console
 
 ```bash
@@ -93,9 +106,11 @@ Passwords are never accepted as persistent inputs. Generated secrets are replace
 Production MCP is an authenticated, stateless Streamable HTTP endpoint:
 
 ```text
-https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+https://<stable-public-host>/mcp
 Authorization: Bearer <AUTOPILOT_SUPERADMIN_MCP_TOKEN>
 ```
+
+Until DNS cutover, or during origin recovery, use the existing direct Supabase Edge URL shown in `MCP_CONTRACT.md`.
 
 Local stdio remains available for development:
 

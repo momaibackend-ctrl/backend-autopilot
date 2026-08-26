@@ -3,10 +3,12 @@
 The deployed endpoint is authenticated stateless Streamable HTTP:
 
 ```text
-POST https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+POST https://<stable-public-host>/mcp
 Authorization: Bearer <token>
 Accept: application/json, text/event-stream
 ```
+
+The direct Supabase Edge URL `https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp` remains a fallback. The portable runtime proxies requests and responses without changing tool registration, authentication, operation IDs, or result payloads. Its protected-resource metadata uses the stable public host so a VPS/IP change does not require a ChatGPT connector change.
 
 `AUTOPILOT_MCP_TOKEN` creates a `PROJECT_OPERATOR` restricted to configured project IDs. The independent `AUTOPILOT_SUPERADMIN_MCP_TOKEN` creates a global `SUPERADMIN`. Neither credential can bypass PolicyEngine, explicit Resource Registry ownership, production denial, secret redaction, workflow gates or command policy.
 
@@ -17,7 +19,7 @@ A bearer token that does not match either static token is tried as a Supabase Au
 Discovery/token endpoints (Supabase Auth, unchanged by this project):
 
 ```text
-Protected resource metadata:   https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource
+Protected resource metadata:   https://<stable-public-host>/mcp/.well-known/oauth-protected-resource
 Authorization Server metadata: https://qtyfdzjzmgxtrarpgcmn.supabase.co/.well-known/oauth-authorization-server/auth/v1
 Authorization endpoint:        https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/authorize
 Token endpoint:                https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/token
