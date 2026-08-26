@@ -1,5 +1,6 @@
 FROM node:22-bookworm-slim AS build
 
+ENV CI=true
 RUN corepack enable
 WORKDIR /app
 
