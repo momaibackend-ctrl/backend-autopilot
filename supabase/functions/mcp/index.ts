@@ -3,7 +3,8 @@ import { McpServer } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/webStandardStreamableHttp.js';
 import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
-import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
+import { requireProjectGithubRepository } from '../../../packages/core/src/repository-guard.ts';
+import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
 import { scenarioRunToolAnnotations, scenarioRunToolDescription, scenarioRunToolInputSchema, scenarioRunToolName } from '../../../packages/http-runner/src/index.ts';
@@ -54,7 +55,7 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_project_list',{description:'List every project regardless of membership',inputSchema:{},annotations:ro},safe(async()=>admin().projectList(principal)));
   server.registerTool('superadmin_project_get',{description:'Read any project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>admin().projectGet(principal,projectId)));
   server.registerTool('superadmin_project_create',{description:'Create a non-production project',inputSchema:{operationId,name:z.string().min(1),slug:z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),sourceType:z.string().min(1),environment:environmentSchema,autonomyMode:autonomyModeSchema},annotations:mut},safe(async value=>admin().projectCreate(principal,{...value,workspacePath:''},value.operationId)));
-  server.registerTool('superadmin_project_update',{description:'Update safe project metadata or autonomy mode',inputSchema:{operationId,projectId,name:z.string().min(1).optional(),status:z.enum(['ACTIVE','SUSPENDED','ARCHIVED']).optional(),autonomyMode:autonomyModeSchema.optional(),sourceType:z.string().min(1).optional()},annotations:mut},safe(async({operationId,projectId,...patch})=>admin().projectUpdate(principal,projectId,patch,operationId)));
+  server.registerTool('superadmin_project_update',{description:'Update safe project metadata, autonomy mode, or the canonical registered repository',inputSchema:{operationId,projectId,name:z.string().min(1).optional(),status:z.enum(['ACTIVE','SUSPENDED','ARCHIVED']).optional(),autonomyMode:autonomyModeSchema.optional(),sourceType:z.string().min(1).optional(),repository:repositoryIdentitySchema.optional()},annotations:mut},safe(async({operationId,projectId,...patch})=>admin().projectUpdate(principal,projectId,patch,operationId)));
   server.registerTool('superadmin_project_delete',{description:'Archive a project after exact slug confirmation; history remains auditable',inputSchema:{...deleteInput,projectId,expectedSlug:z.string(),confirmation:z.literal('ARCHIVE_PROJECT')},annotations:destructive},safe(async({projectId,expectedSlug,...input})=>admin().projectDelete(principal,projectId,expectedSlug,input)));
 
   server.registerTool('superadmin_resource_list',{description:'List resources for any project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>admin().resourceList(principal,projectId)));
@@ -182,9 +183,7 @@ async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntim
   const task=await runtime.store.getTask(input.projectId,input.taskId);
   if(!task)throw new NotFound('Task not found');
   if(task.state!=='READY')throw new PolicyViolation('Pull request creation requires a task that passed all READY gates');
-  const resource=await runtime.store.getResource(input.resourceId);
-  if(!resource||resource.projectId!==input.projectId)throw new NotFound('Resource not found');
-  if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.status!=='ACTIVE')throw new PolicyViolation('An active registered GitHub repository is required for pull request creation');
+  const resource=await requireProjectGithubRepository(runtime.store,input.projectId,input.resourceId);
   if(resource.environment==='PRODUCTION')throw new UnsupportedOperation('Production resource mutation is not supported');
   if(!resource.permissions.includes('WRITE'))throw new PolicyViolation('Resource permission denied',{required:'WRITE'});
   const runs=await runtime.store.listRuns(input.projectId,input.taskId);
@@ -202,11 +201,10 @@ async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntim
 }
 
 async function mergeSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string}){
-  const [task,resource]=await Promise.all([runtime.store.getTask(input.projectId,input.taskId),runtime.store.getResource(input.resourceId)]);
-  if(resource&&resource.projectId!==input.projectId)throw new NotFound('Resource not found');
+  const [task,resource]=await Promise.all([runtime.store.getTask(input.projectId,input.taskId),requireProjectGithubRepository(runtime.store,input.projectId,input.resourceId)]);
   const [runs,artifacts]=await Promise.all([runtime.store.listRuns(input.projectId,input.taskId),runtime.store.listArtifacts(input.projectId,input.taskId)]);
   const {branch,commitSha}=resolveMergeableCommit({task,resource,runs,artifacts});
-  const repository=resource!.externalReference;
+  const repository=resource.externalReference;
   const githubHeaders={authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'};
   const repoResponse=await fetch(`https://api.github.com/repos/${repository}`,{headers:githubHeaders});
   if(!repoResponse.ok)throw new ExecutionFailed('GitHub repository metadata lookup failed',{status:repoResponse.status,body:(await repoResponse.text()).slice(0,300)});
@@ -230,9 +228,7 @@ async function mergeSandboxPullRequest(runtime:ReturnType<typeof createEdgeRunti
 }
 
 async function readSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;path:string;ref?:string}){
-  const resource=await runtime.store.getResource(input.resourceId);
-  if(!resource||resource.projectId!==input.projectId)throw new NotFound('Resource not found');
-  if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.status!=='ACTIVE')throw new PolicyViolation('An active registered GitHub repository is required');
+  const resource=await requireProjectGithubRepository(runtime.store,input.projectId,input.resourceId);
   if(resource.environment==='PRODUCTION')throw new UnsupportedOperation('Production resource access is not supported');
   if(!resource.permissions.includes('READ'))throw new PolicyViolation('Resource permission denied',{required:'READ'});
   const cleanPath=input.path.replace(/^\/+|\/+$/g,'');

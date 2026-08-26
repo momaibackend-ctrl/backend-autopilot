@@ -14,6 +14,7 @@ import { ExecutionFailed, PolicyViolation } from '../packages/core/src/errors.js
 import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
 import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
+import { requireProjectGithubRepository } from '../packages/core/src/repository-guard.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
 import { fileChangeSchema, rebaseConflictResolutionSchema, type ExecutionJob } from '../packages/schemas/src/index.js';
 import { rebaseBranchName } from '../packages/superadmin/src/rebase-eligibility.js';
@@ -33,8 +34,12 @@ const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
 const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);const blobs=new SupabaseStorageArtifactBlobStore(supabaseUrl,serviceRoleKey);const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
 try{
-  current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);const resource=await store.getResource(current.resourceId);if(!project||!task||!resource)throw new ExecutionFailed('Execution job references missing registered state');
-  await new PolicyEngine(store).authorize({project,action:'EXECUTE',resourceId:resource.resourceId,requiredPermission:'WRITE',actor:owner});if(resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github'||resource.environment!=='SANDBOX')throw new PolicyViolation('Execution job target is not an allowlisted sandbox GitHub repository');
+  current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);if(!project||!task)throw new ExecutionFailed('Execution job references missing registered state');
+  // requireProjectGithubRepository closes a real gap this script previously had: it fetched the
+  // resource by id alone, with no check that it actually belongs to this job's project -- the same
+  // invariant every other resource-consuming entry point enforces (see repository-guard.ts).
+  const resource=await requireProjectGithubRepository(store,project.id,current.resourceId);
+  await new PolicyEngine(store).authorize({project,action:'EXECUTE',resourceId:resource.resourceId,requiredPermission:'WRITE',actor:owner});if(resource.environment!=='SANDBOX')throw new PolicyViolation('Execution job target is not an allowlisted sandbox GitHub repository');
   const rebase=current.kind==='REBASE'?rebasePayloadSchema.parse(current.payload).rebase:undefined;
   const payload=rebase?{changes:[]}:inputSchema.parse(current.payload);
   // The runner workspace is disposable. If the restored task branch plus dependency install

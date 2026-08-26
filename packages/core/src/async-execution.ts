@@ -7,6 +7,7 @@ import type { Clock, IdGenerator, StateStore } from './ports.js';
 import { systemClock, uuidGenerator } from './ports.js';
 import { deterministicTaskBranch } from './branch.js';
 import { detectHardcodedSecret } from '../../secret-scanner/src/index.js';
+import { requireProjectGithubRepository } from './repository-guard.js';
 
 export interface ExecutionJobDispatcher {
   dispatch(job:ExecutionJob):Promise<{workflowRunId?:string;workflowRunUrl?:string}>;
@@ -23,8 +24,8 @@ export class AsyncExecutionCoordinator {
     const data=executeInputSchema.parse(input);const project=await this.store.getProject(data.projectId);if(!project)throw new NotFound('Project not found');let task=await this.store.getTask(data.projectId,data.taskId);if(!task)throw new NotFound('Task not found');
     const existing=await this.store.findExecutionJobByOperation(project.id,data.operationId);if(existing)return {job:existing,run:existing.runId?await this.store.getRun(project.id,existing.runId):undefined,idempotentReplay:true};
     if(!['PLANNED','IMPLEMENTING'].includes(task.state))throw new InvalidState('Task must be PLANNED or IMPLEMENTING before remote execution');
-    await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});const resource=await this.store.getResource(resourceId);
-    if(!resource||resource.projectId!==project.id||resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github')throw new ArchitectureViolation('Remote execution requires a project-owned registered GitHub repository');
+    await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
+    await requireProjectGithubRepository(this.store,project.id,resourceId);
     for(const change of data.changes)assertSafeChange(change.path,change.content);
     const dependencyBase=await this.resolveDependencyBase(project.id,task,actor);
     if(task.state==='PLANNED')task=await this.workflow.transition(task,'IMPLEMENTING','Remote execution job queued',actor);
@@ -54,8 +55,7 @@ export class AsyncExecutionCoordinator {
     if(existing)return {job:existing,run:existing.runId?await this.store.getRun(project.id,existing.runId):undefined,idempotentReplay:true};
     if(!['READY','IMPLEMENTING','BLOCKED'].includes(task.state))throw new InvalidState('Only a READY task (or one already being re-verified, or blocked awaiting conflict resolution) can be transferred onto a newer base');
     await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
-    const resource=await this.store.getResource(resourceId);
-    if(!resource||resource.projectId!==project.id||resource.type!=='GITHUB_REPOSITORY'||resource.provider!=='github')throw new ArchitectureViolation('Remote execution requires a project-owned registered GitHub repository');
+    const resource=await requireProjectGithubRepository(this.store,project.id,resourceId);
     for(const resolution of data.resolutions)assertSafeChange(resolution.path,resolution.content);
     if(task.state!=='IMPLEMENTING')task=await this.workflow.transition(task,'IMPLEMENTING',`Transferring verified work onto the current base of ${resource.externalReference}`,actor);
     const now=this.clock.now();

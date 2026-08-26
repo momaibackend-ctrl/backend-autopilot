@@ -772,6 +772,7 @@ export const projectUpdateSchema = z.object({
   status: z.enum(["ACTIVE", "SUSPENDED", "ARCHIVED"]).optional(),
   autonomyMode: autonomyModeSchema.optional(),
   sourceType: z.string().min(1).optional(),
+  repository: repositoryIdentitySchema.optional(),
 }).strict();
 export const taskUpdateSchema = z.object({
   title: z.string().min(1).optional(),

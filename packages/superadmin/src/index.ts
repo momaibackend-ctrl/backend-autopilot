@@ -17,6 +17,7 @@ import type {
   StateStore,
 } from "../../core/src/ports.js";
 import { systemClock, uuidGenerator } from "../../core/src/ports.js";
+import { requireProjectGithubRepository } from "../../core/src/repository-guard.js";
 import { PolicyEngine } from "../../policy-engine/src/index.js";
 import {
   consoleScreenUpsertSchema,
@@ -192,6 +193,17 @@ export class SuperadminService {
       if(data.status!==undefined)updated.status=data.status;
       if(data.autonomyMode!==undefined)updated.autonomyMode=data.autonomyMode;
       if(data.sourceType!==undefined)updated.sourceType=data.sourceType;
+      if(data.repository!==undefined){
+        // Re-pointing the project's canonical repository must reference a real, ACTIVE,
+        // project-owned GitHub repository resource -- the same invariant execution itself
+        // enforces (repository-guard.ts) -- and the declared owner/name must actually match what
+        // that resource is registered as, so this field can never drift from the resource it
+        // claims to describe (which is exactly how it went stale for the prior repository).
+        const resource=await requireProjectGithubRepository(this.deps.store,projectId,data.repository.resourceId);
+        if(resource.externalReference!==`${data.repository.owner}/${data.repository.name}`)
+          throw new PolicyViolation("repository owner/name does not match the referenced resource",{expected:resource.externalReference,actual:`${data.repository.owner}/${data.repository.name}`});
+        updated.repository=data.repository;
+      }
       return this.deps.store.updateProject(updated);
     });
   }
