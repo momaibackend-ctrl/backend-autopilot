@@ -11,7 +11,7 @@ export class TestEngine {
   async run(workspace:string,taskId:string,plan:ImplementationPlan):Promise<TestReport>{
     const suites:TestReport['suites']=[];
     let packageScripts:Record<string,string>={};
-    try{const pkg=JSON.parse(await readFile(join(workspace,'package.json'),'utf8')) as {scripts?:Record<string,string>};packageScripts=pkg.scripts??{};}catch{}
+    try{const pkg=JSON.parse(await readFile(join(workspace,'package.json'),'utf8')) as {scripts?:Record<string,string>};packageScripts=pkg.scripts??{};}catch{/* no package.json or unreadable -- falls through to the file-existence suite below */}
     for(const type of plan.testsRequired){
       const preferred=scripts[type];
       const script=preferred&&packageScripts[preferred]?preferred:packageScripts.test?'test':undefined;

@@ -34,7 +34,8 @@ describe('deterministic asynchronous execution contract',()=>{
     const coordinator=new AsyncExecutionCoordinator(store,{dispatch:vi.fn(async()=>{throw new Error('write tool offline');})});
     await expect(coordinator.enqueueImplementation({projectId:project.id,taskId:task.id,operationId:'deterministic-op-2',changes},resource.resourceId)).rejects.toMatchObject({code:'EXECUTION_FAILED',details:{blockingReport:{code:'WRITE_DISPATCH_UNAVAILABLE'}}});
     const [job]=await store.listExecutionJobs(project.id,task.id);const [run]=await store.listRuns(project.id,task.id);
-    expect(job.status).toBe('BLOCKED');expect(run.status).toBe('FAILED');expect(job.id).toBeTruthy();expect(run.id).toBeTruthy();
+    expect(job).toBeDefined();expect(run).toBeDefined();
+    expect(job!.status).toBe('BLOCKED');expect(run!.status).toBe('FAILED');expect(job!.id).toBeTruthy();expect(run!.id).toBeTruthy();
   });
 
   it('does not mutate historical CANCELLED execution records when a fresh operation is dispatched',async()=>{
