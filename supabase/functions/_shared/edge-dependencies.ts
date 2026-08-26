@@ -6,6 +6,8 @@ import '../../../packages/core/src/errors.ts';
 import '../../../packages/core/src/ports.ts';
 import '../../../packages/core/src/branch.ts';
 import '../../../packages/core/src/async-execution.ts';
+import '../../../packages/core/src/repository-guard.ts';
+import '../../../packages/secret-scanner/src/index.ts';
 import '../../../packages/audit/src/index.ts';
 import '../../../packages/artifact-store/src/index.ts';
 import '../../../packages/policy-engine/src/index.ts';
