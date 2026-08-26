@@ -60,6 +60,25 @@ describe('deterministic asynchronous execution contract',()=>{
     await expect(coordinator.enqueueImplementation({projectId:project.id,taskId:task.id,operationId:'broken-identity-op',changes},resource.resourceId)).rejects.toMatchObject({code:'EXECUTION_FAILED',details:{blockingReport:{code:'EXECUTION_IDENTITY_MISSING'}}});
   });
 
+  it('refuses to report READY when a required formal artifact is missing, even after an otherwise-passing independent review',async()=>{
+    const {store,service}=testService();
+    const project=await service.projectCreate({name:'Artifact gate',slug:`artifact-gate-${crypto.randomUUID()}`,sourceType:'LOCAL',environment:'SANDBOX',autonomyMode:'GUARDED'});
+    const task=await service.taskCreate({projectId:project.id,externalKey:'GATE-1',title:'Artifact gate',description:'d',requirements:['r'],relationships:[]});
+    await service.taskAnalyze(project.id,task.id);await service.taskPlan(project.id,task.id);
+    // Force straight to REVIEWING: IMPLEMENTATION_PLAN/ARCHITECTURE_REVIEW are the real artifacts
+    // taskPlan just wrote, so the independent review below evaluates genuine evidence, not a stub.
+    await store.updateTask({...(await store.getTask(project.id,task.id))!,state:'REVIEWING'});
+    await store.saveArtifact({id:crypto.randomUUID(),projectId:project.id,taskId:task.id,kind:'CODE_DIFF',schemaVersion:'1',content:{diff:'diff --git a/x b/x',changedFiles:['x']},contentHash:'hash',status:'AVAILABLE',createdAt:new Date().toISOString()} as never);
+    // Every testsRequired type from the real plan (UNIT/INTEGRATION/SECURITY/REGRESSION for a
+    // task whose text doesn't mention database or API) passes, so the independent review itself
+    // passes -- isolating the assertion to the terminal artifact gate, not review failure.
+    await store.saveArtifact({id:crypto.randomUUID(),projectId:project.id,taskId:task.id,kind:'TEST_REPORT',schemaVersion:'1',content:{passed:true,suites:['UNIT','INTEGRATION','SECURITY','REGRESSION'].map(type=>({type,command:['pnpm','test'],passed:true,exitCode:0})),finishedAt:new Date().toISOString()},contentHash:'hash',status:'AVAILABLE',createdAt:new Date().toISOString()} as never);
+    // SECURITY_REPORT is deliberately never written.
+    await expect(service.taskReview(project.id,task.id)).rejects.toMatchObject({code:'REVIEW_FAILED',details:{missing:expect.arrayContaining(['SECURITY_REPORT'])}});
+    expect((await service.taskGet(project.id,task.id)).state).toBe('REVIEWING');
+    expect((await store.listArtifacts(project.id,task.id)).some(a=>a.kind==='FINAL_CHANGE_MANIFEST')).toBe(false);
+  });
+
   it('architecture guard represents canon/API violations as blocking evidence before execution',()=>{
     const guard=new ArchitectureGuard();
     const review=guard.review({taskId:'00000000-0000-0000-0000-000000000001',goal:'g',requirements:['r'],affectedDomains:['core'],dataOwners:['owner'],filesExpectedToChange:['src/**'],databaseChanges:[],apiChanges:['Machine-readable REST contract'],events:[],securityConsiderations:['ownership'],dependencies:[],testsRequired:['UNIT','SECURITY'],rollbackStrategy:'revert',openQuestions:[],riskLevel:'LOW',approved:false,createdAt:new Date().toISOString()},[{id:'required-contract-test',type:'REQUIRE_TEST',test:'CONTRACT',message:'API changes require contract tests'}]);
