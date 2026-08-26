@@ -1,0 +1,167 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Backend Autopilot -- Deterministic Task Execution Contract",
+    "version": "0.5.0",
+    "description": "Machine-readable contract for the deterministic execution response returned by superadmin_task_execute (and superadmin_task_rebase_onto_current_base) over the Superadmin MCP JSON-RPC endpoint. A caller issuing 'realize task X' must receive either exactly one durable jobId/runId pair, or a structured blocking reason -- never partial or pseudo-progress. This document is deliberately scoped to that response contract, not the full MCP tool surface."
+  },
+  "paths": {
+    "/functions/v1/mcp": {
+      "post": {
+        "summary": "JSON-RPC 2.0 tools/call -- superadmin_task_execute",
+        "description": "Queues a fixed GitHub Actions execution using a registered resource ID and semantic file changes. operationId is mandatory and globally replay-safe: repeating an already-used operationId for the same tool/project never redispatches -- it returns the existing execution's status only.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ToolCallRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Either an accepted deterministic execution or a structured DomainError. Both are always well-formed JSON-RPC results; HTTP 200 does not by itself imply success -- inspect isError.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/DeterministicExecutionToolResult" },
+                    { "$ref": "#/components/schemas/DomainErrorToolResult" }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ToolCallRequest": {
+        "type": "object",
+        "required": ["jsonrpc", "method", "params"],
+        "properties": {
+          "jsonrpc": { "type": "string", "enum": ["2.0"] },
+          "id": { "type": "string" },
+          "method": { "type": "string", "enum": ["tools/call"] },
+          "params": {
+            "type": "object",
+            "required": ["name", "arguments"],
+            "properties": {
+              "name": { "type": "string", "enum": ["superadmin_task_execute"] },
+              "arguments": {
+                "type": "object",
+                "required": ["operationId", "projectId", "taskId", "resourceId", "changes"],
+                "properties": {
+                  "operationId": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 200,
+                    "description": "Mandatory, globally replay-safe within (actor, tool, projectId): identical operationId always returns the original execution's status rather than redispatching."
+                  },
+                  "projectId": { "type": "string", "format": "uuid" },
+                  "taskId": { "type": "string", "format": "uuid" },
+                  "resourceId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Must resolve to an ACTIVE GITHUB_REPOSITORY resource registered for this exact project (see repository-guard.ts)."
+                  },
+                  "changes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "content"],
+                      "properties": {
+                        "path": { "type": "string" },
+                        "content": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "DeterministicExecutionResult": {
+        "type": "object",
+        "description": "The only shape a caller may treat as accepted progress. A response missing jobId or runId is never valid -- resolveMergeableCommit-style callers, and the coordinator itself, treat that as EXECUTION_IDENTITY_MISSING instead of silently succeeding.",
+        "required": ["status", "jobId", "runId", "mode", "job", "run", "idempotentReplay"],
+        "properties": {
+          "status": { "type": "string", "enum": ["EXECUTION_ACCEPTED"] },
+          "jobId": { "type": "string", "format": "uuid", "description": "Always equal to job.id; never empty." },
+          "runId": { "type": "string", "format": "uuid", "description": "Always equal to run.id; never empty." },
+          "mode": {
+            "type": "string",
+            "enum": ["DISPATCHED", "STATUS_ONLY"],
+            "description": "DISPATCHED: a new GitHub Actions execution was just queued. STATUS_ONLY: operationId was already used -- this is a replay, and nothing was redispatched."
+          },
+          "job": { "$ref": "#/components/schemas/ExecutionJobSummary" },
+          "run": { "$ref": "#/components/schemas/RunSummary" },
+          "idempotentReplay": { "type": "boolean" }
+        }
+      },
+      "ExecutionJobSummary": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": {
+            "type": "string",
+            "enum": ["QUEUED", "DISPATCHING", "DISPATCHED", "CLAIMED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "BLOCKED"]
+          },
+          "branch": { "type": "string" }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"] }
+        }
+      },
+      "DomainErrorToolResult": {
+        "type": "object",
+        "required": ["isError", "content"],
+        "properties": {
+          "isError": { "type": "boolean", "enum": [true] },
+          "content": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "type": "string", "enum": ["text"] },
+                "text": {
+                  "type": "string",
+                  "description": "JSON-encoded { error: { code, message, details } }; details.blockingReport is present whenever the failure is one this contract requires to be reported as structured evidence rather than progress language."
+                }
+              }
+            }
+          }
+        }
+      },
+      "BlockingReport": {
+        "type": "object",
+        "description": "Structured, machine-actionable evidence for why execution did not (and will not, without a fresh operationId or human action) make progress. Present in DomainError.details.blockingReport for every code below.",
+        "required": ["code", "reason", "remediation"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": ["EXECUTION_IDENTITY_MISSING", "WRITE_DISPATCH_UNAVAILABLE", "CANON_OR_API_CONFLICT"],
+            "description": "EXECUTION_IDENTITY_MISSING: a persisted job/run pair lost its durable identity (fails closed rather than reporting pseudo-success). WRITE_DISPATCH_UNAVAILABLE: the async execution dispatcher is unreachable -- the job/run are created but immediately terminalized (job BLOCKED, run FAILED), never left implying in-flight progress. CANON_OR_API_CONFLICT: the implementation plan violates ArchitectureGuard canon/API rules and was rejected before any execution was queued."
+          },
+          "reason": { "type": "string" },
+          "remediation": { "type": "string", "description": "The concrete next step -- e.g. restore the dispatcher and use a fresh operationId, or resolve the reported canon/API violation and re-plan." },
+          "evidence": {
+            "description": "Present for CANON_OR_API_CONFLICT: the ArchitectureGuard violations that caused the rejection.",
+            "type": "array",
+            "items": { "type": "object" }
+          }
+        }
+      }
+    }
+  }
+}
