@@ -424,6 +424,13 @@ export class SuperadminService {
 
   async artifactList(principal:SuperadminPrincipal,projectId:string,taskId?:string){this.requireSuperadmin(principal);return this.deps.store.listArtifacts(projectId,taskId);}
   async artifactGet(principal:SuperadminPrincipal,projectId:string,artifactId:string){this.requireSuperadmin(principal);const value=await this.deps.store.getArtifact(projectId,artifactId);if(!value)throw new NotFound("Artifact not found");return value;}
+  // artifactGet returns the raw stored record, which is a `{externalized:true}` stub once content
+  // is blob-backed (anything >=64KB — command stdout/stderr, large test reports). Mutation paths
+  // (artifactUpdate/artifactDelete) need that raw record's storage metadata, so they keep calling
+  // artifactGet directly; callers that actually want the content — the superadmin_artifact_get MCP
+  // tool — must go through here instead, which dereferences the blob the same way the non-superadmin
+  // artifact_read tool already does.
+  async artifactRead(principal:SuperadminPrincipal,projectId:string,artifactId:string){this.requireSuperadmin(principal);return this.artifacts.read(projectId,artifactId);}
   artifactCreate(principal:SuperadminPrincipal,projectId:string,input:{kind:"ADMIN_NOTE"|"CONSOLE_SNAPSHOT";content:unknown;taskId?:string},operationId:string){return this.mutate(principal,"artifact_create",projectId,operationId,input,()=>this.artifacts.write(projectId,input.kind,input.content,input.taskId));}
   async artifactUpdate(principal:SuperadminPrincipal,projectId:string,artifactId:string,content:unknown,operationId:string){return this.mutate(principal,"artifact_update",projectId,operationId,{artifactId,content},async()=>{const artifact=await this.artifactGet(principal,projectId,artifactId);if(!administrativeArtifactKinds.has(artifact.kind))throw new PolicyViolation("Formal gate artifacts are immutable");return this.deps.store.updateArtifact({...artifact,content,contentHash:hash(content)});});}
   async artifactDelete(principal:SuperadminPrincipal,projectId:string,artifactId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="DELETE_ARTIFACT")throw new PolicyViolation("DELETE_ARTIFACT confirmation is required");return this.mutate(principal,"artifact_delete",projectId,data.operationId,{artifactId,...data},async()=>{const artifact=await this.artifactGet(principal,projectId,artifactId);return this.deps.store.updateArtifact({...artifact,status:"DELETED"});});}
