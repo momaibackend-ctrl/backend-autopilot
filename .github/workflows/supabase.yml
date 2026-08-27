@@ -2,7 +2,13 @@ name: Deploy Supabase control plane
 on:
   push:
     branches: [autopilot/v0.5-superadmin-mcp, main]
-    paths: ["supabase/**", "packages/project-registry/migrations/**", ".github/workflows/supabase.yml"]
+    # packages/** is included because the edge functions bundle straight from these packages
+    # (see supabase/functions/_shared/edge-dependencies.ts) -- a fix landing anywhere in
+    # packages/core, packages/superadmin, etc. previously needed a manual workflow_dispatch to
+    # ever reach the deployed function, which is how the CORE-BE-07/09/10 apiCompatibility fix
+    # sat undeployed until someone noticed. Redeploying on every packages/** push is safe: the
+    # job is idempotent and health-checked with an automatic rollback to mcp-last-good.
+    paths: ["supabase/**", "packages/**", ".github/workflows/supabase.yml"]
   workflow_dispatch:
 
 permissions:
