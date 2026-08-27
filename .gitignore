@@ -16,3 +16,6 @@ supabase/.temp/
 test-results/
 playwright-report/
 Промт для создания Backend Autopilot v0.1.md
+
+# TypeScript incremental build artifacts
+*.tsbuildinfo

@@ -8,6 +8,8 @@ import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, envir
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
 import { scenarioRunToolAnnotations, scenarioRunToolDescription, scenarioRunToolInputSchema, scenarioRunToolName } from '../../../packages/http-runner/src/index.ts';
+import { ArtifactStore } from '../../../packages/artifact-store/src/index.ts';
+import { systemClock, uuidGenerator } from '../../../packages/core/src/ports.ts';
 import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
 
 type Principal=SuperadminPrincipal&{projectScoped:boolean};
@@ -206,11 +208,13 @@ async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntim
   if(response.status===422){
     const existing=await fetch(`https://api.github.com/repos/${resource.externalReference}/pulls?state=open&base=${encodeURIComponent(input.base)}&head=${encodeURIComponent(`${resource.externalReference.split('/')[0]}:${input.head}`)}`,{headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot'}});
     const matches=existing.ok?await existing.json() as Array<{html_url:string;number:number}>:[];
-    if(matches[0])return {pullRequest:{url:matches[0].html_url,number:matches[0].number},idempotentReplay:true};
+    if(matches[0]){const pullRequest={url:matches[0].html_url,number:matches[0].number};await recordPullRequestEvidence(runtime,input,{repository:resource.externalReference,base:input.base,head:input.head,pullRequest,merged:false});return {pullRequest,idempotentReplay:true};}
   }
   if(!response.ok)throw new ExecutionFailed('GitHub pull request creation failed',{status:response.status,body:(await response.text()).slice(0,300)});
   const created=await response.json() as {html_url:string;number:number};
-  return {pullRequest:{url:created.html_url,number:created.number},idempotentReplay:false};
+  const pullRequest={url:created.html_url,number:created.number};
+  await recordPullRequestEvidence(runtime,input,{repository:resource.externalReference,base:input.base,head:input.head,pullRequest,merged:false});
+  return {pullRequest,idempotentReplay:false};
 }
 
 async function mergeSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string}){
@@ -237,7 +241,30 @@ async function mergeSandboxPullRequest(runtime:ReturnType<typeof createEdgeRunti
   if(!compareResponse.ok)throw new ExecutionFailed('Post-merge verification lookup failed',{status:compareResponse.status,body:(await compareResponse.text()).slice(0,300)});
   const compare=await compareResponse.json() as {status:string};
   if(compare.status!=='identical'&&compare.status!=='behind')throw new ExecutionFailed('Verified commit is not present on the default branch after merge',{defaultBranch,commitSha,compareStatus:compare.status});
-  return {merged:true,pullRequest:{url:pull.html_url,number:pull.number},defaultBranch,verifiedCommitSha:commitSha,idempotentReplay:Boolean(pull.merged_at)};
+  const outcome={merged:true,pullRequest:{url:pull.html_url,number:pull.number},defaultBranch,verifiedCommitSha:commitSha,idempotentReplay:Boolean(pull.merged_at)};
+  await recordPullRequestEvidence(runtime,input,{repository,base:defaultBranch,head:branch,pullRequest:outcome.pullRequest,merged:true,defaultBranch,verifiedCommitSha:commitSha});
+  return outcome;
+}
+
+// Durable, per-task record of what reached the repository. The MCP delivery path previously left
+// this only in the audit log, which PostgREST caps at 1000 rows per project -- an active project
+// outruns that in days and silently drops its OLDEST merges first, so the console could not answer
+// "did this epic reach main?" for exactly the work that had been done longest ago. A
+// PULL_REQUEST_REPORT artifact is scoped to the task and never rolls off.
+async function recordPullRequestEvidence(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string},value:{repository:string;base:string;head:string;pullRequest:{url:string;number:number};merged:boolean;defaultBranch?:string;verifiedCommitSha?:string}){
+  try{
+    const artifacts=new ArtifactStore(runtime.store,uuidGenerator,systemClock,runtime.blobs);
+    const existing=await runtime.store.listArtifacts(input.projectId,input.taskId);
+    // Re-running open/merge for the same pull request must not pile up duplicate evidence.
+    const duplicate=existing.some(artifact=>artifact.kind==='PULL_REQUEST_REPORT'&&artifact.status==='AVAILABLE'&&(artifact.content as {pullRequest?:{number?:number};merged?:boolean})?.pullRequest?.number===value.pullRequest.number&&Boolean((artifact.content as {merged?:boolean}).merged)===value.merged);
+    if(duplicate)return;
+    await artifacts.write(input.projectId,'PULL_REQUEST_REPORT',{provider:'github',resourceId:input.resourceId,...value},input.taskId);
+  }catch(error){
+    // Evidence is a projection of an action that already succeeded against GitHub. Failing the
+    // tool call here would report a merge as failed when it actually landed, which is a far worse
+    // lie than a missing artifact; the audit record still carries the outcome either way.
+    console.error(JSON.stringify({event:'mcp.pull_request_evidence.failed',taskId:input.taskId,name:error instanceof Error?error.name:'Unknown'}));
+  }
 }
 
 async function readSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;path:string;ref?:string}){

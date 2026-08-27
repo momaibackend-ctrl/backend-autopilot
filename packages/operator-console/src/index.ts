@@ -19,6 +19,7 @@ import type {
 } from "../../core/src/ports.js";
 import type { SecretProvider } from "../../core/src/secrets.js";
 import type { CommandRunner } from "../../execution-engine/src/command-runner.js";
+import { deliveryForProject } from "./delivery.js";
 import { PolicyEngine } from "../../policy-engine/src/index.js";
 import {
   defaultHttpRunnerLimits,
@@ -140,6 +141,11 @@ export class OperatorConsoleService {
       database: databaseView(snapshot.resources, snapshot.artifacts),
       api: apiView(snapshot.artifacts),
       validation: validationHistory(snapshot.artifacts),
+      delivery: deliveryForProject({
+        tasks: snapshot.tasks,
+        runs: snapshot.runs,
+        artifacts: snapshot.artifacts,
+      }),
     };
   }
   async task(projectId: string, taskId: string) {

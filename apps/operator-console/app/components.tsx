@@ -67,6 +67,36 @@ type Audit = {
   reason: string;
   result: unknown;
 };
+type DeliverySuite = { type: string; passed: boolean; exitCode?: number };
+type DeliveryGate = "PASS" | "FAIL" | "PENDING";
+type DeliveryRecord = {
+  taskId: string;
+  externalKey: string;
+  sourceRef?: string;
+  sourceRefDerived: boolean;
+  title: string;
+  state: string;
+  repairAttempts: number;
+  branch?: string;
+  commitSha?: string;
+  attempts: number;
+  failedAttempts: number;
+  tests: { status: DeliveryGate; suites: DeliverySuite[]; finishedAt?: string };
+  ci: { status: DeliveryGate; conclusion?: string; url?: string; headSha?: string; stack?: string; toolchain?: Record<string, unknown> };
+  review: { status: DeliveryGate; failures: string[]; warnings: number; reviewedAt?: string };
+  verifiedCommitSha?: string;
+  pullRequest?: { number: number; url: string };
+  merged: boolean;
+  mergedIntoBranch?: string;
+  mergedCommitSha?: string;
+  rebaseStatus?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+type DeliveryView = {
+  summary: { total: number; merged: number; ready: number; inFlight: number; blocked: number; failed: number; testsPassing: number; reviewPassing: number };
+  records: DeliveryRecord[];
+};
 type Overview = {
   generatedAt: string;
   summary: {
@@ -129,6 +159,7 @@ export function ConsoleSection({ section }: { section: string }) {
       {normalized === "dashboard" && <Dashboard data={data} />}{" "}
       {normalized === "projects" && <Projects projects={data.projects} />}{" "}
       {normalized === "tasks" && <Tasks projects={data.projects} />}{" "}
+      {normalized === "delivery" && <Delivery projects={data.projects} />}{" "}
       {normalized === "runs" && <Runs projects={data.projects} />}{" "}
       {normalized === "validation" && <Validation projects={data.projects} />}{" "}
       {normalized === "api-explorer" && <GlobalApiExplorer projects={data.projects} />}{" "}
@@ -269,6 +300,150 @@ function Tasks({ projects }: { projects: ProjectCard[] }) {
         String(task.repairAttempts),
       ])}
     />
+  );
+}
+// Delivery answers the question the rest of the console does not: for each upstream epic, was it
+// actually built, what proved it, and did it reach the repository's default branch. Every field is
+// read from durable per-task evidence, so a green row here means artifacts exist to back it.
+function Delivery({ projects }: { projects: ProjectCard[] }) {
+  return (
+    <div className="stack">
+      {projects.map((project) => (
+        <ProjectDelivery key={project.id} project={project} />
+      ))}
+      {!projects.length && <Empty text="No projects registered yet." />}
+    </div>
+  );
+}
+function ProjectDelivery({ project }: { project: ProjectCard }) {
+  const { data, error } = usePolling<DeliveryView>(`/projects/${project.id}/delivery`);
+  if (error) return <Panel title={project.name}><Empty text={error} /></Panel>;
+  if (!data) return <Panel title={project.name}><Loading small /></Panel>;
+  const { summary, records } = data;
+  return (
+    <section className="panel deliveryPanel">
+      <header className="deliveryHead">
+        <div>
+          <h2>{project.name}</h2>
+          <p className="muted">{project.repository ?? "no repository registered"}</p>
+        </div>
+        <div className="deliveryStats">
+          <Stat label="Merged" value={summary.merged} total={summary.total} tone="ok" />
+          <Stat label="Ready" value={summary.ready} total={summary.total} tone="info" />
+          <Stat label="In flight" value={summary.inFlight} total={summary.total} tone="warn" />
+          <Stat label="Blocked / failed" value={summary.blocked + summary.failed} total={summary.total} tone="bad" />
+        </div>
+      </header>
+      {!records.length && <Empty text="No tasks registered for this project." />}
+      <div className="deliveryList">
+        {records.map((record) => (
+          <DeliveryRow key={record.taskId} record={record} projectId={project.id} />
+        ))}
+      </div>
+    </section>
+  );
+}
+function DeliveryRow({ record, projectId }: { record: DeliveryRecord; projectId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <article className={`deliveryRow ${record.merged ? "isMerged" : ""}`}>
+      <button className="deliveryMain" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className={`deliveryChevron ${open ? "isOpen" : ""}`} aria-hidden="true" />
+        <span className="deliveryKeys">
+          <strong>{record.externalKey}</strong>
+          {record.sourceRef && (
+            // Parsed from the task text, not a verified tracker link -- the tooltip says so rather
+            // than letting the badge imply a guaranteed upstream binding.
+            <span className="chip chipSource" title="Parsed from the task title/description; not a verified tracker link">
+              {record.sourceRef}
+            </span>
+          )}
+        </span>
+        <span className="deliveryTitle">{record.title}</span>
+        <span className="deliveryGates">
+          <Gate label="Tests" status={record.tests.status} />
+          <Gate label="CI" status={record.ci.status} />
+          <Gate label="Review" status={record.review.status} />
+        </span>
+        <Badge value={record.state} />
+        <span className={`chip ${record.merged ? "chipOk" : "chipIdle"}`}>
+          {record.merged ? `merged → ${record.mergedIntoBranch ?? "main"}` : "not merged"}
+        </span>
+      </button>
+      {open && (
+        <div className="deliveryDetail">
+          <div className="deliveryGrid">
+            <Info label="Branch" value={record.branch ?? "—"} />
+            <Info label="Verified commit" value={short(record.verifiedCommitSha ?? record.commitSha)} />
+            <Info label="Attempts" value={`${record.attempts} (${record.failedAttempts} failed)`} />
+            <Info label="Repair attempts" value={record.repairAttempts} />
+            {record.ci.stack && <Info label="Stack" value={record.ci.stack} />}
+            {record.rebaseStatus && <Info label="Rebase" value={record.rebaseStatus} />}
+            {record.completedAt && <Info label="Completed" value={formatDate(record.completedAt)} />}
+          </div>
+          <div className="deliverySuites">
+            <h4>Test suites</h4>
+            {record.tests.suites.length ? (
+              <ul className="suiteList">
+                {record.tests.suites.map((suite) => (
+                  <li key={suite.type} className={suite.passed ? "ok" : "bad"}>
+                    <span>{suite.type}</span>
+                    <small>{suite.passed ? "passed" : `failed (exit ${suite.exitCode ?? "?"})`}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <Empty text="No test report recorded yet." />
+            )}
+          </div>
+          {record.review.status === "FAIL" && record.review.failures.length > 0 && (
+            <div className="deliveryFailures">
+              <h4>Review blocked on</h4>
+              <ul>
+                {record.review.failures.map((failure) => (
+                  <li key={failure}>{failure}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="deliveryLinks">
+            <Link href={`/tasks?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(record.taskId)}`}>
+              Open task detail →
+            </Link>
+            {record.pullRequest && (
+              <a href={record.pullRequest.url} target="_blank" rel="noreferrer">
+                Pull request #{record.pullRequest.number} →
+              </a>
+            )}
+            {record.ci.url && (
+              <a href={record.ci.url} target="_blank" rel="noreferrer">
+                CI run →
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+function Gate({ label, status }: { label: string; status: DeliveryGate }) {
+  const mark = status === "PASS" ? "✓" : status === "FAIL" ? "✕" : "•";
+  return (
+    <span className={`gate gate${status}`} title={`${label}: ${status.toLowerCase()}`}>
+      <span aria-hidden="true">{mark}</span>
+      {label}
+    </span>
+  );
+}
+function Stat({ label, value, total, tone }: { label: string; value: number; total: number; tone: string }) {
+  return (
+    <div className={`stat stat-${tone}`}>
+      <strong>{value}</strong>
+      <span>
+        {label}
+        <small>of {total}</small>
+      </span>
+    </div>
   );
 }
 function Runs({ projects }: { projects: ProjectCard[] }) {
@@ -1379,6 +1554,7 @@ function label(section: string) {
         dashboard: "Dashboard",
         projects: "Projects",
         tasks: "Tasks",
+        delivery: "Delivery",
         runs: "Runs",
         validation: "Validation Center",
         infrastructure: "Infrastructure",
@@ -1397,6 +1573,7 @@ function subtitle(section: string) {
         dashboard: "What is running, ready, or needs attention",
         projects: "Registered targets and their current state",
         tasks: "Every task from requirements to READY",
+        delivery: "Which upstream epic shipped, proven by which gates, merged into which branch",
         runs: "Branches, commits, repair attempts and outcomes",
         validation: "Run and inspect backend verification without a terminal",
         infrastructure: "Only explicitly allowlisted sandbox resources",

@@ -1,14 +1,27 @@
 :root {
-  --bg: #f6f7f9;
+  --bg: #f4f6fa;
   --panel: #fff;
-  --text: #17191c;
-  --muted: #69707a;
-  --line: #e3e6ea;
-  --blue: #2563eb;
-  --green: #087f5b;
-  --red: #c92a2a;
+  --panel-2: #fbfcfe;
+  --text: #10131a;
+  --muted: #5f6878;
+  --faint: #8b93a3;
+  --line: #e4e8ef;
+  --line-strong: #cfd6e2;
+  --blue: #2f6bff;
+  --blue-soft: #eef3ff;
+  --green: #0d7a5f;
+  --green-soft: #e6f6f0;
+  --red: #d03035;
+  --red-soft: #fdecec;
   --amber: #b26a00;
-  --sidebar: #111317;
+  --amber-soft: #fdf3e2;
+  --sidebar: #0f1421;
+  --sidebar-2: #151c2e;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-1: 0 1px 2px #0f172a0a, 0 1px 3px #0f172a08;
+  --shadow-2: 0 4px 12px #0f172a0f, 0 2px 4px #0f172a0a;
+  --shadow-3: 0 12px 32px #0f172a1a;
 }
 * {
   box-sizing: border-box;
@@ -26,6 +39,9 @@ body {
     "Segoe UI",
     sans-serif;
   font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 a {
   color: inherit;
@@ -46,11 +62,12 @@ textarea {
   position: sticky;
   top: 0;
   height: 100vh;
-  background: var(--sidebar);
-  color: #d8dbe0;
-  padding: 22px 16px;
+  background: linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
+  color: #d8dee9;
+  padding: 20px 14px;
   display: flex;
   flex-direction: column;
+  border-right: 1px solid #ffffff0f;
 }
 .brand {
   display: flex;
@@ -70,24 +87,30 @@ textarea {
   place-items: center;
   width: 36px;
   height: 36px;
-  border: 1px solid #424751;
-  border-radius: 9px;
-  background: #20242a;
+  border: 1px solid #ffffff1f;
+  border-radius: 10px;
+  background: linear-gradient(140deg, var(--blue), #1b4bd8);
   color: #fff;
   font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 4px 12px #2f6bff40;
 }
 .shell nav {
   display: grid;
   gap: 3px;
 }
 .shell nav a {
-  padding: 9px 11px;
-  border-radius: 6px;
-  color: #aab0b9;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: #9aa3b5;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 .shell nav a:hover {
-  background: #20242a;
-  color: white;
+  background: #ffffff12;
+  color: #fff;
 }
 .safety {
   margin-top: auto;
@@ -118,8 +141,8 @@ textarea {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
-  background: #ffffffcc;
-  backdrop-filter: blur(10px);
+  background: #ffffffd9;
+  backdrop-filter: saturate(1.4) blur(12px);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -130,9 +153,11 @@ textarea {
 }
 .eyebrow {
   margin: 0;
-  color: var(--muted);
+  color: var(--faint);
   font-size: 10px;
-  letter-spacing: 0.13em;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 .live {
   font-size: 12px;
@@ -150,8 +175,9 @@ textarea {
   margin-bottom: 22px;
 }
 .title h2 {
-  font-size: 24px;
-  letter-spacing: -0.025em;
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
   margin: 0;
 }
 .title p {
@@ -169,7 +195,8 @@ textarea {
 .projectCard {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
 }
 .metric {
   padding: 15px;
@@ -182,8 +209,11 @@ textarea {
 }
 .metric strong {
   display: block;
-  font-size: 26px;
-  margin: 9px 0 3px;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  margin: 8px 0 2px;
+  font-variant-numeric: tabular-nums;
 }
 .grid {
   display: grid;
@@ -198,9 +228,12 @@ textarea {
   overflow: hidden;
 }
 .panel > h2 {
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   margin: 0 0 16px;
-  color: #454a52;
+  color: var(--faint);
 }
 .projectGrid {
   display: grid;
@@ -215,8 +248,9 @@ textarea {
     transform 0.15s;
 }
 .projectCard:hover {
-  border-color: #b9c2cf;
-  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
 }
 .projectCard p {
   color: var(--muted);
@@ -687,3 +721,260 @@ button:disabled {
 }
 /* Static remote authentication boundary. */
 .authPage{min-height:100vh;display:grid;place-items:center;padding:32px;background:#07111f;color:#e5eefb}.authCard{width:min(440px,100%);display:grid;gap:18px;padding:32px;border:1px solid #24354f;border-radius:18px;background:#0d1a2b;box-shadow:0 24px 80px #0006}.authCard label{display:grid;gap:8px}.authCard input{padding:12px 14px;border:1px solid #36506f;border-radius:8px;background:#081321;color:#fff}.authCard button{padding:12px 14px;border:0;border-radius:8px;background:#4d8dff;color:#fff;font-weight:700;cursor:pointer}
+
+/* ---------- Delivery ---------------------------------------------------- */
+/* One row per task: upstream key, the three gates that must all pass, and whether the verified
+   commit reached the default branch. Collapsed by default so a nine-epic project reads as a
+   status list, expanded on demand for the evidence behind each verdict. */
+.deliveryPanel {
+  padding: 0;
+  overflow: hidden;
+}
+.deliveryHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+}
+.deliveryHead h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+.deliveryHead p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+.deliveryStats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  min-width: 104px;
+}
+.stat strong {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.stat span {
+  display: grid;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.25;
+}
+.stat small {
+  color: var(--faint);
+  font-size: 10px;
+}
+.stat-ok strong { color: var(--green); }
+.stat-info strong { color: var(--blue); }
+.stat-warn strong { color: var(--amber); }
+.stat-bad strong { color: var(--red); }
+
+.deliveryList {
+  display: grid;
+}
+.deliveryRow {
+  border-top: 1px solid var(--line);
+}
+.deliveryRow:first-child {
+  border-top: 0;
+}
+/* A merged row gets a green spine so "what already shipped" is scannable without reading text. */
+.deliveryRow.isMerged {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+.deliveryMain {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 14px minmax(150px, auto) minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 20px;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background 0.13s ease;
+}
+.deliveryMain:hover {
+  background: var(--panel-2);
+}
+.deliveryChevron {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(-45deg);
+  transition: transform 0.16s ease;
+  margin-left: 2px;
+}
+.deliveryChevron.isOpen {
+  transform: rotate(45deg);
+}
+.deliveryKeys {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.deliveryKeys strong {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.deliveryTitle {
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deliveryGates {
+  display: flex;
+  gap: 6px;
+}
+.gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.gate span { font-size: 10px; line-height: 1; }
+.gatePASS { background: var(--green-soft); color: var(--green); border-color: #0d7a5f24; }
+.gateFAIL { background: var(--red-soft); color: var(--red); border-color: #d0303524; }
+.gatePENDING { background: #f1f3f7; color: var(--faint); border-color: var(--line); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chipOk { background: var(--green-soft); color: var(--green); }
+.chipIdle { background: #f1f3f7; color: var(--faint); }
+.chipSource {
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  cursor: help;
+}
+
+.deliveryDetail {
+  padding: 4px 20px 20px 48px;
+  display: grid;
+  gap: 18px;
+  background: var(--panel-2);
+  border-top: 1px solid var(--line);
+}
+.deliveryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+}
+.deliveryDetail h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.suiteList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.suiteList li {
+  display: grid;
+  gap: 2px;
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 11px;
+  font-weight: 600;
+}
+.suiteList li small {
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--muted);
+}
+.suiteList li.ok { border-color: #0d7a5f2e; }
+.suiteList li.ok span { color: var(--green); }
+.suiteList li.bad { border-color: #d0303533; background: var(--red-soft); }
+.suiteList li.bad span { color: var(--red); }
+
+.deliveryFailures {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid #d0303526;
+  background: var(--red-soft);
+}
+.deliveryFailures ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+}
+.deliveryLinks {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.deliveryLinks a {
+  color: var(--blue);
+}
+.deliveryLinks a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 1100px) {
+  .deliveryMain {
+    grid-template-columns: 14px 1fr;
+    row-gap: 9px;
+  }
+  .deliveryTitle {
+    grid-column: 2;
+    white-space: normal;
+  }
+  .deliveryGates,
+  .deliveryMain > .badge,
+  .deliveryMain > .chip {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .deliveryDetail {
+    padding-left: 20px;
+  }
+}
