@@ -25,8 +25,19 @@ const scenarioFields={taskId:entityId.optional(),resourceId:entityId,name:z.stri
 Deno.serve(async request=>{
   const url=new URL(request.url);
   if(request.method==='GET'&&url.pathname.endsWith('/.well-known/oauth-protected-resource'))return protectedResourceMetadata();
+  // A CORS preflight never carries Authorization, so it must be answered before authenticate()
+  // or every browser-side MCP client fails discovery with 401 on the preflight itself.
+  if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{...mcpCorsHeaders(request),'access-control-max-age':'86400'}});
   const principal=await authenticate(request);
   if(!principal)return new Response(JSON.stringify({error:'unauthorized'}),{status:401,headers:{'content-type':'application/json','www-authenticate':`Bearer resource_metadata="${required('SUPABASE_URL')}/functions/v1/mcp/.well-known/oauth-protected-resource"`}});
+  // This server is stateless (sessionIdGenerator:undefined) and never emits a server-initiated
+  // message, so the standalone GET SSE stream the Streamable HTTP transport would open has nothing
+  // to write. Supabase Edge does not flush response headers until the first body byte, so handing
+  // GET to the transport leaves the client blocked with no status line at all until the isolate is
+  // torn down (observed: >75s with no headers, then 500 "Network connection lost"). Connectors read
+  // that as a dead session and drop the whole server mid-conversation. 405 is the spec's answer for
+  // a server that does not offer a server->client stream, and clients handle it without retrying.
+  if(request.method==='GET')return new Response(JSON.stringify({jsonrpc:'2.0',error:{code:-32000,message:'Method Not Allowed: this MCP server is stateless and offers no server-initiated SSE stream'},id:null}),{status:405,headers:{'content-type':'application/json',allow:'POST, DELETE, OPTIONS',...mcpCorsHeaders(request)}});
   const runtime=createEdgeRuntime();
   const server=new McpServer({name:'backend-autopilot',version:'0.5.0'});
   const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:{result:value}});
@@ -176,7 +187,9 @@ Deno.serve(async request=>{
 
   const transport=new WebStandardStreamableHTTPServerTransport({sessionIdGenerator:undefined});
   await server.connect(transport);
-  return transport.handleRequest(request);
+  const response=await transport.handleRequest(request);
+  for(const [key,value] of Object.entries(mcpCorsHeaders(request)))response.headers.set(key,value);
+  return response;
 });
 
 async function openSandboxPullRequest(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;taskId:string;resourceId:string;base:string;head:string;title:string;body:string}){
@@ -263,6 +276,8 @@ function protectedResourceMetadata():Response{
     bearer_methods_supported:['header'],
   }),{status:200,headers:{'content-type':'application/json','cache-control':'public, max-age=300'}});
 }
+
+function mcpCorsHeaders(request:Request){return {'access-control-allow-origin':request.headers.get('origin')??'*','access-control-allow-headers':'authorization,content-type,accept,apikey,x-client-info,mcp-session-id,mcp-protocol-version,last-event-id','access-control-allow-methods':'POST,DELETE,OPTIONS','access-control-expose-headers':'mcp-session-id','vary':'origin'};}
 
 async function authenticate(request:Request):Promise<Principal|undefined>{
   const supplied=request.headers.get('authorization')?.replace(/^Bearer\s+/i,'')??'';
