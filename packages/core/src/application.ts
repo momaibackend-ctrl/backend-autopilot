@@ -837,8 +837,21 @@ export class AutopilotService {
   }
   private buildPlan(task: Task): ImplementationPlan {
     const text = [task.title, task.description, ...task.requirements].join(" ");
-    const db = /database|postgres|migration|schema/i.test(text);
-    const api = /api|rest|endpoint|openapi/i.test(text);
+    const db = /\bdatabase\b|\bpostgres\b|\bmigrations?\b|\bschema\b/i.test(text);
+    // Word-bounded so "restart" (present in the standard dirty-workspace-recovery requirement on
+    // every task) can no longer masquerade as a REST mention.
+    const api = /\bapis?\b|\brest\b|\bendpoints?\b|\bopenapi\b/i.test(text);
+    // `api` alone over-fires: three real tasks in a row (CORE-BE-07, 09, 10) required
+    // "INTERNAL_ONLY ... do not invent public HTTP APIs" language to justify NOT exposing REST,
+    // which this keyword scan cannot distinguish from a genuine request to add one. Each stalled
+    // on independent review demanding an API_CONTRACT artifact for a change that was never meant
+    // to touch the API surface, costing a blind repair loop every time before anyone found the
+    // real cause. Task authors already write "INTERNAL_ONLY" as the explicit, deliberate signal
+    // for exactly this case, so trust it: keep `api` driving CONTRACT-suite coverage and the
+    // openapi.json expected-file hint (asking for more test coverage than needed is harmless),
+    // but only require API_CONTRACT evidence -- what the review gate actually enforces -- when
+    // the task does not declare itself internal-only.
+    const publicApiIntent = api && !/\binternal[_-]?only\b/i.test(text);
     const tests: ImplementationPlan["testsRequired"] = [
       "UNIT",
       "INTEGRATION",
@@ -859,7 +872,7 @@ export class AutopilotService {
         ...(api ? ["openapi.json"] : []),
       ],
       databaseChanges: db ? ["Versioned, reproducible schema migration"] : [],
-      apiChanges: api ? ["Machine-readable REST contract"] : [],
+      apiChanges: publicApiIntent ? ["Machine-readable REST contract"] : [],
       events: [],
       securityConsiderations: [
         "authorization ownership enforcement",
