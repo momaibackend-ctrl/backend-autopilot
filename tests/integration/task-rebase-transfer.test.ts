@@ -179,6 +179,7 @@ describe("transfer of a verified task onto the current base", () => {
     expect(applied).toEqual([{ path: "src/app.kt", kind: "CONTENT", bytes: Buffer.byteLength(resolved, "utf8") }]);
 
     const rebasedCommitSha = await commitTransfer(git, "autopilot: TASK-04 transferred");
+    if (!rebasedCommitSha) throw new Error("expected a transferred commit, not a no-op");
     expect(sh(["diff", "--name-only", "--diff-filter=U"]).trim()).toBe("");
     const preserved = await assertBaseChangesPreserved(git, {
       originalBaseCommit: originalBase,
@@ -215,5 +216,36 @@ describe("transfer of a verified task onto the current base", () => {
       code: "EXECUTION_FAILED",
       details: { reverted: ["src/cloudrun.kt"] },
     });
+  });
+
+  it("returns no-op instead of failing when the target base already carries the task's verified end state", async () => {
+    // The exact sequence that used to throw "Transfer produced no change against the target
+    // base": a task is merged straight into main by a real merge commit (merge_method: 'merge',
+    // what superadmin_sandbox_pull_request_merge uses), and only afterwards does a rebase get
+    // requested for that same task -- an agent double-checking a just-merged READY task is
+    // enough to trigger it in production.
+    sh(["switch", "main"]);
+    const noopBase = sha("HEAD");
+    sh(["switch", "-c", "autopilot/TASK-09-standalone"]);
+    await write("src/standalone.kt", "val standalone = 1\n");
+    const noopTaskHead = await commit("autopilot: TASK-09 standalone change");
+
+    sh(["switch", "main"]);
+    sh(["merge", "--no-ff", "-m", "merge TASK-09", noopTaskHead]);
+    const alreadyIntegratedBase = sha("HEAD");
+
+    const branch = rebaseBranchName("autopilot/TASK-09-standalone", alreadyIntegratedBase);
+    sh(["switch", "-C", branch, alreadyIntegratedBase]);
+
+    const transfer = await transferTaskCommits(git, {
+      originalBaseCommit: noopBase,
+      sourceCommitSha: noopTaskHead,
+      readFile: (path) => readFile(join(repo, path), "utf8"),
+    });
+    expect(transfer.conflicts).toHaveLength(0);
+
+    const rebasedCommitSha = await commitTransfer(git, "autopilot: TASK-09 transferred");
+    expect(rebasedCommitSha).toBeUndefined();
+    expect(sh(["status", "--porcelain"]).trim()).toBe("");
   });
 });

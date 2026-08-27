@@ -80,8 +80,12 @@ try{
   const toolchain=stack==='KOTLIN_GRADLE'?await gradleToolchainVersions(workspace,current,commands):undefined;
   await artifacts.write(project.id,'CI_REPORT',{provider:'github-actions',repository:resource.externalReference,branch:result.branch,expectedSha:commitSha,detectedStack:stack,...(toolchain?{toolchain}:{}),...(provisionedWrapperSha?{gradleWrapperProvisioned:true}:{}),ci:{success:true,status:'completed',conclusion:'success',headSha:commitSha,url:process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&process.env['GITHUB_RUN_ID']?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${process.env['GITHUB_RUN_ID']}`:undefined}},task.id,current.runId);
   await service.taskReview(project.id,task.id,owner,current.operationId);
-  const publication=rebaseOutcome?await publishRebasedPullRequest({repository:resource.externalReference,token:githubToken,head:result.branch,base:rebaseOutcome.targetBaseBranch,task,staleHead:rebase!.sourceBranch}):undefined;
-  if(rebaseOutcome)await artifacts.write(project.id,'REBASE_REPORT',{...rebaseOutcome.report,status:'REBASED',rebasedCommitSha:commitSha,pullRequest:publication?.opened,supersededPullRequests:publication?.superseded??[]},task.id,current.runId);
+  // Nothing was transferred when the target base already carried the verified commit, so there
+  // is no diff to raise as a pull request -- GitHub rejects one with zero commits between head
+  // and base, and there would be nothing for a reviewer to look at besides the merge already on
+  // the base branch.
+  const publication=rebaseOutcome&&!rebaseOutcome.alreadyIntegrated?await publishRebasedPullRequest({repository:resource.externalReference,token:githubToken,head:result.branch,base:rebaseOutcome.targetBaseBranch,task,staleHead:rebase!.sourceBranch}):undefined;
+  if(rebaseOutcome)await artifacts.write(project.id,'REBASE_REPORT',{...rebaseOutcome.report,status:rebaseOutcome.alreadyIntegrated?'ALREADY_INTEGRATED':'REBASED',rebasedCommitSha:commitSha,pullRequest:publication?.opened,supersededPullRequests:publication?.superseded??[]},task.id,current.runId);
   if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,status:'SUCCEEDED',baseCommit:result.baseCommit,branch:result.branch,commitSha,finishedAt:systemClock.now()});}
   current=await store.updateExecutionJob({...current,status:'SUCCEEDED',leaseOwner:owner,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),result:{branch:result.branch,commitSha,changedFiles:result.changedFiles}});
   await audit.record({actor:owner,action:'execution.job.succeeded',projectId:project.id,taskId:task.id,resourceId:resource.resourceId,input:{jobId:current.id},result:{runId:current.runId,branch:result.branch,commitSha},reason:'GitHub Actions execution, tests and review completed',correlationId:current.operationId});
@@ -167,13 +171,24 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
     resolved=await applyResolutions(git,{conflicts:transfer.conflicts,resolutions:rebase.resolutions,writeFile});
   }
   const rebasedCommitSha=await commitTransfer(git,`autopilot: ${task.externalKey} ${task.title} (transferred onto ${targetBaseBranch}@${targetBaseCommit.slice(0,12)})`);
+  if(rebasedCommitSha===undefined){
+    // The target base already carries this task's verified end state byte-for-byte -- almost
+    // always because the task's own pull request was already merged before this rebase ran (an
+    // agent double-checking a just-merged READY task is enough to trigger it). There is nothing
+    // to transfer and no pull request to open; GitHub refuses to open one with zero commits
+    // between head and base. The caller still re-verifies against the target base tip and
+    // returns the task straight to READY through the normal test/review gate chain instead of
+    // failing a re-verification the git evidence already proved safe to run.
+    await audit.record({actor:owner,action:'execution.rebase.already_integrated',projectId:project.id,taskId:task.id,input:{jobId:input.job.id,sourceCommitSha:rebase.sourceCommitSha,targetBaseCommit},result:{rebaseBranch:branch},reason:'Target base already contains the verified commit; nothing to transfer',correlationId:input.job.operationId});
+    return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:true as const,report:{...report,resolutions:resolved,basePathsVerified:[],changedFiles:[]},result:{baseCommit:targetBaseCommit,branch,commitSha:targetBaseCommit,diff:'',changedFiles:[],completedAt:systemClock.now()}};
+  }
   const preserved=await assertBaseChangesPreserved(git,{originalBaseCommit:rebase.originalBaseCommit,targetBaseCommit,rebasedCommitSha,taskPaths});
   const diff=await checked(commands,{command:'git',args:['diff',targetBaseCommit,rebasedCommitSha,'--'],cwd:workspace,taskId:task.id,allowed:['READ']});
   const changed=await checked(commands,{command:'git',args:['diff','--name-only',targetBaseCommit,rebasedCommitSha],cwd:workspace,taskId:task.id,allowed:['READ']});
   const changedFiles=changed.stdout.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
   if(!changedFiles.length)throw new ExecutionFailed('Transfer produced no change against the target base');
   await audit.record({actor:owner,action:'execution.rebase.transferred',projectId:project.id,taskId:task.id,input:{jobId:input.job.id,method:transfer.method,sourceCommitSha:rebase.sourceCommitSha,originalBaseCommit:rebase.originalBaseCommit,targetBaseCommit},result:{rebaseBranch:branch,rebasedCommitSha,replayed:transfer.replayedCommits.length,conflicts:transfer.conflicts.map(value=>value.path),resolvedPaths:resolved.map(value=>value.path),basePathsVerified:preserved.verifiedPaths,changedFiles:changedFiles.length},reason:'Verified task work replayed onto the current base with a 3-way cherry-pick',correlationId:input.job.operationId});
-  return {targetBaseBranch,targetBaseCommit,report:{...report,resolutions:resolved,basePathsVerified:preserved.verifiedPaths,changedFiles},result:{baseCommit:targetBaseCommit,branch,commitSha:rebasedCommitSha,diff:diff.stdout,changedFiles,completedAt:systemClock.now()}};
+  return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:false as const,report:{...report,resolutions:resolved,basePathsVerified:preserved.verifiedPaths,changedFiles},result:{baseCommit:targetBaseCommit,branch,commitSha:rebasedCommitSha,diff:diff.stdout,changedFiles,completedAt:systemClock.now()}};
 }
 
 async function defaultBranch(repository:string,token:string){

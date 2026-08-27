@@ -196,8 +196,16 @@ export async function transferTaskCommits(
   return { method: "SQUASH_MERGE", replayedCommits, conflicts };
 }
 
-/** Commits the transferred result once every conflict is resolved and staged. */
-export async function commitTransfer(git: RebaseGit, message: string) {
+/**
+ * Commits the transferred result once every conflict is resolved and staged.
+ *
+ * Returns `undefined`, never throws, when nothing ended up staged. That happens when the target
+ * base already carries the task's verified end state byte-for-byte -- typically because the
+ * task's own pull request was already merged before this rebase ran. It is not a failure: the
+ * caller re-verifies against the target base tip and returns the task straight to READY instead
+ * of opening a pull request with zero commits, which GitHub would reject anyway.
+ */
+export async function commitTransfer(git: RebaseGit, message: string): Promise<string | undefined> {
   const remaining = await git(["diff", "--name-only", "--diff-filter=U"]);
   if (remaining.stdout.trim())
     throw new ExecutionFailed("Conflicts remain unresolved", {
@@ -205,8 +213,7 @@ export async function commitTransfer(git: RebaseGit, message: string) {
     });
   await checked(git, ["add", "-A"], "Could not stage the transferred result");
   const staged = await git(["diff", "--cached", "--name-only"]);
-  if (!staged.stdout.trim())
-    throw new ExecutionFailed("Transfer produced no change against the target base");
+  if (!staged.stdout.trim()) return undefined;
   await checked(git, ["commit", "-m", message], "Could not commit the transfer");
   const head = await checked(git, ["rev-parse", "HEAD"], "Could not read the transferred commit");
   return head.stdout.trim();
