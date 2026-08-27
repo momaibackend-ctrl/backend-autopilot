@@ -2,6 +2,10 @@ import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
 import type { StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
+// Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
+// a server-side cap we cannot see.
+const manyPageSize=1000;
+
 export class PostgrestStateStore implements StateStore {
   constructor(private readonly url:string,private readonly serviceKey:string){if(!/^https:\/\/[a-z]{20}\.supabase\.co$/.test(url)||!serviceKey)throw new ExecutionFailed('Valid Supabase URL and server credential are required');}
   createProject(v:Project){return this.insert<Project>('projects',{id:v.id,slug:v.slug,data:v,created_at:v.createdAt});}
@@ -66,7 +70,23 @@ export class PostgrestStateStore implements StateStore {
   listAdminOperations(){return this.many<AdminOperation>('admin_operations','order=created_at.asc');}
   async listMigrationMarkers(){const rows=await this.request<Array<{key:string,checksum:string,data:unknown,created_at:string}>>('GET','/rest/v1/migration_markers?select=*&order=created_at.asc');return rows.map((v):MigrationMarker=>({key:v.key,checksum:v.checksum,data:v.data,createdAt:v.created_at}));}
   private async one<T>(table:string,query:string){const values=await this.request<{data:T}[]>('GET',`/rest/v1/${table}?select=data&${query}&limit=1`);return values[0]?.data;}
-  private async many<T>(table:string,query:string){return (await this.request<{data:T}[]>('GET',`/rest/v1/${table}?select=data&${query}`)).map(value=>value.data);}
+  // PostgREST caps an unbounded GET at its configured max rows (1000 on Supabase) and returns the
+  // truncated page with a 200, giving no signal that anything was withheld. Every list here feeds
+  // decisions -- dependency evidence, READY gates, the delivery view -- so a silent truncation is
+  // not slow data, it is wrong data: an active project's newest artifacts simply vanish while the
+  // caller sees a plausible-looking array. Paging explicitly is the only way to get the real set.
+  private async many<T>(table:string,query:string){
+    const values:T[]=[];
+    for(let offset=0;;offset+=manyPageSize){
+      const page=await this.request<{data:T}[]>('GET',`/rest/v1/${table}?select=data&${query}`,undefined,{range:`${offset}-${offset+manyPageSize-1}`,'range-unit':'items'});
+      if(!page?.length)break;
+      for(const row of page)values.push(row.data);
+      // A short page means the server had nothing more to give; a full one may or may not, so ask
+      // again rather than inferring.
+      if(page.length<manyPageSize)break;
+    }
+    return values;
+  }
   private async insert<T>(table:string,value:unknown){const rows=await this.request<{data:T}[]>('POST',`/rest/v1/${table}`,value,{'prefer':'return=representation'});const data=rows[0]?.data;if(!data)throw new ExecutionFailed(`PostgREST insert into ${table} returned no data`);return data;}
   private async patch(table:string,query:string,value:unknown){await this.request('PATCH',`/rest/v1/${table}?${query}`,value,{'prefer':'return=minimal'});}
   private async remove(table:string,query:string){await this.request('DELETE',`/rest/v1/${table}?${query}`,undefined,{'prefer':'return=minimal'});}

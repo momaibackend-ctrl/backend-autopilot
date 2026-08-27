@@ -1,10 +1,14 @@
-import type { Artifact, ExecutionJob, Run, Task } from "../../schemas/src/index.js";
+import type { Artifact, AuditEvent, ExecutionJob, Run, Task } from "../../schemas/src/index.js";
 
 // One delivery record per task: what was asked for, what was actually built, what was proven, and
-// whether it reached the repository's default branch. Everything here is derived from durable
-// per-task evidence (artifacts, runs, jobs) rather than the audit log, which PostgREST caps at
-// 1000 rows per project -- a project this active outruns that cap in days, silently dropping the
-// oldest merges first, so a delivery view built on audit would quietly start lying.
+// whether it reached the repository's default branch.
+//
+// Gate verdicts come exclusively from durable per-task artifacts. The pull request and merge
+// prefer artifacts too, falling back to the audit log only for tasks delivered before the MCP
+// tools learned to persist PULL_REQUEST_REPORT (see resolveDelivery). Both sources are only
+// trustworthy because PostgrestStateStore.many() pages explicitly -- PostgREST caps an unbounded
+// GET at 1000 rows and returns the truncated page with a 200, which on this project silently hid
+// everything after 2026-08-23 and turned real PASS verdicts into PENDING.
 
 export type DeliveryGateStatus = "PASS" | "FAIL" | "PENDING";
 
@@ -91,11 +95,38 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/**
+ * Resolves the pull request and merge for one task.
+ *
+ * PULL_REQUEST_REPORT artifacts are the durable record, but they only started being written once
+ * the MCP delivery path learned to persist them -- every task merged before that has its evidence
+ * solely in the audit log. Audit is authoritative for the action itself (it is what `mutate`
+ * writes on a successful tool call), so it is used as the historical fallback rather than showing
+ * genuinely-merged epics as unmerged. Artifacts win when both exist.
+ */
+function resolveDelivery(taskId: string, artifacts: Artifact[], audit: AuditEvent[]) {
+  const reports = artifacts.filter(
+    (value) => value.kind === "PULL_REQUEST_REPORT" && value.status === "AVAILABLE",
+  );
+  const mergedReport = [...reports].reverse().find((value) => asRecord(value.content).merged === true);
+  const fromArtifact = asRecord((mergedReport ?? reports.at(-1))?.content);
+  if (Object.keys(fromArtifact).length) return fromArtifact;
+
+  const entries = audit.filter((event) => {
+    if (!/^mcp\.sandbox_pull_request_(open|merge)$/.test(event.action)) return false;
+    const payload = asRecord(asRecord((event as { input?: unknown }).input).payload);
+    return payload.taskId === taskId;
+  });
+  const mergedEvent = [...entries].reverse().find((event) => asRecord(event.result).merged === true);
+  return asRecord((mergedEvent ?? entries.at(-1))?.result);
+}
+
 export function deliveryForTask(input: {
   task: Task;
   runs: Run[];
   artifacts: Artifact[];
   jobs?: ExecutionJob[];
+  audit?: AuditEvent[];
 }): DeliveryRecord {
   const runs = input.runs.filter((run) => run.taskId === input.task.id);
   const artifacts = input.artifacts.filter((value) => value.taskId === input.task.id);
@@ -118,11 +149,7 @@ export function deliveryForTask(input: {
 
   const manifest = asRecord(latest(artifacts, "FINAL_CHANGE_MANIFEST")?.content);
 
-  // Written by the MCP pull-request tools; the merge report supersedes the open report, so the
-  // last one wins and carries `merged`.
-  const pullReports = artifacts.filter((value) => value.kind === "PULL_REQUEST_REPORT" && value.status === "AVAILABLE");
-  const mergeReport = [...pullReports].reverse().find((value) => asRecord(value.content).merged === true);
-  const pullContent = asRecord((mergeReport ?? pullReports.at(-1))?.content);
+  const pullContent = resolveDelivery(input.task.id, artifacts, input.audit ?? []);
   const pull = asRecord(pullContent.pullRequest);
 
   const rebase = asRecord(latest(artifacts, "REBASE_REPORT")?.content);
@@ -207,6 +234,7 @@ export function deliveryForProject(input: {
   runs: Run[];
   artifacts: Artifact[];
   jobs?: ExecutionJob[];
+  audit?: AuditEvent[];
 }) {
   const records = input.tasks
     .filter((task) => !task.deletedAt)
@@ -216,6 +244,7 @@ export function deliveryForProject(input: {
         runs: input.runs,
         artifacts: input.artifacts,
         ...(input.jobs ? { jobs: input.jobs } : {}),
+        ...(input.audit ? { audit: input.audit } : {}),
       }),
     )
     .sort((a, b) => a.externalKey.localeCompare(b.externalKey, undefined, { numeric: true }));

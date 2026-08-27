@@ -145,6 +145,7 @@ export class OperatorConsoleService {
         tasks: snapshot.tasks,
         runs: snapshot.runs,
         artifacts: snapshot.artifacts,
+        audit: snapshot.audit,
       }),
     };
   }

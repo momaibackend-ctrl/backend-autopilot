@@ -150,6 +150,43 @@ describe("delivery projection", () => {
     expect(record.commitSha).toBeUndefined();
   });
 
+  it("falls back to the audit log for merges predating PULL_REQUEST_REPORT, but prefers artifacts", () => {
+    const mergeEvent = {
+      id: "a1",
+      timestamp: "2026-08-27T10:15:30.675Z",
+      actor: "superadmin",
+      action: "mcp.sandbox_pull_request_merge",
+      projectId,
+      reason: "merge",
+      input: { tool: "sandbox_pull_request_merge", payload: { taskId } },
+      result: {
+        merged: true,
+        defaultBranch: "main",
+        verifiedCommitSha: "b3fdc8b",
+        pullRequest: { number: 31, url: "https://pr/31" },
+      },
+    } as never;
+
+    const historical = deliveryForTask({ task: task(), runs: [], artifacts: [], audit: [mergeEvent] });
+    expect(historical.merged).toBe(true);
+    expect(historical.pullRequest).toEqual({ number: 31, url: "https://pr/31" });
+    expect(historical.mergedIntoBranch).toBe("main");
+
+    // An audit entry belonging to a different task must never be attributed here.
+    const foreign = { ...(mergeEvent as object), input: { payload: { taskId: "other" } } } as never;
+    expect(deliveryForTask({ task: task(), runs: [], artifacts: [], audit: [foreign] }).merged).toBe(false);
+
+    // The durable artifact wins over audit when both are present.
+    const withArtifact = deliveryForTask({
+      task: task(),
+      runs: [],
+      artifacts: [artifact("PULL_REQUEST_REPORT", { merged: true, defaultBranch: "release", pullRequest: { number: 99, url: "https://pr/99" } })],
+      audit: [mergeEvent],
+    });
+    expect(withArtifact.pullRequest).toEqual({ number: 99, url: "https://pr/99" });
+    expect(withArtifact.mergedIntoBranch).toBe("release");
+  });
+
   it("ignores a tombstoned pull-request report and keeps un-executed tasks in the project view", () => {
     const view = deliveryForProject({
       tasks: [task({ externalKey: "CORE-BE-02" }), task({ id: "t2", externalKey: "CORE-BE-10", state: "INGESTED" })],
