@@ -20,6 +20,17 @@ import type {
 import type { SecretProvider } from "../../core/src/secrets.js";
 import type { CommandRunner } from "../../execution-engine/src/command-runner.js";
 import { deliveryForProject } from "./delivery.js";
+import {
+  apiView,
+  databaseView,
+  latestContent,
+  lifecycleRail,
+  safeResource,
+  summarizeSchema,
+  taskSummaryFrom,
+  taskTimeline,
+  validationHistoryView,
+} from "./projections.js";
 import { PolicyEngine } from "../../policy-engine/src/index.js";
 import {
   defaultHttpRunnerLimits,
@@ -45,15 +56,6 @@ import {
 } from "../../schemas/src/index.js";
 
 type Capabilities = (projectId?: string) => Promise<unknown>;
-const stateOrder = [
-  "INGESTED",
-  "ANALYZING",
-  "PLANNED",
-  "IMPLEMENTING",
-  "TESTING",
-  "REVIEWING",
-  "READY",
-];
 const suiteTypes: Record<ValidationSuite, ImplementationPlan["testsRequired"]> =
   {
     SMOKE: ["UNIT", "CONTRACT"],
@@ -126,8 +128,9 @@ export class OperatorConsoleService {
   }
   async project(projectId: string) {
     const snapshot = await this.deps.service.projectSnapshot(projectId);
-    const tasks = await Promise.all(
-      snapshot.tasks.map((task) => this.taskSummary(projectId, task.id)),
+    // Enriched from the snapshot the line above already fetched, not one taskStatus call per task.
+    const tasks = snapshot.tasks.map((task) =>
+      taskSummaryFrom({ task, artifacts: snapshot.artifacts, runs: snapshot.runs }),
     );
     return {
       project: snapshot.project,
@@ -140,7 +143,7 @@ export class OperatorConsoleService {
       capabilities: await this.deps.capabilities(projectId),
       database: databaseView(snapshot.resources, snapshot.artifacts),
       api: apiView(snapshot.artifacts),
-      validation: validationHistory(snapshot.artifacts),
+      validation: validationHistoryView(snapshot.artifacts),
       delivery: deliveryForProject({
         tasks: snapshot.tasks,
         runs: snapshot.runs,
@@ -154,32 +157,11 @@ export class OperatorConsoleService {
     const artifacts = status.artifacts;
     const transitions = status.transitions;
     const latestRun = status.runs.at(-1);
-    const timeline = [
-      ...transitions.map((value) => ({
-        timestamp: value.timestamp,
-        title: transitionTitle(value.to),
-        kind: "STATE",
-        status: value.to,
-        summary: value.reason,
-        details: redact(value),
-      })),
-      ...status.runs.map((value) => ({
-        timestamp: value.startedAt,
-        title: `Run ${value.status.toLowerCase()}`,
-        kind: "RUN",
-        status: value.status,
-        summary: `${value.branch ?? "branch pending"} · ${shortSha(value.commitSha)}`,
-        details: redact(value),
-      })),
-    ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const timeline = taskTimeline(transitions, status.runs);
     return {
       task: status.task,
-      lifecycle: stateOrder.map((state) => ({
-        state,
-        complete:
-          stateOrder.indexOf(state) <= stateOrder.indexOf(status.task.state),
-        current: state === status.task.state,
-      })),
+      lifecycle: lifecycleRail(status.task.state).rungs,
+      lifecycleState: lifecycleRail(status.task.state),
       currentRun: latestRun,
       branch: latestRun?.branch,
       commitSha: latestRun?.commitSha,
@@ -199,12 +181,12 @@ export class OperatorConsoleService {
       finalManifest: latestContent(artifacts, "FINAL_CHANGE_MANIFEST"),
       artifacts,
       timeline,
-      validation: validationHistory(artifacts),
+      validation: validationHistoryView(artifacts),
     };
   }
   async validationHistory(projectId: string, taskId?: string) {
     await this.requireProject(projectId);
-    return validationHistory(
+    return validationHistoryView(
       await this.deps.store.listArtifacts(projectId, taskId),
     );
   }
@@ -629,24 +611,6 @@ export class OperatorConsoleService {
       recentEvents: audit.slice(-8),
     };
   }
-  private async taskSummary(projectId: string, taskId: string) {
-    const status = await this.deps.service.taskStatus(projectId, taskId);
-    const run = status.runs.at(-1);
-    return {
-      ...status.task,
-      currentRun: run,
-      branch: run?.branch,
-      commitSha: run?.commitSha,
-      ci: latestContent(status.artifacts, "CI_REPORT"),
-      review: latestContent(status.artifacts, "REVIEW_REPORT"),
-      artifactCount: status.artifacts.length,
-      warnings: status.artifacts
-        .filter((value) => value.kind === "REVIEW_REPORT")
-        .flatMap(
-          (value) => (value.content as { warnings?: unknown[] }).warnings ?? [],
-        ),
-    };
-  }
   private async requireProject(projectId: string) {
     const project = await this.deps.store.getProject(projectId);
     if (!project) throw new NotFound("Project not found");
@@ -699,84 +663,6 @@ export class OperatorConsoleService {
   }
 }
 
-function latestContent(artifacts: Artifact[], kind: Artifact["kind"]) {
-  return artifacts.filter((value) => value.kind === kind).at(-1)?.content;
-}
-function validationHistory(artifacts: Artifact[]) {
-  return artifacts
-    .filter((value) =>
-      [
-        "VALIDATION_REPORT",
-        "API_REQUEST_RESULT",
-        "VALIDATION_SCENARIO",
-      ].includes(value.kind),
-    )
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-}
-function safeResource(resource: Resource) {
-  return {
-    ...resource,
-    secretRefs: resource.secretRefs.map(() => "[SERVER_SIDE_SECRET]"),
-  };
-}
-function shortSha(value?: string) {
-  return value?.slice(0, 8) ?? "not committed";
-}
-function transitionTitle(state: string) {
-  return state === "READY"
-    ? "Задача готова"
-    : state === "BLOCKED"
-      ? "Задача заблокирована"
-      : state === "FAILED"
-        ? "Выполнение завершилось ошибкой"
-        : `Переход в ${state}`;
-}
-function databaseView(resources: Resource[], artifacts: Artifact[]) {
-  const database = resources.find((value) => value.type === "DATABASE");
-  const bootstrap = latestContent(artifacts, "BOOTSTRAP_REPORT") as
-    | { database?: { schema?: unknown } }
-    | undefined;
-  const validation = artifacts
-    .filter((value) => value.kind === "VALIDATION_REPORT")
-    .map((value) => value.content as { schema?: unknown; schemaDiff?: unknown })
-    .filter((value) => value.schema)
-    .at(-1);
-  const schema = publicSchemaView(validation?.schema ?? bootstrap?.database?.schema);
-  return {
-    provider: database?.provider,
-    status: database?.status,
-    migrations: artifacts.filter(
-      (value) => value.kind === "MIGRATION_MANIFEST",
-    ),
-    schema,
-    schemaDiff: validation?.schemaDiff ?? summarizeSchema(schema),
-  };
-}
-function publicSchemaView(schema: unknown) {
-  if (!schema || typeof schema !== "object") return undefined;
-  const value = schema as Record<string, unknown>;
-  const publicRows = (name: string) =>
-    Array.isArray(value[name])
-      ? (value[name] as Array<Record<string, unknown>>).filter((row) =>
-          [row.table_schema, row.schemaname, row.routine_schema].some(
-            (schemaName) => schemaName === "public",
-          ),
-        )
-      : [];
-  return {
-    tables: publicRows("tables"),
-    columns: publicRows("columns"),
-    indexes: publicRows("indexes"),
-    policies: publicRows("policies"),
-    functions: publicRows("functions"),
-  };
-}
-function apiView(artifacts: Artifact[]) {
-  return {
-    contracts: artifacts.filter((value) => value.kind === "API_CONTRACT"),
-    requests: artifacts.filter((value) => value.kind === "API_REQUEST_RESULT"),
-  };
-}
 async function exists(path: string) {
   try {
     await access(path);
@@ -784,43 +670,6 @@ async function exists(path: string) {
   } catch {
     return false;
   }
-}
-function summarizeSchema(schema: unknown) {
-  if (!schema || typeof schema !== "object") return [];
-  const value = schema as {
-    tables?: Array<{ table_schema: string; table_name: string }>;
-    columns?: Array<{
-      table_schema: string;
-      table_name: string;
-      column_name: string;
-    }>;
-    indexes?: Array<{
-      schemaname: string;
-      tablename: string;
-      indexname: string;
-    }>;
-    policies?: Array<{
-      schemaname: string;
-      tablename: string;
-      policyname: string;
-    }>;
-  };
-  return [
-    ...(value.tables ?? []).map(
-      (row) => `+ table ${row.table_schema}.${row.table_name}`,
-    ),
-    ...(value.columns ?? []).map(
-      (row) =>
-        `+ column ${row.table_schema}.${row.table_name}.${row.column_name}`,
-    ),
-    ...(value.indexes ?? []).map(
-      (row) => `+ index ${row.schemaname}.${row.tablename}.${row.indexname}`,
-    ),
-    ...(value.policies ?? []).map(
-      (row) =>
-        `+ RLS policy ${row.schemaname}.${row.tablename}.${row.policyname}`,
-    ),
-  ];
 }
 function destructiveMigrationWarnings(artifacts: Artifact[]) {
   return artifacts

@@ -12,6 +12,16 @@ const names = new Set(list.tools.map(tool => tool.name));
 const missing = requiredTools.filter(name => !names.has(name));
 if (missing.length) throw new Error(`Deployed MCP tool roster is missing: ${missing.join(', ')}`);
 
+// The control-api function is deployed by the same job but was never health-checked, so a broken
+// import there would ship green and skip the rollback that guards the MCP function. An
+// unauthenticated request must come back 401 from the function's own auth gate; a 5xx means the
+// module failed to boot.
+const controlApi = `${endpoint.replace(/\/mcp$/, '')}/control-api/health`;
+const controlResponse = await fetch(controlApi, { method: 'GET' });
+if (controlResponse.status >= 500)
+  throw new Error(`control-api failed to boot (${controlResponse.status}): ${(await controlResponse.text()).slice(0, 300)}`);
+console.log(JSON.stringify({ level: 'info', event: 'control_api.boot_check.succeeded', status: controlResponse.status }));
+
 const health = await call<{ status?: string }>('system_health', {});
 console.log(JSON.stringify({ level: 'info', event: 'mcp.health_check.succeeded', endpoint, toolCount: names.size, health }));
 

@@ -152,10 +152,14 @@ export function ConsoleSection({ section }: { section: string }) {
   if (error) return <ErrorState message={error} retry={reload} />;
   if (!data) return <Loading />;
   const normalized = section.toLowerCase();
+  const help = screen?.blocks ?? [];
   return (
-    <div className="page">
+    // The per-section guide used to render as a full-width grid above the content, which pushed the
+    // actual data below the fold. It is the same data, moved into a sticky rail that scrolls on its
+    // own; `withHelp` only engages when the section actually has guidance.
+    <div className={`page ${help.length ? "withHelp" : ""}`}>
+      <div className="pageMain">
       <Title title={screen?.title??label(normalized)} subtitle={screen?.description??subtitle(normalized)} />
-      {screen&&<ConfiguredBlocks blocks={screen.blocks}/>}
       {normalized === "dashboard" && <Dashboard data={data} />}{" "}
       {normalized === "projects" && <Projects projects={data.projects} />}{" "}
       {normalized === "tasks" && <Tasks projects={data.projects} />}{" "}
@@ -173,11 +177,46 @@ export function ConsoleSection({ section }: { section: string }) {
         <Capabilities projects={data.projects} />
       )}{" "}
       {normalized === "settings" && <Settings />}
+      </div>
+      {help.length > 0 && <HelpRail title={screen?.title ?? label(normalized)} blocks={help} />}
     </div>
   );
 }
+// Collapsible on small screens via <details>, always open on wide ones -- see the `.helpRail`
+// breakpoint rules. Content is operator guidance already authored in the console_screens registry.
+function HelpRail({ title, blocks }: { title: string; blocks: ScreenBlock[] }) {
+  return (
+    <aside className="helpRail">
+      <details open>
+        <summary>
+          <span>Guide</span>
+          <small>{title}</small>
+        </summary>
+        <div className="helpRailBody">
+          {blocks.map((block) =>
+            block.type === "TEXT" ? (
+              <section key={block.id}>
+                <h4>{block.title}</h4>
+                <p>{block.content}</p>
+              </section>
+            ) : block.type === "METRIC" ? (
+              <section key={block.id}>
+                <h4>{block.title}</h4>
+                <p><strong>{String(block.value)}</strong> {block.note}</p>
+              </section>
+            ) : (
+              <section key={block.id}>
+                <h4>{block.title}</h4>
+                <JsonView value={block.value} />
+              </section>
+            ),
+          )}
+        </div>
+      </details>
+    </aside>
+  );
+}
 function useOptionalScreen(screenId:string){const [value,setValue]=useState<ScreenConfig>();useEffect(()=>{let active=true;const load=()=>authorizedFetch(`${api}/screens/${screenId}`,{cache:"no-store"}).then(async response=>{if(response.ok&&active)setValue(await response.json() as ScreenConfig);}).catch(()=>undefined);void load();const timer=setInterval(()=>void load(),5_000);return()=>{active=false;clearInterval(timer);};},[screenId]);return value;}
-function ConfiguredBlocks({blocks}:{blocks:ScreenBlock[]}){if(!blocks.length)return null;return <div className="configuredBlocks">{blocks.map(block=>block.type==="TEXT"?<Panel key={block.id} title={block.title}><p>{block.content}</p></Panel>:block.type==="METRIC"?<div className="metric" key={block.id}><span>{block.title}</span><strong>{String(block.value)}</strong><small>{block.note}</small></div>:<Panel key={block.id} title={block.title}><JsonView value={block.value}/></Panel>)}</div>;}
 function Dashboard({ data }: { data: Overview }) {
   const providerCount = new Set(
     data.projects.flatMap((project) =>
@@ -240,6 +279,26 @@ function Dashboard({ data }: { data: Overview }) {
     </>
   );
 }
+// Throwaway projects from E2E and integration runs (archived, or registered with no task and no
+// resource) outnumber real ones 10:1 on the live control plane, which is why every project picker
+// read as a list of "strange names". Nothing is deleted -- they are just not offered by default.
+function isRealProject(project: ProjectCard) {
+  return project.status !== "ARCHIVED" && (project.tasks.length > 0 || Boolean(project.repository));
+}
+function useProjectFilter(projects: ProjectCard[]) {
+  const [showAll, setShowAll] = useState(false);
+  const real = projects.filter(isRealProject);
+  const hidden = projects.length - real.length;
+  return { visible: showAll || !real.length ? projects : real, hidden, showAll, setShowAll };
+}
+function HiddenProjectsToggle({ hidden, showAll, setShowAll }: { hidden: number; showAll: boolean; setShowAll: (value: boolean) => void }) {
+  if (!hidden) return null;
+  return (
+    <button className="linkButton" onClick={() => setShowAll(!showAll)}>
+      {showAll ? `Hide ${hidden} inactive project${hidden === 1 ? "" : "s"}` : `Show all (${hidden} inactive hidden)`}
+    </button>
+  );
+}
 function Projects({
   projects,
   compact = false,
@@ -247,9 +306,14 @@ function Projects({
   projects: ProjectCard[];
   compact?: boolean;
 }) {
+  const { visible, hidden, showAll, setShowAll } = useProjectFilter(projects);
+  const shown = compact ? projects : visible;
+  if (!shown.length) return <Empty text="No projects registered yet." />;
   return (
+    <>
+    {!compact && <HiddenProjectsToggle hidden={hidden} showAll={showAll} setShowAll={setShowAll} />}
     <div className={compact ? "stack" : "projectGrid"}>
-      {projects.map((project) => (
+      {shown.map((project) => (
         <Link
           className="projectCard"
           href={`/projects?projectId=${encodeURIComponent(project.id)}`}
@@ -276,12 +340,14 @@ function Projects({
         </Link>
       ))}
     </div>
+    </>
   );
 }
 function Tasks({ projects }: { projects: ProjectCard[] }) {
-  const tasks = projects.flatMap((project) =>
-    project.tasks.map((task) => ({ ...task, projectName: project.name })),
-  );
+  const tasks = projects
+    .filter(isRealProject)
+    .flatMap((project) => project.tasks.map((task) => ({ ...task, projectName: project.name })));
+  if (!tasks.length) return <Empty text="No tasks registered yet." />;
   return (
     <Table
       headers={["Task", "Project", "State", "Branch", "Commit", "Repair"]}
@@ -553,7 +619,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
                 value={projectId}
                 onChange={(event) => setProject(event.target.value)}
               >
-                {projects.map((value) => (
+                {projects.filter(isRealProject).map((value) => (
                   <option value={value.id} key={value.id}>
                     {value.name} · {value.environment}
                   </option>
@@ -568,7 +634,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
               >
                 {selected?.tasks.map((value) => (
                   <option value={value.id} key={value.id}>
-                    {value.externalKey} · {value.state}
+                    {value.externalKey} · {value.state} — {value.title}
                   </option>
                 ))}
               </select>
@@ -660,12 +726,21 @@ function Infrastructure({ projects }: { projects: ProjectCard[] }) {
     </div>
   );
 }
+// A fetch that failed must never look like one that is still loading. usePolling keeps `data`
+// undefined on error, so every `data ? x : <Loading/>` site below used to spin forever with no
+// message -- the literal cause of the Capabilities screen never resolving.
+function PanelState({ error, loading, empty, children }: { error?: string; loading: boolean; empty?: string; children: ReactNode }) {
+  if (error) return <Empty text={error} />;
+  if (loading) return <Loading small />;
+  if (empty) return <Empty text={empty} />;
+  return <>{children}</>;
+}
 function GlobalApiExplorer({projects}:{projects:ProjectCard[]}){return <div className="stack">{projects.map(project=><ProjectApiExplorer key={project.id} project={project}/>)}</div>;}
-function ProjectApiExplorer({project}:{project:ProjectCard}){const {data}=usePolling<Json>(`/projects/${project.id}`);if(!data)return <Loading small/>;return <Panel title={project.name}><ApiExplorer api={(data.api??{}) as Json} resources={(data.resources??[]) as Json[]} projectId={project.id} tasks={(data.tasks??[]) as Task[]}/></Panel>;}
+function ProjectApiExplorer({project}:{project:ProjectCard}){const {data,error}=usePolling<Json>(`/projects/${project.id}`);return <Panel title={project.name}><PanelState error={error} loading={!data}><ApiExplorer api={(data?.api??{}) as Json} resources={(data?.resources??[]) as Json[]} projectId={project.id} tasks={(data?.tasks??[]) as Task[]}/></PanelState></Panel>;}
 function GlobalDatabase({projects}:{projects:ProjectCard[]}){return <div className="stack">{projects.map(project=><ProjectDatabase key={project.id} project={project}/>)}</div>;}
-function ProjectDatabase({project}:{project:ProjectCard}){const {data}=usePolling<Json>(`/projects/${project.id}`);return <Panel title={project.name}>{data?<DatabasePanel value={(data.database??{}) as Json}/>:<Loading small/>}</Panel>;}
+function ProjectDatabase({project}:{project:ProjectCard}){const {data,error}=usePolling<Json>(`/projects/${project.id}`);return <Panel title={project.name}><PanelState error={error} loading={!data}><DatabasePanel value={(data?.database??{}) as Json}/></PanelState></Panel>;}
 function InfrastructureCard({ project }: { project: ProjectCard }) {
-  const { data } = usePolling<Json>(`/projects/${project.id}`);
+  const { data, error } = usePolling<Json>(`/projects/${project.id}`);
   const resources = (data?.resources ?? []) as Json[];
   return (
     <Panel title={project.name}>
@@ -695,7 +770,9 @@ function InfrastructureCard({ project }: { project: ProjectCard }) {
           ])}
         />
       ) : (
-        <Loading small />
+        <PanelState error={error} loading={!data} empty="No allowlisted resources for this project.">
+          <></>
+        </PanelState>
       )}
     </Panel>
   );
@@ -710,14 +787,12 @@ function Artifacts({ projects }: { projects: ProjectCard[] }) {
   );
 }
 function ProjectArtifacts({ project }: { project: ProjectCard }) {
-  const { data } = usePolling<Json>(`/projects/${project.id}`);
+  const { data, error } = usePolling<Json>(`/projects/${project.id}`);
   return (
     <Panel title={project.name}>
-      {data ? (
-        <ArtifactBrowser artifacts={data.artifacts as Artifact[]} />
-      ) : (
-        <Loading small />
-      )}
+      <PanelState error={error} loading={!data}>
+        <ArtifactBrowser artifacts={(data?.artifacts ?? []) as Artifact[]} />
+      </PanelState>
     </Panel>
   );
 }
@@ -731,13 +806,14 @@ function AuditView({ projects }: { projects: ProjectCard[] }) {
   );
 }
 function ProjectAudit({ project }: { project: ProjectCard }) {
-  const { data } = usePolling<Json>(`/projects/${project.id}`);
+  const { data, error } = usePolling<Json>(`/projects/${project.id}`);
   const [search, setSearch] = useState("");
   const events = ((data?.audit ?? []) as Audit[]).filter((event) =>
     `${event.timestamp} ${event.actor} ${event.action} ${event.taskId ?? ""} ${event.resourceId ?? ""} ${event.reason}`
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
+  if (error) return <Panel title={project.name}><Empty text={error} /></Panel>;
   return (
     <Panel title={project.name}>
       <div className="form filterBar">
@@ -773,18 +849,20 @@ function CapabilityCard({
   projectId: string;
   name: string;
 }) {
-  const { data } = usePolling<Json>(`/projects/${projectId}`);
+  const { data, error } = usePolling<Json>(`/projects/${projectId}`);
   return (
     <Panel title={name}>
-      {data ? (
-        <CapabilityTree value={data.capabilities as Json} />
-      ) : (
-        <Loading small />
-      )}
+      <PanelState error={error} loading={!data}>
+        <CapabilityTree value={data?.capabilities as Json} />
+      </PanelState>
     </Panel>
   );
 }
 function CapabilityTree({ value }: { value: Json }) {
+  // `value` is absent whenever the backend could not build a capability view; Object.entries would
+  // throw here and blank the whole section rather than this one panel.
+  if (!value || typeof value !== "object")
+    return <Empty text="Capabilities are not measurable from the control plane." />;
   const rows = Object.entries(value).flatMap(([group, items]) =>
     typeof items === "object" && items && !Array.isArray(items)
       ? Object.entries(items as Json)
@@ -810,24 +888,44 @@ function CapabilityTree({ value }: { value: Json }) {
     </div>
   );
 }
+type SystemSetting = { key: string; value: unknown; description?: string; visibility?: string; updatedAt?: string; updatedBy?: string };
+// The console shipped with Settings as two paragraphs of static prose while GET /v1/console/settings
+// -- implemented on both backends, and already filtered server-side to hide SUPERADMIN-only rows --
+// was never called. These are the real, operator-visible settings.
 function Settings() {
+  const { data, error } = usePolling<SystemSetting[]>("/settings");
+  const settings = data ?? [];
   return (
-    <div className="grid two">
-      <Panel title="Safety posture">
-        <ul className="checks">
-          <li>Production validation and writes: NOT SUPPORTED</li>
-          <li>Browser secrets: never exposed</li>
-          <li>Provider calls: server-side only</li>
-          <li>External content: rendered as escaped text</li>
-        </ul>
+    <div className="stack">
+      <Panel title="Platform settings">
+        <PanelState error={error} loading={!data} empty={settings.length ? "" : "No operator-visible settings are configured."}>
+          <Table
+            headers={["Setting", "Value", "What it means", "Updated"]}
+            rows={settings.map((setting) => [
+              <code key="k">{setting.key}</code>,
+              <strong key="v">{typeof setting.value === "object" ? JSON.stringify(setting.value) : String(setting.value)}</strong>,
+              setting.description ?? "—",
+              setting.updatedAt ? formatDate(setting.updatedAt) : "—",
+            ])}
+          />
+        </PanelState>
       </Panel>
-      <Panel title="Future assembly">
-        <p>
-          DesignSourceAdapter and FrontendTaskSourceAdapter are prepared for
-          Figma, frontend repositories, contract synchronization and integrated
-          product validation.
-        </p>
-      </Panel>
+      <div className="grid two">
+        <Panel title="Safety posture">
+          <ul className="checks">
+            <li>Production validation and writes: NOT SUPPORTED</li>
+            <li>Browser secrets: never exposed</li>
+            <li>Provider calls: server-side only</li>
+            <li>External content: rendered as escaped text</li>
+          </ul>
+        </Panel>
+        <Panel title="Future assembly">
+          <p>
+            DesignSourceAdapter and FrontendTaskSourceAdapter are prepared for Figma, frontend
+            repositories, contract synchronization and integrated product validation.
+          </p>
+        </Panel>
+      </div>
     </div>
   );
 }
@@ -1393,16 +1491,45 @@ function ValidationResult({ artifact }: { artifact: Artifact }) {
     </div>
   );
 }
+// Plain-language names for the actions an operator actually sees. Anything unmapped falls back to
+// humanAction()'s dotted-path rendering, so a new tool degrades to readable rather than to nothing.
+const auditPhrases: Record<string, string> = {
+  "mcp.task_execute": "Queued a GitHub Actions execution",
+  "mcp.job_create": "Created an execution job",
+  "mcp.task_transition": "Moved the task to another lifecycle state",
+  "mcp.task_rebase_onto_current_base": "Transferred verified work onto the current base branch",
+  "mcp.sandbox_pull_request_open": "Opened a pull request",
+  "mcp.sandbox_pull_request_merge": "Merged the pull request into the default branch",
+  "mcp.validation_run": "Ran a control-state validation suite",
+  "mcp.scenario_run": "Ran a saved API scenario",
+  "task.test": "Formal test gate",
+  "task.review": "Independent review gate",
+  "execution.job.queued": "Execution job queued",
+  "execution.job.dispatched": "Execution job dispatched to GitHub Actions",
+  "execution.job.succeeded": "Execution finished successfully",
+  "execution.rebase.conflicts": "Rebase hit conflicts needing a decision",
+  "execution.rebase.already_integrated": "Target branch already contained this work",
+  "execution.workspace.quarantined": "Dirty workspace quarantined and restarted clean",
+  "validation.api_request": "Sent an authorised API request",
+};
+function auditOutcome(result: unknown) {
+  if (!result || typeof result !== "object") return "neutral";
+  const value = result as { success?: unknown; merged?: unknown; passed?: unknown; result?: unknown };
+  if (value.result === "FAIL" || value.success === false || value.passed === false) return "bad";
+  if (value.success === true || value.merged === true || value.passed === true || value.result === "PASS") return "ok";
+  return "neutral";
+}
 function Timeline({ events }: { events: Audit[] }) {
+  if (!events.length) return <Empty text="No audit events recorded yet." />;
   return (
     <div className="timeline">
       {[...events].reverse().map((event) => (
         <details key={event.id}>
           <summary>
-            <span className="eventDot ok" />
-            <time>{formatTime(event.timestamp)}</time>
+            <span className={`eventDot ${auditOutcome(event.result)}`} />
+            <time title={event.timestamp}>{formatDate(event.timestamp)}</time>
             <div>
-              <strong>{humanAction(event.action)}</strong>
+              <strong>{auditPhrases[event.action] ?? humanAction(event.action)}</strong>
               <small>{event.reason}</small>
             </div>
           </summary>
@@ -1555,6 +1682,8 @@ function label(section: string) {
         projects: "Projects",
         tasks: "Tasks",
         delivery: "Delivery",
+        "api-explorer": "API Explorer",
+        database: "Database",
         runs: "Runs",
         validation: "Validation Center",
         infrastructure: "Infrastructure",
@@ -1574,6 +1703,8 @@ function subtitle(section: string) {
         projects: "Registered targets and their current state",
         tasks: "Every task from requirements to READY",
         delivery: "Which upstream epic shipped, proven by which gates, merged into which branch",
+        "api-explorer": "Read the API contract and exercise it safely",
+        database: "Schema, migrations and the evidence behind each change",
         runs: "Branches, commits, repair attempts and outcomes",
         validation: "Run and inspect backend verification without a terminal",
         infrastructure: "Only explicitly allowlisted sandbox resources",

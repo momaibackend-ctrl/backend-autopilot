@@ -18,3 +18,4 @@ import '../../../packages/workflow-engine/src/index.ts';
 import '../../../packages/context-engine/src/index.ts';
 import '../../../packages/execution-engine/src/reviewer.ts';
 import '../../../packages/operator-console/src/delivery.ts';
+import '../../../packages/operator-console/src/projections.ts';

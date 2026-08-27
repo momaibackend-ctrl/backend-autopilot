@@ -62,6 +62,11 @@ textarea {
   position: sticky;
   top: 0;
   height: 100vh;
+  /* Without these the fixed-height flex column cannot scroll, so once the nav grew past the
+     viewport the last links -- Settings among them -- painted past the gradient onto the light
+     page background and became invisible rather than reachable. */
+  overflow-y: auto;
+  min-height: 0;
   background: linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
   color: #d8dee9;
   padding: 20px 14px;
@@ -98,6 +103,7 @@ textarea {
 }
 .shell nav {
   display: grid;
+  min-height: 0;
   gap: 3px;
 }
 .shell nav a {
@@ -977,4 +983,97 @@ button:disabled {
   .deliveryDetail {
     padding-left: 20px;
   }
+}
+
+/* ---------- Per-section guide rail --------------------------------------- */
+/* The console_screens registry already carries operator guidance per section. It used to render
+   full-width above the content, pushing the actual data below the fold; here it becomes a rail that
+   scrolls independently of the page. Raising max-width reclaims the dead centring gutter, so the
+   rail costs the main column almost nothing above ~1800px. */
+.page.withHelp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 24px;
+  max-width: 1820px;
+  align-items: start;
+}
+.pageMain {
+  min-width: 0;
+}
+.helpRail {
+  position: sticky;
+  top: 78px; /* exactly the sticky header height */
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+.helpRail summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.helpRail summary::-webkit-details-marker { display: none; }
+.helpRail summary span {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.helpRail summary small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.helpRailBody {
+  padding: 4px 16px 16px;
+  display: grid;
+  gap: 16px;
+}
+.helpRailBody h4 {
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+}
+.helpRailBody p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.linkButton {
+  background: none;
+  border: 0;
+  padding: 0 0 12px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.linkButton:hover { text-decoration: underline; }
+
+@media (max-width: 1400px) {
+  /* Below this the rail costs the data real estate, so it folds to a disclosure above the content. */
+  .page.withHelp { grid-template-columns: minmax(0, 1fr); }
+  /* order beats DOM position in a single-column grid, keeping the guide discoverable above the
+     content, while the capped body stops six help blocks from burying the data on a phone. */
+  .helpRail { position: static; max-height: none; order: -1; }
+  .helpRailBody { max-height: 260px; overflow: auto; }
+  .helpRail details:not([open]) summary { border-bottom: 0; }
 }
