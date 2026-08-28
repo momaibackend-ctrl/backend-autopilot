@@ -73,7 +73,7 @@ try{
   current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha,updatedAt:systemClock.now()});
   await artifacts.write(project.id,'CODE_DIFF',{diff:result.diff,changedFiles:result.changedFiles},task.id,current.runId);
   const migrationFiles=rebaseOutcome?[]:payload.changes.filter(value=>/migrations?\//.test(value.path));if(migrationFiles.length)await artifacts.write(project.id,'MIGRATION_MANIFEST',{migrations:migrationFiles.map(value=>({path:value.path,content:value.content})),validation:'Pending migration test gate',rollback:'Implementation plan rollback strategy'},task.id,current.runId);
-  const apiFiles=rebaseOutcome?[]:payload.changes.filter(value=>/openapi/i.test(value.path));if(apiFiles.length)await artifacts.write(project.id,'API_CONTRACT',{contracts:apiFiles.map(value=>({path:value.path,document:(/\.ya?ml$/i.test(value.path)?parseYaml(value.content):JSON.parse(value.content)) as unknown}))},task.id,current.runId);
+  const apiFiles=rebaseOutcome?[]:payload.changes.filter(value=>/openapi/i.test(value.path)&&value.content!==undefined);if(apiFiles.length)await artifacts.write(project.id,'API_CONTRACT',{contracts:apiFiles.map(value=>({path:value.path,document:(/\.ya?ml$/i.test(value.path)?parseYaml(value.content as string):JSON.parse(value.content as string)) as unknown}))},task.id,current.runId);
   await new LiveGitHubAdapter(commands).push(resource,{workspace,branch:result.branch,correlationId:task.id});
   if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,baseCommit:result.baseCommit,branch:result.branch,commitSha});}
   await service.taskTest(project.id,task.id,owner,current.operationId,workspace);

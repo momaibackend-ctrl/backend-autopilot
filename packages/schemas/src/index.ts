@@ -261,11 +261,20 @@ export const architectureReviewSchema = z.object({
   policyVersion: z.string(),
 });
 
-export const fileChangeSchema = z.object({
-  path: z.string().min(1),
-  content: z.string(),
-  operation: z.enum(["CREATE", "UPDATE"]).default("CREATE"),
-});
+export const fileChangeSchema = z
+  .object({
+    path: z.string().min(1),
+    // Not required for DELETE, where there is no content to write.
+    content: z.string().optional(),
+    // DELETE exists because relocating code is how an architecture violation actually gets fixed.
+    // Without it an agent could only ever add or overwrite, so a class living in the wrong package
+    // could never be moved out of it -- it would have to be left behind, still violating.
+    operation: z.enum(["CREATE", "UPDATE", "DELETE"]).default("CREATE"),
+  })
+  .refine((value) => value.operation === "DELETE" || value.content !== undefined, {
+    message: "content is required unless operation is DELETE",
+    path: ["content"],
+  });
 export type FileChange = z.infer<typeof fileChangeSchema>;
 export const executeInputSchema = z.object({
   projectId: z.string().uuid(),

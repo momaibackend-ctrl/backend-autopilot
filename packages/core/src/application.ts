@@ -456,7 +456,8 @@ export class AutopilotService {
           task.id,
           run.id,
         );
-      const apiFiles = data.changes.filter((c) => /openapi/i.test(c.path));
+      // A deleted contract file has no document to record; removal shows up in the diff instead.
+      const apiFiles = data.changes.filter((c) => /openapi/i.test(c.path) && c.content !== undefined);
       if (apiFiles.length)
         await this.artifacts.write(
           project.id,
@@ -465,8 +466,8 @@ export class AutopilotService {
             contracts: apiFiles.map((c) => ({
               path: c.path,
               document: /\.ya?ml$/i.test(c.path)
-                ? parseYaml(c.content)
-                : JSON.parse(c.content),
+                ? parseYaml(c.content as string)
+                : JSON.parse(c.content as string),
             })),
           },
           task.id,

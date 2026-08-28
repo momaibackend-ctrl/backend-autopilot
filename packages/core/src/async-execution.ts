@@ -55,7 +55,8 @@ export class AsyncExecutionCoordinator {
     if(!['PLANNED','IMPLEMENTING'].includes(task.state))throw new InvalidState('Task must be PLANNED or IMPLEMENTING before remote execution');
     await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
     await requireProjectGithubRepository(this.store,project.id,resourceId);
-    for(const change of data.changes)assertSafeChange(change.path,change.content);
+    // A delete carries no content, so there is nothing to scan for secret material.
+    for(const change of data.changes)if(change.content!==undefined)assertSafeChange(change.path,change.content);
     const dependencyBase=await this.resolveDependencyBase(project.id,task,actor);
     if(task.state==='PLANNED')task=await this.workflow.transition(task,'IMPLEMENTING','Remote execution job queued',actor);
     const now=this.clock.now();const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,startedAt:now};

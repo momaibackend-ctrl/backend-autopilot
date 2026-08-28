@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import type { Clock, GitWorkspaceAdapter } from '../../core/src/ports.js';
 import { ExecutionFailed } from '../../core/src/errors.js';
@@ -11,7 +11,19 @@ export class ExecutionEngine {
   async execute(input:{workspace:string;task:Task;changes:FileChange[]}){
     const root=resolve(input.workspace);const snapshot=await this.git.snapshot(root,input.task.id);const branch=deterministicTaskBranch(input.task);
     if(snapshot.branch!==branch)await this.git.branch(root,input.task.id,branch);
-    for(const change of input.changes){const target=resolve(root,change.path);const rel=relative(root,target);if(rel.startsWith(`..${sep}`)||rel==='..'||rel.startsWith(sep))throw new ExecutionFailed('File change escapes project workspace',{path:change.path});if(detectHardcodedSecret(change.path,change.content))throw new ExecutionFailed('Potential secret material in file change is forbidden',{path:change.path});await mkdir(dirname(target),{recursive:true});await writeFile(target,change.content,'utf8');}
+    for(const change of input.changes){
+      const target=resolve(root,change.path);const rel=relative(root,target);
+      if(rel.startsWith(`..${sep}`)||rel==='..'||rel.startsWith(sep))throw new ExecutionFailed('File change escapes project workspace',{path:change.path});
+      if(change.operation==='DELETE'){
+        // Removing a path the task never had is a no-op rather than a failure: a repair that
+        // re-sends the same delete must stay idempotent, exactly like re-sending a write.
+        await rm(target,{force:true});
+        continue;
+      }
+      const content=change.content??'';
+      if(detectHardcodedSecret(change.path,content))throw new ExecutionFailed('Potential secret material in file change is forbidden',{path:change.path});
+      await mkdir(dirname(target),{recursive:true});await writeFile(target,content,'utf8');
+    }
     await this.git.stage(root,input.task.id);const diff=await this.git.diff(root,input.task.id,snapshot.baseCommit);if(!diff.trim())throw new ExecutionFailed('Implementation produced no diff');const commitSha=await this.git.commit(root,input.task.id,`autopilot: ${input.task.externalKey} ${input.task.title}`);
     return {baseCommit:snapshot.baseCommit,branch,commitSha,diff,changedFiles:input.changes.map(c=>c.path),completedAt:this.clock.now()};
   }
