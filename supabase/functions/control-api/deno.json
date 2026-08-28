@@ -7,6 +7,7 @@
     "../../../packages/core/src/errors.js": "../../../packages/core/src/errors.ts",
     "../../../packages/core/src/ports.js": "../../../packages/core/src/ports.ts",
     "../../../packages/core/src/branch.js": "../../../packages/core/src/branch.ts",
+    "../../../packages/core/src/task-readiness.js": "../../../packages/core/src/task-readiness.ts",
     "../../../packages/core/src/async-execution.js": "../../../packages/core/src/async-execution.ts",
     "../../../packages/audit/src/index.js": "../../../packages/audit/src/index.ts",
     "../../../packages/artifact-store/src/index.js": "../../../packages/artifact-store/src/index.ts",
