@@ -28,7 +28,6 @@ import {
   PlatformVersions,
   type ArchitectureRule,
   type Artifact,
-  type ArtifactKind,
   type ImplementationPlan,
   type Project,
   type Resource,
@@ -49,6 +48,26 @@ import {
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { AuditLog } from "../../audit/src/index.js";
 import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
+import { taskReadiness } from "./task-readiness.js";
+
+// What each independent-review check actually wants. Without this the gate reported only a check
+// name, which is why "apiCompatibility" alone cost three tasks a blind repair loop each before the
+// cause was found.
+const reviewCheckRemediation: Record<string, string> = {
+  apiCompatibility:
+    "The approved plan lists apiChanges, so review wants an API_CONTRACT artifact. Either include an openapi file in the change set, or -- if this task adds no public HTTP surface -- state INTERNAL_ONLY in its requirements and re-plan so the planner stops requiring contract evidence.",
+  migrationSafety: "The plan lists databaseChanges; include the migration in the change set so a MIGRATION_MANIFEST is written.",
+  testAdequacy: "Every suite the plan lists in testsRequired must run and pass. Read the latest TEST_REPORT artifact for the failing suite.",
+  requirementsCoverage: "The plan carries no requirements; re-run superadmin_task_analyze so the requirements snapshot is rebuilt.",
+  architectureConsistency: "No ARCHITECTURE_REVIEW artifact is present; re-run superadmin_task_plan.",
+  security: "The plan lists no securityConsiderations; restate the task's security constraints and re-plan.",
+  dataOwnership: "The plan lists no dataOwners; restate ownership in the task requirements and re-plan.",
+  errorHandling: "REGRESSION must be among the plan's testsRequired.",
+  observability: "State an observability/logging requirement in the task, or keep the task at LOW risk.",
+  raceConditions: "State a concurrency/ownership/idempotency security consideration in the task requirements.",
+  idempotency: "Describe an idempotent rollback strategy, or avoid database changes in this task.",
+  rollback: "The plan needs a rollback strategy; restate it in the task requirements and re-plan.",
+};
 
 export interface ServiceDependencies {
   store: StateStore;
@@ -644,17 +663,15 @@ export class AutopilotService {
       });
       throw new ReviewFailed("Independent review failed", {
         failures: review.failures,
+        blockingReport: {
+          code: "REVIEW_CHECKS_FAILED",
+          reason: `Independent review failed on: ${review.failures.join(", ")}`,
+          remediation: review.failures
+            .map((check) => `${check}: ${reviewCheckRemediation[check] ?? "Address this check, then execute again with a NEW operationId."}`)
+            .join(" | "),
+        },
       });
     }
-    const required: ArtifactKind[] = [
-      "REQUIREMENTS_SNAPSHOT",
-      "IMPLEMENTATION_PLAN",
-      "ARCHITECTURE_REVIEW",
-      "CODE_DIFF",
-      "TEST_REPORT",
-      "SECURITY_REPORT",
-      "REVIEW_REPORT",
-    ];
     const requiresExternalCi = (await this.store.listResources(projectId)).some(
       (resource) =>
         resource.status === "ACTIVE" &&
@@ -663,42 +680,28 @@ export class AutopilotService {
             resource.provider !== "local")),
     );
     const runs = await this.store.listRuns(projectId, taskId);
-    const latestCommit = runs.at(-1)?.commitSha;
-    if (requiresExternalCi) required.push("CI_REPORT");
     const finalArtifacts = await this.store.listArtifacts(projectId, taskId);
-    const missing: string[] = required.filter(
-      (kind) => !finalArtifacts.some((a) => a.kind === kind),
-    );
-    if (requiresExternalCi) {
-      const exactCi = finalArtifacts.some(
-        (a) =>
-          a.kind === "CI_REPORT" &&
-          (
-            a.content as {
-              expectedSha?: string;
-              ci?: { success?: boolean; headSha?: string };
-            }
-          ).expectedSha === latestCommit &&
-          (a.content as { ci?: { success?: boolean; headSha?: string } }).ci
-            ?.success === true &&
-          (a.content as { ci?: { headSha?: string } }).ci?.headSha ===
-            latestCommit,
-      );
-      if (!latestCommit || !exactCi)
-        missing.push("CI_REPORT_EXACT_LATEST_COMMIT");
-    }
-    if (
-      plan.databaseChanges.length &&
-      !finalArtifacts.some((a) => a.kind === "MIGRATION_MANIFEST")
-    )
-      missing.push("MIGRATION_MANIFEST");
-    if (
-      plan.apiChanges.length &&
-      !finalArtifacts.some((a) => a.kind === "API_CONTRACT")
-    )
-      missing.push("API_CONTRACT");
-    if (missing.length)
-      throw new ReviewFailed("READY gate artifacts missing", { missing });
+    // Same functions the readiness preflight uses, so what an agent is told beforehand and what
+    // this gate actually enforces cannot drift apart.
+    const readiness = taskReadiness({
+      task,
+      artifacts: finalArtifacts,
+      runs,
+      plan,
+      requiresExternalCi,
+    });
+    if (readiness.blockers.length)
+      throw new ReviewFailed("READY gate artifacts missing", {
+        // Bare artifact kinds, unchanged for existing consumers; `blockers` carries the detail.
+        missing: readiness.blockers.map((blocker) => blocker.code.replace(/^MISSING_/, "")),
+        blockers: readiness.blockers,
+        blockingReport: {
+          code: "READY_GATE_EVIDENCE_MISSING",
+          reason: readiness.blockers.map((blocker) => blocker.reason).join(" "),
+          remediation: readiness.blockers.map((blocker) => blocker.remediation).join(" | "),
+        },
+      });
+    const latestCommit = runs.at(-1)?.commitSha;
     const manifest = await this.artifacts.write(
       projectId,
       "FINAL_CHANGE_MANIFEST",
@@ -767,6 +770,36 @@ export class AutopilotService {
       artifacts: await this.store.listArtifacts(projectId, taskId),
       runs: await this.store.listRuns(projectId, taskId),
     };
+  }
+  /**
+   * What this task still needs, and what to call next -- answerable at any point, including before
+   * any work has run. Deliberately never throws for an unplanned task: an agent asking "what now?"
+   * on a fresh task must get an answer, not an error.
+   */
+  async taskReadiness(projectId: string, taskId: string) {
+    const task = await this.requiredTask(projectId, taskId);
+    const [artifacts, runs, resources] = await Promise.all([
+      this.store.listArtifacts(projectId, taskId),
+      this.store.listRuns(projectId, taskId),
+      this.store.listResources(projectId),
+    ]);
+    const planArtifact = artifacts.filter((value) => value.kind === "IMPLEMENTATION_PLAN").at(-1);
+    const plan = planArtifact
+      ? implementationPlanSchema.safeParse(planArtifact.content)
+      : undefined;
+    const requiresExternalCi = resources.some(
+      (resource) =>
+        resource.status === "ACTIVE" &&
+        (resource.type === "GITHUB_REPOSITORY" ||
+          (resource.type === "GIT_REPOSITORY" && resource.provider !== "local")),
+    );
+    return taskReadiness({
+      task,
+      artifacts,
+      runs,
+      ...(plan?.success ? { plan: plan.data } : {}),
+      requiresExternalCi,
+    });
   }
   async artifactList(projectId: string, taskId?: string) {
     await this.requiredProject(projectId);

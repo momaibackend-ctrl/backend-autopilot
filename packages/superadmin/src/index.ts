@@ -398,6 +398,18 @@ export class SuperadminService {
         throw new InvalidState(`Transition ${task.state} -> ${to} is not allowed`);
       if (to === "READY")
         throw new PolicyViolation("READY can only be reached through formal review gates");
+      // ANALYZING is reachable by hand in the lifecycle table, but taskAnalyze is what writes the
+      // REQUIREMENTS_SNAPSHOT the READY gate later demands. CORE-BE-11 was moved here manually to
+      // route around an unrelated defect, silently skipped that artifact, and only found out at
+      // the very end -- after a full implementation, test and review cycle had already run.
+      if (to === "ANALYZING")
+        throw new PolicyViolation("Use superadmin_task_analyze to enter ANALYZING", {
+          blockingReport: {
+            code: "ANALYZE_REQUIRED_FOR_ANALYZING",
+            reason: "A manual transition into ANALYZING skips the REQUIREMENTS_SNAPSHOT that superadmin_task_analyze writes, and the READY gate rejects the task much later for missing it.",
+            remediation: `Call superadmin_task_analyze for task ${taskId} instead. It performs this same transition and records the snapshot.`,
+          },
+        });
       return this.workflow.transition(task, to, reason, principal.actor);
     });
   }
