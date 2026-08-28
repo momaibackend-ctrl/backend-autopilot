@@ -22,6 +22,7 @@
     "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts",
-    "../../../packages/core/src/repository-guard.js": "../../../packages/core/src/repository-guard.ts"
+    "../../../packages/core/src/repository-guard.js": "../../../packages/core/src/repository-guard.ts",
+    "../../../packages/core/src/application.js": "../../../packages/core/src/application.ts"
   }
 }

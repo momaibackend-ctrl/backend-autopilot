@@ -6,6 +6,7 @@ import { DomainError, NotFound } from '../../../packages/core/src/errors.ts';
 import { apiRequestInputSchema } from '../../../packages/schemas/src/index.ts';
 import { PolicyEngine } from '../../../packages/policy-engine/src/index.ts';
 import { defaultHttpRunnerLimits, resolveHttpApiTarget, resolveStepUrl } from '../../../packages/http-runner/src/index.ts';
+import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { deliveryForProject } from '../../../packages/operator-console/src/delivery.ts';
 import { apiView, capabilitiesView, databaseView, lifecycleRail, safeResource, taskSummaryFrom, taskTimeline, validationHistoryView } from '../../../packages/operator-console/src/projections.ts';
 import { authenticatedOperator, corsHeaders, createEdgeRuntime, EdgeHttpError, json } from '../_shared/edge-runtime.ts';
@@ -78,8 +79,12 @@ async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awai
 
 // Maps an authenticated console operator onto the principal SuperadminService expects. Role is
 // carried through unchanged, so the service's own SUPERADMIN gate still decides what is allowed.
-function consolePrincipal(viewer:Awaited<ReturnType<typeof authenticatedOperator>>){
-  return {actor:viewer.email??viewer.id,role:viewer.role,authMethod:'OAUTH' as const};
+function consolePrincipal(viewer:Awaited<ReturnType<typeof authenticatedOperator>>):SuperadminPrincipal{
+  // The auth layer and the domain use different names for the same non-superadmin role
+  // ('OPERATOR' vs PrincipalRole's 'PROJECT_OPERATOR'), so translate rather than widen the domain
+  // type. Behaviour is unchanged either way -- SuperadminService gates on role === 'SUPERADMIN' --
+  // but leaving the mismatch in place made this a value TypeScript could not check.
+  return {actor:viewer.email??viewer.id,role:viewer.role==='SUPERADMIN'?'SUPERADMIN':'PROJECT_OPERATOR',authMethod:'OAUTH'};
 }
 
 async function projectView(runtime:ReturnType<typeof createEdgeRuntime>,projectId:string){

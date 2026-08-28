@@ -24,11 +24,18 @@ jobs:
         with: { version: 10.32.1 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
+      - uses: denoland/setup-deno@v2
+        with: { deno-version: v2.x }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm db:migrate
       - run: pnpm lint
       - run: pnpm typecheck
+      # tsconfig excludes supabase/**, so nothing else type-checks the edge functions: they are
+      # only ever exercised at `supabase functions deploy`, where a bad import fails the deploy
+      # itself. This catches both classes locally -- unresolvable `.js` -> `.ts` import-map gaps
+      # and genuine type errors that tsc never sees.
+      - run: pnpm typecheck:edge
       - run: pnpm test:unit
       - run: pnpm test:integration
       - run: pnpm test:security

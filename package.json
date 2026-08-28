@@ -38,7 +38,8 @@
     "build": "pnpm build:core && pnpm build:console",
     "console:e2e:seed": "tsx scripts/seed-console-e2e.ts",
     "test:browser": "pnpm console:e2e:seed && playwright test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:browser"
+    "check": "pnpm lint && pnpm typecheck && pnpm typecheck:edge && pnpm test && pnpm build && pnpm test:browser",
+    "typecheck:edge": "deno check --no-lock --config supabase/functions/mcp/deno.json supabase/functions/mcp/index.ts && deno check --no-lock --config supabase/functions/control-api/deno.json supabase/functions/control-api/index.ts && deno check --no-lock --config supabase/functions/reconcile/deno.json supabase/functions/reconcile/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.3",
