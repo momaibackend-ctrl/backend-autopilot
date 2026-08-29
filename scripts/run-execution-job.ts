@@ -35,7 +35,13 @@ const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
 const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);const blobs=new SupabaseStorageArtifactBlobStore(supabaseUrl,serviceRoleKey);const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
 try{
-  current=await store.updateExecutionJob({...current,status:'RUNNING',updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);if(!project||!task)throw new ExecutionFailed('Execution job references missing registered state');
+  // Stamp the GitHub run identity onto the job the moment it is actually running. The dispatch
+  // endpoint answers 204 with an empty body, so the dispatcher never learns the run id -- which
+  // left the reconciler blind to every job it dispatched. The runner is the first component that
+  // knows the id, so it is the one that has to record it.
+  const workflowRunId=process.env['GITHUB_RUN_ID'];
+  const workflowRunUrl=process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&workflowRunId?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${workflowRunId}`:undefined;
+  current=await store.updateExecutionJob({...current,status:'RUNNING',...(workflowRunId?{workflowRunId}:{}),...(workflowRunUrl?{workflowRunUrl}:{}),startedAt:current.startedAt??systemClock.now(),updatedAt:systemClock.now()});const project=await store.getProject(current.projectId);const task=await store.getTask(current.projectId,current.taskId);if(!project||!task)throw new ExecutionFailed('Execution job references missing registered state');
   // requireProjectGithubRepository closes a real gap this script previously had: it fetched the
   // resource by id alone, with no check that it actually belongs to this job's project -- the same
   // invariant every other resource-consuming entry point enforces (see repository-guard.ts).

@@ -49,6 +49,8 @@ import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { AuditLog } from "../../audit/src/index.js";
 import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
 import { taskReadiness } from "./task-readiness.js";
+import { classifyScope } from "./scope-classification.js";
+import { buildVerificationProfile, requiredSuites, requiresLayer } from "./verification-profile.js";
 
 // What each independent-review check actually wants. Without this the gate reported only a check
 // name, which is why "apiCompatibility" alone cost three tasks a blind repair loop each before the
@@ -58,6 +60,8 @@ const reviewCheckRemediation: Record<string, string> = {
     "The approved plan lists apiChanges, so review wants an API_CONTRACT artifact. Either include an openapi file in the change set, or -- if this task adds no public HTTP surface -- state INTERNAL_ONLY in its requirements and re-plan so the planner stops requiring contract evidence.",
   migrationSafety: "The plan lists databaseChanges; include the migration in the change set so a MIGRATION_MANIFEST is written.",
   testAdequacy: "Every suite the plan lists in testsRequired must run and pass. Read the latest TEST_REPORT artifact for the failing suite.",
+  propertyBasedAdequacy:
+    "The plan's verification profile marks PROPERTY as REQUIRED, so a green build is not enough: the runner output has to show generated cases. Add jqwik properties (JVM) or fast-check properties (Node) covering the invariant the profile names, or emit reports/property-based-report.json. If this task genuinely carries no algorithmic invariant, say so in its requirements -- naming the CRUD/DTO/adapter/static-registry shape -- and re-plan so the profile records NOT_APPLICABLE with that reason.",
   requirementsCoverage: "The plan carries no requirements; re-run superadmin_task_analyze so the requirements snapshot is rebuilt.",
   architectureConsistency: "No ARCHITECTURE_REVIEW artifact is present; re-run superadmin_task_plan.",
   security: "The plan lists no securityConsiderations; restate the task's security constraints and re-plan.",
@@ -554,6 +558,16 @@ export class AutopilotService {
       },
       task.id,
     );
+    // Written before the pass/fail branch below on purpose: when the generative layer is the thing
+    // that failed, the report explaining why -- counterexample count, replay seed, or the fact
+    // that nothing was generated at all -- is exactly the evidence the repair needs.
+    if (report.propertyBased)
+      await this.artifacts.write(
+        projectId,
+        "PROPERTY_BASED_REPORT",
+        report.propertyBased,
+        task.id,
+      );
     if (plan.databaseChanges.length)
       await this.artifacts.write(
         projectId,
@@ -871,29 +885,12 @@ export class AutopilotService {
   }
   private buildPlan(task: Task): ImplementationPlan {
     const text = [task.title, task.description, ...task.requirements].join(" ");
-    const db = /\bdatabase\b|\bpostgres\b|\bmigrations?\b|\bschema\b/i.test(text);
-    // Word-bounded so "restart" (present in the standard dirty-workspace-recovery requirement on
-    // every task) can no longer masquerade as a REST mention.
-    const api = /\bapis?\b|\brest\b|\bendpoints?\b|\bopenapi\b/i.test(text);
-    // `api` alone over-fires: three real tasks in a row (CORE-BE-07, 09, 10) required
-    // "INTERNAL_ONLY ... do not invent public HTTP APIs" language to justify NOT exposing REST,
-    // which this keyword scan cannot distinguish from a genuine request to add one. Each stalled
-    // on independent review demanding an API_CONTRACT artifact for a change that was never meant
-    // to touch the API surface, costing a blind repair loop every time before anyone found the
-    // real cause. Task authors already write "INTERNAL_ONLY" as the explicit, deliberate signal
-    // for exactly this case, so trust it: keep `api` driving CONTRACT-suite coverage and the
-    // openapi.json expected-file hint (asking for more test coverage than needed is harmless),
-    // but only require API_CONTRACT evidence -- what the review gate actually enforces -- when
-    // the task does not declare itself internal-only.
-    const publicApiIntent = api && !/\binternal[_-]?only\b/i.test(text);
-    const tests: ImplementationPlan["testsRequired"] = [
-      "UNIT",
-      "INTEGRATION",
-      ...(api ? ["CONTRACT" as const] : []),
-      ...(db ? ["MIGRATION" as const] : []),
-      "SECURITY",
-      "REGRESSION",
-    ];
+    // Intent, not mention. A clause that names an API or a migration only to forbid it is evidence
+    // against the change; counting it as evidence for one is what made three CORE-BE tasks and
+    // CORE-QA-02 stall on gates demanding contracts and manifests they were told not to produce.
+    // See scope-classification.ts for why negation is the general form of the INTERNAL_ONLY signal.
+    const scope = classifyScope(text);
+    const verification = buildVerificationProfile(text, scope);
     return implementationPlanSchema.parse({
       taskId: task.id,
       goal: task.title,
@@ -902,11 +899,14 @@ export class AutopilotService {
       dataOwners: ["authenticated principal"],
       filesExpectedToChange: [
         "src/**",
-        ...(db ? ["migrations/*.sql"] : []),
-        ...(api ? ["openapi.json"] : []),
+        ...(scope.database.mentioned ? ["migrations/*.sql"] : []),
+        ...(scope.api.mentioned ? ["openapi.json"] : []),
       ],
-      databaseChanges: db ? ["Versioned, reproducible schema migration"] : [],
-      apiChanges: publicApiIntent ? ["Machine-readable REST contract"] : [],
+      // Suite coverage follows mention -- asking for more coverage than strictly needed is
+      // harmless -- while these two lists, which the READY gate turns into required artifacts,
+      // follow intent.
+      databaseChanges: scope.database.intended ? ["Versioned, reproducible schema migration"] : [],
+      apiChanges: scope.api.intended ? ["Machine-readable REST contract"] : [],
       events: [],
       securityConsiderations: [
         "authorization ownership enforcement",
@@ -915,11 +915,12 @@ export class AutopilotService {
       dependencies: task.relationships
         .filter((r) => r.type === "DEPENDS_ON")
         .map((r) => r.targetTaskId),
-      testsRequired: tests,
+      testsRequired: requiredSuites(verification),
+      verification,
       rollbackStrategy:
         "Revert the task commit and apply the documented idempotent rollback migration when applicable",
       openQuestions: [],
-      riskLevel: db ? "MEDIUM" : "LOW",
+      riskLevel: scope.database.intended || requiresLayer(verification, "PROPERTY") ? "MEDIUM" : "LOW",
       approved: false,
       createdAt: this.clock.now(),
     });

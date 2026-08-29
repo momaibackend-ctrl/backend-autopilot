@@ -90,3 +90,50 @@ describe("buildPlan API-change detection", () => {
     expect(plan.testsRequired).not.toContain("CONTRACT");
   });
 });
+
+describe("buildPlan negative scope and verification profile", () => {
+  it("stops demanding an API contract and a migration manifest from a task that forbids both", async () => {
+    // CORE-QA-02 reached a formal gate asking for MISSING_API_CONTRACT and MISSING_MIGRATION_MANIFEST
+    // for a task whose requirements rule out both. Nothing about the task had changed; the planner
+    // simply could not read a refusal.
+    const plan = await plannedTask({
+      title: "Momna CORE-QA-02 — property-based coverage for core algorithmic invariants",
+      description: "Add generative tests for the invariants CORE-BE-14 and CORE-BE-19 rely on.",
+      requirements: [
+        "Do not add public HTTP APIs.",
+        "No schema migrations are part of this task.",
+        "Cover the rollout bucketing invariant: increasing the rollout percentage must never remove an already assigned user.",
+      ],
+    });
+    expect(plan.apiChanges).toEqual([]);
+    expect(plan.databaseChanges).toEqual([]);
+    expect(plan.verification).toBeDefined();
+  });
+
+  it("requires the generative layer for an algorithmic task and records why", async () => {
+    const plan = await plannedTask({
+      title: "Rollout assignment",
+      description: "Deterministic bucketing of users into a percentage rollout.",
+      requirements: [
+        "A user assigned at threshold X must remain assigned when the rollout percentage increases.",
+      ],
+    });
+    expect(plan.testsRequired).toContain("PROPERTY");
+    const property = plan.verification?.decisions.find((decision) => decision.layer === "PROPERTY");
+    expect(property?.status).toBe("REQUIRED");
+    expect(property?.reasons.join(" ")).toContain("deterministic hashing/bucketing");
+  });
+
+  it("does not impose the generative layer on work that carries no invariant", async () => {
+    const plan = await plannedTask({
+      title: "Rename audit field",
+      description: "Rename the internal logger field on the audit record.",
+      requirements: ["Keep the persisted envelope shape unchanged."],
+    });
+    expect(plan.testsRequired).not.toContain("PROPERTY");
+    const property = plan.verification?.decisions.find((decision) => decision.layer === "PROPERTY");
+    expect(property?.status).toBe("NOT_APPLICABLE");
+    // The refusal is recorded rather than silently skipped -- that is what makes the gate readable.
+    expect(property?.reasons[0]?.length).toBeGreaterThan(0);
+  });
+});

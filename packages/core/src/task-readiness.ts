@@ -1,4 +1,5 @@
-import type { Artifact, ArtifactKind, ImplementationPlan, Run, Task } from "../../schemas/src/index.js";
+import type { Artifact, ArtifactKind, ImplementationPlan, Run, Task, VerificationProfile } from "../../schemas/src/index.js";
+import { requiresLayer } from "./verification-profile.js";
 
 // What a task still needs before it can reach READY, and what to call next to get there.
 //
@@ -33,13 +34,23 @@ export interface TaskReadiness {
   /** Everything that will fail a later gate if left alone, each with its own remediation. */
   blockers: TaskBlocker[];
   gateArtifacts: GateArtifactView;
+  /**
+   * Which verification layers this task owes and which it does not, straight from the approved
+   * plan -- so an agent can read the matrix before implementing rather than discovering a missing
+   * layer at the gate. Null until the task is planned.
+   */
+  verification: VerificationProfile | null;
   /** True only when every formal gate artifact exists; merge tools additionally require READY. */
   gateArtifactsComplete: boolean;
 }
 
+/** The plan fields the gate reads. Kept narrow so callers can pass a partial persisted plan. */
+export type GatePlan = Pick<ImplementationPlan, "apiChanges" | "databaseChanges"> &
+  Partial<Pick<ImplementationPlan, "verification">>;
+
 /** Artifact kinds the READY gate demands, given the approved plan and whether CI is external. */
 export function requiredGateArtifacts(
-  plan: Pick<ImplementationPlan, "apiChanges" | "databaseChanges"> | undefined,
+  plan: GatePlan | undefined,
   requiresExternalCi: boolean,
 ): ArtifactKind[] {
   const required: ArtifactKind[] = [
@@ -54,6 +65,9 @@ export function requiredGateArtifacts(
   if (requiresExternalCi) required.push("CI_REPORT");
   if (plan?.databaseChanges.length) required.push("MIGRATION_MANIFEST");
   if (plan?.apiChanges.length) required.push("API_CONTRACT");
+  // A task whose plan declared an algorithmic invariant cannot reach READY on a green build alone.
+  // Plans written before verification profiles existed carry no profile and are unaffected.
+  if (requiresLayer(plan?.verification, "PROPERTY")) required.push("PROPERTY_BASED_REPORT");
   return required;
 }
 
@@ -92,7 +106,9 @@ const artifactSource: Record<string, string> = {
   MIGRATION_MANIFEST:
     "Written by the execution runner when the change set touches a migrations path. The plan lists databaseChanges, so the gate requires one.",
   API_CONTRACT:
-    "Written by the execution runner when the change set touches an openapi file. The plan lists apiChanges, so the gate requires one. If this task adds no public HTTP surface, say INTERNAL_ONLY in its requirements and re-plan -- the planner then stops demanding contract evidence.",
+    "Written by the execution runner when the change set touches an openapi file. The plan lists apiChanges, so the gate requires one. If this task adds no public HTTP surface, say so plainly in its requirements (\"do not add public HTTP APIs\", or INTERNAL_ONLY) and re-plan -- the planner reads the refusal and stops demanding contract evidence.",
+  PROPERTY_BASED_REPORT:
+    "Written by the execution runner from the generative framework's own output. The plan's verification profile marks PROPERTY as REQUIRED, so the gate wants generated-case counts and a replay seed, not a green build. Add jqwik or fast-check properties for the named invariant, or emit reports/property-based-report.json. If the task carries no invariant, name its CRUD/DTO/adapter/static-registry shape in the requirements and re-plan.",
 };
 
 const nextByState: Record<string, { tool: string; why: string } | null> = {
@@ -111,7 +127,7 @@ export function taskReadiness(input: {
   task: Task;
   artifacts: Artifact[];
   runs: Run[];
-  plan?: Pick<ImplementationPlan, "apiChanges" | "databaseChanges"> | undefined;
+  plan?: GatePlan | undefined;
   requiresExternalCi: boolean;
   /** True when a job for this task is still queued or running. */
   executionInFlight?: boolean;
@@ -148,6 +164,7 @@ export function taskReadiness(input: {
     nextAction: input.executionInFlight ? null : (nextByState[input.task.state] ?? null),
     blockers,
     gateArtifacts: { required, present, missing },
+    verification: input.plan?.verification ?? null,
     gateArtifactsComplete: blockers.length === 0,
   };
 }

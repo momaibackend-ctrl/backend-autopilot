@@ -191,6 +191,37 @@ export const taskCreateSchema = taskSchema.pick({
 });
 export type TaskCreate = z.infer<typeof taskCreateSchema>;
 
+// Which verification layers a task actually needs, decided before implementation rather than
+// discovered after 21 tasks were already merged. Every layer carries an explicit status: a layer
+// that does not apply must say so and say why, so a silent gap and a justified absence stop
+// looking identical in the evidence chain.
+export const verificationLayerSchema = z.enum([
+  "UNIT",
+  "INTEGRATION",
+  "PROPERTY",
+  "CONTRACT",
+  "MIGRATION",
+  "SECURITY",
+  "REGRESSION",
+  "HTTP_CONTRACT",
+  "MIGRATION_MANIFEST",
+]);
+export type VerificationLayer = z.infer<typeof verificationLayerSchema>;
+export const verificationStatusSchema = z.enum(["REQUIRED", "NOT_APPLICABLE"]);
+export type VerificationStatus = z.infer<typeof verificationStatusSchema>;
+export const verificationDecisionSchema = z.object({
+  layer: verificationLayerSchema,
+  status: verificationStatusSchema,
+  /** Why this layer is required, or why it demonstrably does not apply. Never empty. */
+  reasons: z.array(z.string().min(1)).min(1),
+});
+export type VerificationDecision = z.infer<typeof verificationDecisionSchema>;
+export const verificationProfileSchema = z.object({
+  profileVersion: z.string().min(1),
+  decisions: z.array(verificationDecisionSchema).min(1),
+});
+export type VerificationProfile = z.infer<typeof verificationProfileSchema>;
+
 export const implementationPlanSchema = z.object({
   taskId: z.string().uuid(),
   goal: z.string().min(1),
@@ -207,12 +238,16 @@ export const implementationPlanSchema = z.object({
     z.enum([
       "UNIT",
       "INTEGRATION",
+      "PROPERTY",
       "CONTRACT",
       "MIGRATION",
       "SECURITY",
       "REGRESSION",
     ]),
   ),
+  // Optional so plans persisted before verification profiles existed still parse; every plan the
+  // current planner writes carries one.
+  verification: verificationProfileSchema.optional(),
   rollbackStrategy: z.string().min(1),
   openQuestions: z.array(z.string()),
   riskLevel: z.enum(["LOW", "MEDIUM", "HIGH"]),
@@ -234,6 +269,7 @@ export const architectureRuleSchema = z.discriminatedUnion("type", [
     test: z.enum([
       "UNIT",
       "INTEGRATION",
+      "PROPERTY",
       "CONTRACT",
       "MIGRATION",
       "SECURITY",
@@ -307,6 +343,24 @@ export const commandRecordSchema = z.object({
 });
 export type CommandRecord = z.infer<typeof commandRecordSchema>;
 
+// Evidence that generative tests actually ran, not merely that a build succeeded. A green exit
+// code proves nothing about whether any property was ever generated, so the gate reads counts and
+// seeds parsed out of the real runner output instead of trusting the suite's status.
+export const propertyBasedReportSchema = z.object({
+  required: z.boolean(),
+  framework: z.enum(["jqwik", "fast-check", "UNKNOWN"]),
+  status: z.enum(["PASS", "FAIL", "UNVERIFIED", "NOT_APPLICABLE"]),
+  /** How the numbers below were obtained; never inferred from a suite exit code alone. */
+  evidence: z.enum(["PARSED_RUNNER_OUTPUT", "REPORT_FILE", "NONE"]),
+  properties: z.number().int().nonnegative(),
+  generatedCases: z.number().int().nonnegative(),
+  shrinking: z.enum(["ENABLED", "DISABLED", "UNKNOWN"]),
+  replaySeeds: z.array(z.string()),
+  counterexamples: z.number().int().nonnegative(),
+  reasons: z.array(z.string()),
+});
+export type PropertyBasedReport = z.infer<typeof propertyBasedReportSchema>;
+
 export const testReportSchema = z.object({
   passed: z.boolean(),
   suites: z.array(
@@ -317,9 +371,12 @@ export const testReportSchema = z.object({
       exitCode: z.number().int(),
     }),
   ),
+  /** Present whenever the plan's verification profile required a generative layer. */
+  propertyBased: propertyBasedReportSchema.optional(),
   finishedAt: z.string().datetime(),
 });
 export type TestReport = z.infer<typeof testReportSchema>;
+
 export const reviewResultSchema = z.enum([
   "PASS",
   "PASS_WITH_WARNINGS",
@@ -460,6 +517,7 @@ export const artifactKindSchema = z.enum([
   "MIGRATION_MANIFEST",
   "API_CONTRACT",
   "TEST_REPORT",
+  "PROPERTY_BASED_REPORT",
   "SECURITY_REPORT",
   "CI_REPORT",
   "REVIEW_REPORT",
