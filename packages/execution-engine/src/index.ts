@@ -32,6 +32,7 @@ export * from './command-policy.js';
 export * from './command-runner.js';
 export * from './test-engine.js';
 export * from './gradle-test-engine.js';
+export * from './property-based-report.js';
 export * from './stack-aware-test-executor.js';
 export * from './stack-detection.js';
 export * from './gradle-wrapper-provisioner.js';

@@ -67,6 +67,7 @@ const suiteTypes: Record<ValidationSuite, ImplementationPlan["testsRequired"]> =
     FULL: [
       "UNIT",
       "INTEGRATION",
+      "PROPERTY",
       "CONTRACT",
       "MIGRATION",
       "SECURITY",
@@ -176,6 +177,11 @@ export class OperatorConsoleService {
       ),
       apiChanges: artifacts.filter((value) => value.kind === "API_CONTRACT"),
       tests: artifacts.filter((value) => value.kind === "TEST_REPORT"),
+      // The generative layer is shown next to the suites rather than inside them: its verdict comes
+      // from generated-case counts and a replay seed, not from a suite's exit code, and an operator
+      // reading the chain needs to see which it was.
+      propertyBased: artifacts.filter((value) => value.kind === "PROPERTY_BASED_REPORT"),
+      verification: (latestContent(artifacts, "IMPLEMENTATION_PLAN") as { verification?: unknown } | undefined)?.verification ?? null,
       security: artifacts.filter((value) => value.kind === "SECURITY_REPORT"),
       repairHistory: status.runs.filter((_, index) => index > 0),
       finalManifest: latestContent(artifacts, "FINAL_CHANGE_MANIFEST"),

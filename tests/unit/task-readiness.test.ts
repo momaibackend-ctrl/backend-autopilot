@@ -86,3 +86,52 @@ describe("task readiness", () => {
     expect(readiness.nextAction).toBeNull();
   });
 });
+
+describe("task readiness and the generative layer", () => {
+  const profile = (status: "REQUIRED" | "NOT_APPLICABLE") => ({
+    profileVersion: "1",
+    decisions: [{ layer: "PROPERTY" as const, status, reasons: ["deterministic hashing/bucketing"] }],
+  });
+  const plan = (status: "REQUIRED" | "NOT_APPLICABLE") => ({ apiChanges: [], databaseChanges: [], verification: profile(status) });
+
+  it("demands generative evidence before READY when the plan's profile requires it", () => {
+    // The whole point: this had to be caught at CORE-BE-14, not after all 21 tasks were merged.
+    const commit = "6f4d3c2b1a09876543210fedcba9876543210abc";
+    const readiness = taskReadiness({
+      task: task("REVIEWING"),
+      artifacts: everyGateArtifact(commit),
+      runs: [run(commit)],
+      plan: plan("REQUIRED"),
+      requiresExternalCi: true,
+    });
+    expect(readiness.gateArtifacts.missing).toEqual(["PROPERTY_BASED_REPORT"]);
+    const blocker = readiness.blockers[0]!;
+    expect(blocker.code).toBe("MISSING_PROPERTY_BASED_REPORT");
+    expect(blocker.remediation).toContain("jqwik");
+    expect(blocker.remediation).toContain("replay seed");
+  });
+
+  it("asks for nothing extra when the profile recorded the layer as not applicable", () => {
+    const commit = "1122334455667788990011223344556677889900";
+    const readiness = taskReadiness({
+      task: task("REVIEWING"),
+      artifacts: everyGateArtifact(commit),
+      runs: [run(commit)],
+      plan: plan("NOT_APPLICABLE"),
+      requiresExternalCi: true,
+    });
+    expect(readiness.blockers).toEqual([]);
+  });
+
+  it("leaves plans written before verification profiles existed unaffected", () => {
+    const commit = "aabbccddeeff00112233445566778899aabbccdd";
+    const readiness = taskReadiness({
+      task: task("REVIEWING"),
+      artifacts: everyGateArtifact(commit),
+      runs: [run(commit)],
+      plan: { apiChanges: [], databaseChanges: [] },
+      requiresExternalCi: true,
+    });
+    expect(readiness.blockers).toEqual([]);
+  });
+});
