@@ -11,13 +11,24 @@ const task = (externalKey: string, state = "READY"): Task =>
 const manifest = (verifiedCommitSha: string): Artifact =>
   ({ id: `manifest-${verifiedCommitSha.slice(0, 6)}`, projectId: "p", kind: "FINAL_CHANGE_MANIFEST", schemaVersion: "5", content: { verifiedCommitSha }, contentHash: "h", status: "AVAILABLE", createdAt: NOW }) as unknown as Artifact;
 
+// The default member has been asked about invariants and answered "none". A member planned before
+// verification profiles existed carries no profile at all, which is a different thing entirely --
+// see the legacy fixture below.
 const plan = (over: Partial<ImplementationPlan> = {}) =>
   ({
     testsRequired: ["UNIT", "INTEGRATION", "CONTRACT", "SECURITY", "REGRESSION"],
     databaseChanges: [],
     apiChanges: [],
+    verification: { profileVersion: "1", decisions: [{ layer: "PROPERTY", status: "NOT_APPLICABLE", reasons: ["crud: no algorithmic invariant"] }] },
     ...over,
   }) as Pick<ImplementationPlan, "testsRequired" | "databaseChanges" | "apiChanges" | "verification">;
+
+/** A plan from before the classifier existed: nobody ever asked it about invariants. */
+const legacyPlan = () =>
+  ({ testsRequired: ["UNIT", "INTEGRATION", "CONTRACT", "SECURITY", "REGRESSION"], databaseChanges: [], apiChanges: [] }) as Pick<
+    ImplementationPlan,
+    "testsRequired" | "databaseChanges" | "apiChanges" | "verification"
+  >;
 
 const member = (externalKey: string, verifiedSha: string, over: Partial<EpicMemberInput> = {}): EpicMemberInput => ({
   task: task(externalKey),
@@ -128,6 +139,28 @@ describe("epic verification", () => {
     expect(dimension(quiet, "INTEGRATION_DEPENDENCIES").status).toBe("NOT_APPLICABLE");
     // Security is unconditional; an epic never opts out of it.
     expect(dimension(quiet, "SECURITY_PRIVACY").requirement).toBe("REQUIRED");
+  });
+
+  it("does not report an unasked question as a finding of not-applicable", () => {
+    // Found by running the gate against the real CORE-BE-01..21 set: those plans all predate
+    // verification profiles, so INVARIANTS came back NOT_APPLICABLE -- which reads as "no member
+    // declared an invariant" when the truth is "no member was ever asked". That is the silent skip
+    // this gate exists to prevent, in a subtler form.
+    const legacy = [
+      member("CORE-BE-01", "a".repeat(40), { plan: legacyPlan() }),
+      member("CORE-BE-02", "b".repeat(40), { plan: legacyPlan() }),
+    ];
+    const report = buildEpicVerification({ epicKey: "CORE-BE", headSha: HEAD, members: legacy, headEvidence: [], generatedAt: NOW });
+    const invariants = dimension(report, "INVARIANTS");
+    expect(invariants.status).toBe("BLOCKED");
+    expect(invariants.reasons.join(" ")).toContain("never assessed");
+    expect(invariants.remediation).toContain("Re-plan");
+  });
+
+  it("still reports a genuine not-applicable once every member has been asked", () => {
+    const members = [member("A", HEAD), member("B", HEAD)];
+    const report = buildEpicVerification({ epicKey: "ASKED", headSha: HEAD, members, headEvidence: [], generatedAt: NOW });
+    expect(dimension(report, "INVARIANTS").status).toBe("NOT_APPLICABLE");
   });
 
   it("blocks while any member is still mid-flight or unplanned", () => {

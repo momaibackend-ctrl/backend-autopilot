@@ -95,6 +95,17 @@ function notApplicableReason(dimension: EpicDimension, memberCount: number): str
   }
 }
 
+/**
+ * True when the epic predates verification profiles, so nobody ever asked whether it carries an
+ * algorithmic invariant. Reporting NOT_APPLICABLE here would be an assumption dressed as a finding:
+ * the difference between "no member declared an invariant" and "no member was ever asked" is the
+ * whole distinction this gate exists to keep. Found by running the gate against the real
+ * CORE-BE-01..21 set, whose plans all predate the classifier.
+ */
+function invariantsUnassessed(members: EpicMemberInput[]): EpicMemberInput[] {
+  return members.filter((member) => member.plan && !member.plan.verification);
+}
+
 function requirementFor(dimension: EpicDimension, members: EpicMemberInput[]): boolean {
   const plans = members.map((member) => member.plan).filter((plan): plan is NonNullable<typeof plan> => Boolean(plan));
   switch (dimension) {
@@ -142,8 +153,26 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
   const unplanned = members.filter((member) => !member.planned);
   const staleMembers = members.filter((member) => member.settled && !member.evidenceIsAtHead);
 
+  const unassessed = invariantsUnassessed(input.members);
+
   const dimensions: EpicDimensionResult[] = epicDimensions.map((dimension): EpicDimensionResult => {
     const required = requirementFor(dimension, input.members);
+    if (dimension === "INVARIANTS" && !required && unassessed.length) {
+      return {
+        dimension,
+        requirement: "REQUIRED",
+        status: "BLOCKED",
+        reasons: [
+          `${unassessed.length} member(s) were planned before verification profiles existed (${unassessed
+            .slice(0, 3)
+            .map((member) => member.task.externalKey)
+            .join(", ")}${unassessed.length > 3 ? ", ..." : ""}), so whether this epic carries an algorithmic invariant was never assessed. Reporting it as not applicable would state a finding nobody made.`,
+        ],
+        remediation:
+          "Re-plan those members so each records a verification profile, then re-run this gate. A member that genuinely carries no invariant will say so with its reason, which is a different claim from silence.",
+        evidenceIds: [],
+      };
+    }
     if (!required) {
       return {
         dimension,
