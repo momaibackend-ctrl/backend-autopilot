@@ -13,6 +13,12 @@ import type { Artifact, Resource, Run, Task } from "../../schemas/src/index.js";
  * permission, and the latest run's commit exactly matches the task's own verified
  * FINAL_CHANGE_MANIFEST -- i.e. the same TEST/SECURITY/REVIEW/CI evidence gate that already
  * governs reaching READY at all.
+ *
+ * Run status is deliberately not a second source of truth once the task is READY. A runner may
+ * fail after all formal evidence has been persisted (for example a read-after-write race while
+ * finalizing review), and a later formal review can legitimately make the task READY on that
+ * exact commit. Requiring the historical runner status to be SUCCEEDED would deadlock an already
+ * verified commit even though the manifest and SHA are authoritative.
  */
 export function resolveMergeableCommit(input: {
   task?: Task;
@@ -61,13 +67,12 @@ export function resolveMergeableCommit(input: {
   const latest = runs.at(-1);
   if (
     !latest ||
-    latest.status !== "SUCCEEDED" ||
     latest.commitSha !== verifiedCommitSha ||
     !latest.branch?.startsWith("autopilot/")
   )
     throw new PolicyViolation(
-      "Latest run does not match the task's verified commit SHA",
-      { expected: verifiedCommitSha, actual: latest?.commitSha },
+      "Latest run commit/branch does not match the task's verified commit evidence",
+      { expected: verifiedCommitSha, actual: latest?.commitSha, branch: latest?.branch },
     );
   return { branch: latest.branch, commitSha: verifiedCommitSha };
 }
