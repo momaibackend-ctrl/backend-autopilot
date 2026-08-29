@@ -124,6 +124,27 @@ describe("buildPlan negative scope and verification profile", () => {
     expect(property?.reasons.join(" ")).toContain("deterministic hashing/bucketing");
   });
 
+  it("keeps risk about operational impact, not about verification depth", async () => {
+    // A generative layer says how deeply a task is verified; it says nothing about what the change
+    // can break in production. Coupling the two made every algorithmic task MEDIUM, and MEDIUM
+    // makes independent review demand an observability requirement -- which failed a portability
+    // fix for two test helpers that needed no logging statement at all.
+    const algorithmic = await plannedTask({
+      title: "Rollout assignment",
+      description: "Deterministic bucketing of users into a percentage rollout.",
+      requirements: ["A user assigned at threshold X must remain assigned when the percentage increases."],
+    });
+    expect(algorithmic.testsRequired).toContain("PROPERTY");
+    expect(algorithmic.riskLevel).toBe("LOW");
+
+    const schemaChange = await plannedTask({
+      title: "Add rollout table",
+      description: "Add a versioned PostgreSQL migration creating the rollout_assignments table.",
+      requirements: ["The migration must be reproducible."],
+    });
+    expect(schemaChange.riskLevel).toBe("MEDIUM");
+  });
+
   it("does not impose the generative layer on work that carries no invariant", async () => {
     const plan = await plannedTask({
       title: "Rename audit field",

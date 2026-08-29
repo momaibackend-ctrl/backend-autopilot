@@ -53,7 +53,7 @@ import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
 import { taskReadiness } from "./task-readiness.js";
 import { classifyScope } from "./scope-classification.js";
 import { buildEpicVerification, type EpicHeadEvidence, type EpicMemberInput } from "./epic-verification.js";
-import { buildVerificationProfile, requiredSuites, requiresLayer } from "./verification-profile.js";
+import { buildVerificationProfile, requiredSuites } from "./verification-profile.js";
 
 // What each independent-review check actually wants. Without this the gate reported only a check
 // name, which is why "apiCompatibility" alone cost three tasks a blind repair loop each before the
@@ -1022,7 +1022,12 @@ export class AutopilotService {
       rollbackStrategy:
         "Revert the task commit and apply the documented idempotent rollback migration when applicable",
       openQuestions: [],
-      riskLevel: scope.database.intended || requiresLayer(verification, "PROPERTY") ? "MEDIUM" : "LOW",
+      // Risk is about what the change can break in operation, not about how deeply it is verified.
+      // Tying it to PROPERTY made every task with an algorithmic invariant MEDIUM, which in turn
+      // made independent review's observability check demand a logging requirement the task never
+      // needed -- a portability fix for two test helpers was failed on exactly that. Verification
+      // depth is already carried by the profile; it does not belong here too.
+      riskLevel: scope.database.intended ? "MEDIUM" : "LOW",
       approved: false,
       createdAt: this.clock.now(),
     });
