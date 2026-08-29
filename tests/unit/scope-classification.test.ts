@@ -93,6 +93,22 @@ describe("scope classification", () => {
     expect(db.database.intended).toBe(true);
   });
 
+  it("does not read a hyphenated compound as the word it merely contains", () => {
+    // Found by the gate on a real task: "direct-table-access" names a test rule, and  treats the
+    // hyphen as a boundary, so the fragment read as the whole word "table" and the task was made
+    // to owe a MIGRATION_MANIFEST for work touching no database at all.
+    const scope = classifyScope(
+      "IntegrationContractGateTest derives its owned-executor exemption and its direct-table-access skip from Path.toString().",
+    );
+    expect(scope.database.mentioned).toBe(false);
+    expect(classifyScope("Rename the rest-parameter helper.").api.mentioned).toBe(false);
+  });
+
+  it("still matches the bare words those compounds contain", () => {
+    expect(classifyScope("Add a column to the users table.").database.intended).toBe(true);
+    expect(classifyScope("Treat HTTP/load evidence as supplemental.").api.mentioned).toBe(true);
+  });
+
   it("reads 'restart' as recovery language rather than a REST mention", () => {
     // Present verbatim in the standard requirement template on every task.
     const scope = classifyScope(
