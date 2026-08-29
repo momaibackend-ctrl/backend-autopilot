@@ -23,6 +23,8 @@ export interface ScopeSignal {
   evidence: string[];
   /** Clauses that mention the subject only to rule it out. */
   negatedEvidence: string[];
+  /** Clauses that name the subject as test coverage or evidence rather than as work to do. */
+  verificationOnlyEvidence: string[];
 }
 
 export interface ScopeClassification {
@@ -54,6 +56,20 @@ const preservationCue = /\b(?:preserve[sd]?|preserving|unchanged|do not change|n
 /** The deliberate, author-written declaration that a contract stays internal. Overrides everything. */
 const internalOnlyCue = /\binternal[_\- ]?only\b/i;
 
+// A clause can name an API or a database while asking for neither. CORE-QA-02's requirements say
+// "retain and rerun all existing ... PostgreSQL migration/repository ... tests" -- a list of test
+// kinds to re-run -- and "treat HTTP/load/E2E evidence as supplemental", a statement about which
+// evidence counts. Read as requests, those two clauses are exactly what made the task owe a
+// migration manifest and an API contract it was never meant to produce, and plain negation does
+// not catch them: neither clause contains a refusal, they simply are not asking for anything.
+//
+// The guard is the implementation verb. A clause that talks about tests, coverage or evidence
+// without one is describing verification, not work; "add a REST endpoint and its contract tests"
+// keeps its verb and so keeps reading as intent.
+const verificationContext = /\btests?\b|\btested\b|\bsuites?\b|\bcoverage\b|\bevidence\b|\bartifacts?\b|\bci\b|\bcriterion\b/i;
+const implementationVerb =
+  /\b(?:add|adds|adding|implement|implements|implementing|expose|exposes|exposing|create|creates|creating|introduce|introduces|introducing|build|builds|building|define|defines|defining|write|writes|writing|provide|provides|providing|publish|publishes|publishing|migrate|migrates|migrating)\b/i;
+
 /** Sentence and list-item boundaries; a requirement bullet is its own clause. */
 export function clauses(text: string): string[] {
   return text
@@ -70,14 +86,16 @@ function negatesSubject(clause: string, subjectIndex: number): boolean {
 function signal(text: string, matches: (clause: string) => number, override: boolean): ScopeSignal {
   const evidence: string[] = [];
   const negatedEvidence: string[] = [];
+  const verificationOnlyEvidence: string[] = [];
   for (const clause of clauses(text)) {
     const index = matches(clause);
     if (index < 0) continue;
     if (override || negatesSubject(clause, index)) negatedEvidence.push(clause);
+    else if (verificationContext.test(clause) && !implementationVerb.test(clause)) verificationOnlyEvidence.push(clause);
     else evidence.push(clause);
   }
-  const mentioned = evidence.length + negatedEvidence.length > 0;
-  return { mentioned, intended: evidence.length > 0, evidence, negatedEvidence };
+  const mentioned = evidence.length + negatedEvidence.length + verificationOnlyEvidence.length > 0;
+  return { mentioned, intended: evidence.length > 0, evidence, negatedEvidence, verificationOnlyEvidence };
 }
 
 function apiIndex(clause: string): number {

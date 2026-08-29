@@ -65,6 +65,34 @@ describe("scope classification", () => {
     expect(scope.database.intended).toBe(true);
   });
 
+  it("does not read a list of test kinds as a request to change what they test", () => {
+    // Verbatim from CORE-QA-02 requirement 7. A roster of suites to re-run is not a migration, but
+    // it names PostgreSQL and migrations, and negation does not catch it -- the clause refuses
+    // nothing, it simply asks for nothing. This is what made the task owe a MIGRATION_MANIFEST.
+    const scope = classifyScope(
+      "Retain and rerun all existing unit, domain invariant, architecture, contract, PostgreSQL migration/repository, Redis, object-storage, durable-job, privacy/security, regression and existing supplemental runtime tests in the normal CI suite.",
+    );
+    expect(scope.database.mentioned).toBe(true);
+    expect(scope.database.intended).toBe(false);
+    expect(scope.database.verificationOnlyEvidence.length).toBe(1);
+  });
+
+  it("does not read a statement about which evidence counts as a request for that surface", () => {
+    // Verbatim from CORE-QA-02 requirement 8, which produced MISSING_API_CONTRACT.
+    const scope = classifyScope(
+      "Treat HTTP/load/E2E evidence as supplemental for this Core QA task rather than the primary domain-correctness criterion; do not invent new network tests.",
+    );
+    expect(scope.api.intended).toBe(false);
+  });
+
+  it("keeps reading a surface as intended when the clause carries an implementation verb", () => {
+    // The demotion above must not swallow real work that mentions its own tests in one breath.
+    const scope = classifyScope("Add a REST endpoint for exports and its contract tests.");
+    expect(scope.api.intended).toBe(true);
+    const db = classifyScope("Implement the PostgreSQL migration and its migration tests.");
+    expect(db.database.intended).toBe(true);
+  });
+
   it("reads 'restart' as recovery language rather than a REST mention", () => {
     // Present verbatim in the standard requirement template on every task.
     const scope = classifyScope(

@@ -123,6 +123,14 @@ export function buildVerificationProfile(
 ): VerificationProfile {
   const apiRefusal = scope.api.negatedEvidence[0];
   const dbRefusal = scope.database.negatedEvidence[0];
+  // A subject named only as coverage is neither asked for nor refused, and saying "the task rules
+  // it out" would misdescribe the requirement. It gets its own wording.
+  const notAsked = (subject: string, refusal: string | undefined, coverage: string | undefined, absent: string) =>
+    refusal
+      ? `the task rules ${subject} out: "${truncate(refusal)}"`
+      : coverage
+        ? `the task names ${subject} only as test coverage, not as work to do: "${truncate(coverage)}"`
+        : absent;
   return {
     profileVersion: VERIFICATION_PROFILE_VERSION,
     decisions: [
@@ -140,14 +148,14 @@ export function buildVerificationProfile(
         scope.api.intended,
         scope.api.intended
           ? scope.api.evidence.slice(0, 2).map(truncate)
-          : [apiRefusal ? `the task rules a public HTTP surface out: "${truncate(apiRefusal)}"` : "the task describes no HTTP surface"],
+          : [notAsked("a public HTTP surface", apiRefusal, scope.api.verificationOnlyEvidence[0], "the task describes no HTTP surface")],
       ),
       decide(
         "MIGRATION_MANIFEST",
         scope.database.intended,
         scope.database.intended
           ? scope.database.evidence.slice(0, 2).map(truncate)
-          : [dbRefusal ? `the task rules a schema change out: "${truncate(dbRefusal)}"` : "the task describes no schema change"],
+          : [notAsked("a schema change", dbRefusal, scope.database.verificationOnlyEvidence[0], "the task describes no schema change")],
       ),
     ],
   };
