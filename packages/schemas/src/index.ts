@@ -509,6 +509,101 @@ export const rebaseStatusSchema = z.enum([
 ]);
 export type RebaseStatus = z.infer<typeof rebaseStatusSchema>;
 
+// An epic is judged at one commit, not as the union of its members' past verdicts. Each dimension
+// resolves to PASS, NOT_APPLICABLE with a reason, or BLOCKED with a remediation -- there is no
+// state in which a dimension is quietly absent.
+export const epicDimensionSchema = z.enum([
+  "CONTRACTS",
+  "CONSUMERS",
+  "INVARIANTS",
+  "INTEGRATION_DEPENDENCIES",
+  "SECURITY_PRIVACY",
+  "MIGRATIONS",
+  "JOURNEYS",
+]);
+export type EpicDimension = z.infer<typeof epicDimensionSchema>;
+
+export const epicDimensionResultSchema = z.object({
+  dimension: epicDimensionSchema,
+  requirement: z.enum(["REQUIRED", "NOT_APPLICABLE"]),
+  status: z.enum(["PASS", "BLOCKED", "NOT_APPLICABLE"]),
+  reasons: z.array(z.string().min(1)).min(1),
+  remediation: z.string().optional(),
+  /** Artifact ids for the checks that actually ran at the epic head SHA. */
+  evidenceIds: z.array(z.string()),
+});
+export type EpicDimensionResult = z.infer<typeof epicDimensionResultSchema>;
+
+export const epicMemberViewSchema = z.object({
+  taskId: z.string(),
+  externalKey: z.string(),
+  state: z.string(),
+  /** The commit this member's own evidence was verified at, from its final manifest. */
+  verifiedCommitSha: z.string().optional(),
+  settled: z.boolean(),
+  planned: z.boolean(),
+  /** False whenever the member was verified at an earlier commit than the epic head. */
+  evidenceIsAtHead: z.boolean(),
+});
+export type EpicMemberView = z.infer<typeof epicMemberViewSchema>;
+
+// One dimension's result from a run that actually happened, recorded against the exact commit it
+// ran on. Keeping this separate from the report keeps the gate a pure function: whatever performs
+// the aggregate run -- a workflow, or an operator recording a verified external run -- records
+// evidence, and the report is derived. `source` is mandatory so a verdict is always attributable.
+export const epicDimensionEvidenceSchema = z.object({
+  epicKey: z.string().min(1),
+  dimension: epicDimensionSchema,
+  commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+  passed: z.boolean(),
+  /** What produced this result: a workflow run URL, a job id, or an equally checkable reference. */
+  source: z.string().min(1),
+  detail: z.string().optional(),
+  recordedAt: z.string().datetime(),
+});
+export type EpicDimensionEvidence = z.infer<typeof epicDimensionEvidenceSchema>;
+
+export const epicVerificationReportSchema = z.object({
+  epicKey: z.string().min(1),
+  headSha: z.string().min(1),
+  result: z.enum(["PASS", "BLOCKED"]),
+  members: z.array(epicMemberViewSchema),
+  dimensions: z.array(epicDimensionResultSchema),
+  blockers: z.array(z.object({ code: z.string(), reason: z.string(), remediation: z.string() })),
+  generatedAt: z.string().datetime(),
+});
+export type EpicVerificationReport = z.infer<typeof epicVerificationReportSchema>;
+
+export const epicEvidenceRecordInputSchema = z.object({
+  projectId: z.string().uuid(),
+  operationId: z.string().min(8),
+  epicKey: z.string().min(1),
+  dimension: epicDimensionSchema,
+  commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+  passed: z.boolean(),
+  source: z.string().min(1),
+  detail: z.string().optional(),
+});
+export type EpicEvidenceRecordInput = z.infer<typeof epicEvidenceRecordInputSchema>;
+
+export const epicVerifyInputSchema = z
+  .object({
+    projectId: z.string().uuid(),
+    epicKey: z.string().min(1),
+    // Required on purpose. An epic is judged at one named commit; resolving "whatever main is right
+    // now" would let the subject of the verdict move underneath the run.
+    headSha: z.string().regex(/^[0-9a-f]{40}$/),
+    taskIds: z.array(z.string().uuid()).optional(),
+    externalKeyPrefix: z.string().min(1).optional(),
+    /** Persist the report as an artifact. Omitted or false makes this a read-only preflight. */
+    persist: z.boolean().optional(),
+    operationId: z.string().min(8).optional(),
+  })
+  .refine((value) => Boolean(value.taskIds?.length) || Boolean(value.externalKeyPrefix), {
+    message: "Either taskIds or externalKeyPrefix must select the epic's members",
+  });
+export type EpicVerifyInput = z.infer<typeof epicVerifyInputSchema>;
+
 export const artifactKindSchema = z.enum([
   "REQUIREMENTS_SNAPSHOT",
   "IMPLEMENTATION_PLAN",
@@ -537,6 +632,8 @@ export const artifactKindSchema = z.enum([
   "CONSOLE_SNAPSHOT",
   "WORKSPACE_QUARANTINE",
   "REBASE_REPORT",
+  "EPIC_DIMENSION_EVIDENCE",
+  "EPIC_VERIFICATION_REPORT",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({

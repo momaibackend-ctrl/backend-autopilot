@@ -12,6 +12,7 @@
     "../../../packages/core/src/execution-reconciliation.js": "../../../packages/core/src/execution-reconciliation.ts",
     "../../../packages/core/src/scope-classification.js": "../../../packages/core/src/scope-classification.ts",
     "../../../packages/core/src/verification-profile.js": "../../../packages/core/src/verification-profile.ts",
+    "../../../packages/core/src/epic-verification.js": "../../../packages/core/src/epic-verification.ts",
     "../../../packages/audit/src/index.js": "../../../packages/audit/src/index.ts",
     "../../../packages/artifact-store/src/index.js": "../../../packages/artifact-store/src/index.ts",
     "../../../packages/policy-engine/src/index.js": "../../../packages/policy-engine/src/index.ts",
