@@ -123,9 +123,9 @@ export class AsyncExecutionCoordinator {
     const resolved=await Promise.all(dependsOn.map(relationship=>resolvePredecessorEvidence(this.store,projectId,relationship.targetTaskId)));
     const unresolved=dependsOn.filter((relationship,index)=>!resolved[index]).map(relationship=>relationship.targetTaskId);
     if(unresolved.length){
-      const reason=`Dependency evidence unresolved for: ${unresolved.join(', ')} (each predecessor must be READY with a verified FINAL_CHANGE_MANIFEST and a SUCCEEDED run on an autopilot/* branch)`;
+      const reason=`Dependency evidence unresolved for: ${unresolved.join(', ')} (each predecessor must be READY with a verified FINAL_CHANGE_MANIFEST and an exact matching autopilot/* run)`;
       await this.workflow.transition(task,'BLOCKED',reason,actor);
-      throw new DependencyBlocked('Required task dependencies have no verifiable execution base',{blocked:unresolved,blockingReport:{code:'DEPENDENCY_EVIDENCE_UNRESOLVED',reason,remediation:'Complete and verify each predecessor or repair its FINAL_CHANGE_MANIFEST/run evidence before dispatch.'}});
+      throw new DependencyBlocked('Required task dependencies have no verifiable execution base',{blocked:unresolved,blockingReport:{code:'DEPENDENCY_EVIDENCE_UNRESOLVED',reason,remediation:'Complete and formally verify each predecessor or repair its FINAL_CHANGE_MANIFEST/run evidence before dispatch.'}});
     }
     const evidence=resolved as {taskId:string;branch:string;commitSha:string}[];
     const distinct=new Map<string,{branch:string;commitSha:string}>();
@@ -149,7 +149,11 @@ async function resolvePredecessorEvidence(store:StateStore,projectId:string,pred
   const verifiedCommitSha=(manifest?.content as {verifiedCommitSha?:string}|undefined)?.verifiedCommitSha;
   if(!verifiedCommitSha)return undefined;
   const runs=await store.listRuns(projectId,predecessorTaskId);
-  const run=runs.find(candidate=>candidate.status==='SUCCEEDED'&&candidate.commitSha===verifiedCommitSha&&candidate.branch?.startsWith('autopilot/'));
+  // READY + FINAL_CHANGE_MANIFEST is the formal verification boundary. A historical runner status
+  // must not become a second truth source after a later formal review verified this exact commit.
+  // Keep the actual code identity strict: only an autopilot branch carrying the manifest SHA is a
+  // valid dependency base.
+  const run=[...runs].reverse().find(candidate=>candidate.commitSha===verifiedCommitSha&&candidate.branch?.startsWith('autopilot/'));
   if(!run?.branch)return undefined;
   return {taskId:predecessorTaskId,branch:run.branch,commitSha:verifiedCommitSha};
 }
