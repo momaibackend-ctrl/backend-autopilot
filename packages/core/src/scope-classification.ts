@@ -34,13 +34,17 @@ export interface ScopeClassification {
 
 // Word-bounded so "restart" -- present in the standard dirty-workspace-recovery requirement on
 // every single task -- cannot masquerade as a REST mention.
-const apiPattern = /\bapis?\b|\brest\b|\bendpoints?\b|\bopenapi\b|\bhttp\b/i;
+// Hyphen-aware boundaries, not plain \b. A hyphenated compound is one lexeme: "direct-table-access"
+// names a test rule, not a database table, and "rest-parameter" is not a REST surface. \b treats
+// the hyphen as a boundary and so reads the fragment as the whole word, which is how a task that
+// touches no database at all was made to owe a MIGRATION_MANIFEST.
+const apiPattern = /(?<![\w-])(?:apis?|rest|endpoints?|openapi|http)(?![\w-])/i;
 
 // `schema` is deliberately absent: Zod schemas, JSON schemas and artifact schemas appear in nearly
 // every control-plane task and have nothing to do with a database. It is admitted below only in a
 // clause that also carries real database vocabulary.
-const databasePattern = /\bdatabase\b|\bpostgres(?:ql)?\b|\bmigrations?\b|\bsql\b|\btables?\b|\bcolumns?\b/i;
-const qualifiedSchemaPattern = /\b(?:database|db|table|sql|postgres(?:ql)?)\s+schema\b|\bschema\s+(?:migrations?|changes?)\b/i;
+const databasePattern = /(?<![\w-])(?:database|postgres(?:ql)?|migrations?|sql|tables?|columns?)(?![\w-])/i;
+const qualifiedSchemaPattern = /(?<![\w-])(?:database|db|table|sql|postgres(?:ql)?)\s+schema(?![\w-])|(?<![\w-])schema\s+(?:migrations?|changes?)(?![\w-])/i;
 
 // A cue that appears BEFORE the subject in the same clause turns a mention into a refusal. After
 // the subject it means something else entirely ("add a REST endpoint; it is not optional"), so
