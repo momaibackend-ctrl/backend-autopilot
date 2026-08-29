@@ -25,6 +25,8 @@ import {
   taskCreateSchema,
   implementationPlanSchema,
   executeInputSchema,
+  epicEvidenceRecordInputSchema,
+  epicVerifyInputSchema,
   PlatformVersions,
   type ArchitectureRule,
   type Artifact,
@@ -50,6 +52,7 @@ import { AuditLog } from "../../audit/src/index.js";
 import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
 import { taskReadiness } from "./task-readiness.js";
 import { classifyScope } from "./scope-classification.js";
+import { buildEpicVerification, type EpicHeadEvidence, type EpicMemberInput } from "./epic-verification.js";
 import { buildVerificationProfile, requiredSuites, requiresLayer } from "./verification-profile.js";
 
 // What each independent-review check actually wants. Without this the gate reported only a check
@@ -815,6 +818,105 @@ export class AutopilotService {
       ...(plan?.success ? { plan: plan.data } : {}),
       requiresExternalCi,
     });
+  }
+  /**
+   * Whether a set of tasks composes into a verified system at one named commit.
+   *
+   * Deliberately not derived from the members' own verdicts: each of those was true about the
+   * commit that member ran on, and an epic is a claim about a commit none of them ran on. See
+   * epic-verification.ts. Read-only unless `persist` is set, so an agent can ask "what does this
+   * epic still owe?" at any point without writing anything.
+   */
+  async epicVerification(input: unknown, actor = "release-agent") {
+    const data = epicVerifyInputSchema.parse(input);
+    const project = await this.requiredProject(data.projectId);
+    const tasks = await this.store.listTasks(project.id);
+    const selected = data.taskIds?.length
+      ? tasks.filter((task) => data.taskIds!.includes(task.id))
+      : tasks.filter((task) => task.externalKey.startsWith(data.externalKeyPrefix!));
+    if (!selected.length)
+      throw new NotFound("No tasks match the epic selection", {
+        epicKey: data.epicKey,
+        ...(data.externalKeyPrefix ? { externalKeyPrefix: data.externalKeyPrefix } : {}),
+      });
+    const artifacts = await this.store.listArtifacts(project.id);
+    const members: EpicMemberInput[] = selected.map((task) => {
+      const own = artifacts.filter((artifact) => artifact.taskId === task.id && artifact.status === "AVAILABLE");
+      const planArtifact = [...own].reverse().find((artifact) => artifact.kind === "IMPLEMENTATION_PLAN");
+      const parsed = planArtifact ? implementationPlanSchema.safeParse(planArtifact.content) : undefined;
+      return { task, artifacts: own, ...(parsed?.success ? { plan: parsed.data } : {}) };
+    });
+    // Evidence is project-scoped rather than task-scoped: it belongs to the epic run, not to any
+    // member. Only rows for this epic key are considered.
+    const headEvidence: EpicHeadEvidence[] = artifacts
+      .filter((artifact) => artifact.kind === "EPIC_DIMENSION_EVIDENCE" && artifact.status === "AVAILABLE")
+      .map((artifact) => ({ artifact, content: artifact.content as Record<string, unknown> }))
+      .filter((row) => row.content["epicKey"] === data.epicKey)
+      .map((row) => ({
+        dimension: row.content["dimension"] as EpicHeadEvidence["dimension"],
+        artifactId: row.artifact.id,
+        commitSha: String(row.content["commitSha"] ?? ""),
+        passed: row.content["passed"] === true,
+        ...(row.content["detail"] ? { detail: String(row.content["detail"]) } : {}),
+      }));
+    const report = buildEpicVerification({
+      epicKey: data.epicKey,
+      headSha: data.headSha,
+      members,
+      headEvidence,
+      generatedAt: this.clock.now(),
+    });
+    if (!data.persist) return { report, persisted: null };
+    const artifact = await this.artifacts.write(project.id, "EPIC_VERIFICATION_REPORT", report);
+    await this.audit.record({
+      actor,
+      action: "epic.verification",
+      projectId: project.id,
+      input: { epicKey: data.epicKey, headSha: data.headSha, members: report.members.length },
+      result: { result: report.result, blockers: report.blockers.map((blocker) => blocker.code), artifactId: artifact.id },
+      reason: "Aggregate epic verification evaluated at a single head commit",
+      correlationId: data.operationId ?? artifact.id,
+    });
+    return { report, persisted: artifact };
+  }
+  /**
+   * Records one dimension's result from a run that actually happened. `source` is mandatory so the
+   * verdict is attributable, and the commit is part of the record so it can never be reused for a
+   * later head.
+   */
+  async epicEvidenceRecord(input: unknown, actor = "release-agent") {
+    const data = epicEvidenceRecordInputSchema.parse(input);
+    const project = await this.requiredProject(data.projectId);
+    const existing = (await this.store.listArtifacts(project.id)).find((artifact) => {
+      if (artifact.kind !== "EPIC_DIMENSION_EVIDENCE" || artifact.status !== "AVAILABLE") return false;
+      const content = artifact.content as Record<string, unknown>;
+      return (
+        content["epicKey"] === data.epicKey &&
+        content["dimension"] === data.dimension &&
+        content["commitSha"] === data.commitSha &&
+        content["source"] === data.source
+      );
+    });
+    if (existing) return { artifact: existing, idempotentReplay: true };
+    const artifact = await this.artifacts.write(project.id, "EPIC_DIMENSION_EVIDENCE", {
+      epicKey: data.epicKey,
+      dimension: data.dimension,
+      commitSha: data.commitSha,
+      passed: data.passed,
+      source: data.source,
+      ...(data.detail ? { detail: data.detail } : {}),
+      recordedAt: this.clock.now(),
+    });
+    await this.audit.record({
+      actor,
+      action: "epic.evidence.recorded",
+      projectId: project.id,
+      input: { epicKey: data.epicKey, dimension: data.dimension, commitSha: data.commitSha, source: data.source },
+      result: { passed: data.passed, artifactId: artifact.id },
+      reason: "Aggregate epic check result bound to its exact commit",
+      correlationId: data.operationId,
+    });
+    return { artifact, idempotentReplay: false };
   }
   async artifactList(projectId: string, taskId?: string) {
     await this.requiredProject(projectId);

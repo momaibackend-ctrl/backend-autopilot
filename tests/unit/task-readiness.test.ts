@@ -135,3 +135,50 @@ describe("task readiness and the generative layer", () => {
     expect(readiness.blockers).toEqual([]);
   });
 });
+
+describe("task readiness after merge", () => {
+  const merged = (url = "https://github.com/owner/repo/pull/46") =>
+    artifact("PULL_REQUEST_REPORT", { merged: true, pullRequest: { url, number: 46 } });
+
+  it("stops advertising 'open a pull request' for work already merged", () => {
+    // task_status kept offering superadmin_sandbox_pull_request_open for a READY task whose PR was
+    // already merged. Harmless to execution, but it reads as unfinished business and invites a
+    // second pull request for the same branch.
+    const commit = "f121f544a43f7231db08cb977398aada46383fba";
+    const readiness = taskReadiness({
+      task: task("READY"),
+      artifacts: [...everyGateArtifact(commit), merged()],
+      runs: [run(commit)],
+      requiresExternalCi: true,
+    });
+    expect(readiness.nextAction).toBeNull();
+    expect(readiness.completion?.state).toBe("MERGED");
+    expect(readiness.completion?.pullRequestUrl).toContain("/pull/46");
+    expect(readiness.gateArtifactsComplete).toBe(true);
+  });
+
+  it("still points at the merge tools while the pull request is only open", () => {
+    const commit = "0091c74048c83a63d0306b0d23f86a4872a320d7";
+    const readiness = taskReadiness({
+      task: task("READY"),
+      artifacts: [...everyGateArtifact(commit), artifact("PULL_REQUEST_REPORT", { merged: false, pullRequest: { url: "u", number: 1 } })],
+      runs: [run(commit)],
+      requiresExternalCi: true,
+    });
+    expect(readiness.completion).toBeNull();
+    expect(readiness.nextAction?.tool).toBe("superadmin_sandbox_pull_request_open");
+  });
+
+  it("accepts an explicit merged flag for tasks whose evidence predates PULL_REQUEST_REPORT", () => {
+    const commit = "2126121b4fd8f65248ac8e7806fe6153a9ca396d";
+    const readiness = taskReadiness({
+      task: task("READY"),
+      artifacts: everyGateArtifact(commit),
+      runs: [run(commit)],
+      requiresExternalCi: true,
+      merged: true,
+    });
+    expect(readiness.nextAction).toBeNull();
+    expect(readiness.completion?.state).toBe("MERGED");
+  });
+});

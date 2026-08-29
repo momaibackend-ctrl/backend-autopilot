@@ -40,6 +40,12 @@ export interface TaskReadiness {
    * layer at the gate. Null until the task is planned.
    */
   verification: VerificationProfile | null;
+  /**
+   * Set once the task's pull request is recorded as merged. The formal path is then over, and
+   * `nextAction` is null: continuing to advertise "open a pull request" for work already in the
+   * default branch reads as unfinished business and invites a duplicate PR.
+   */
+  completion: { state: "MERGED"; pullRequestUrl?: string; reason: string } | null;
   /** True only when every formal gate artifact exists; merge tools additionally require READY. */
   gateArtifactsComplete: boolean;
 }
@@ -131,10 +137,20 @@ export function taskReadiness(input: {
   requiresExternalCi: boolean;
   /** True when a job for this task is still queued or running. */
   executionInFlight?: boolean;
+  /** Overrides merge detection for callers that also resolve delivery from the audit trail. */
+  merged?: boolean;
 }): TaskReadiness {
   const artifacts = input.artifacts.filter((value) => value.taskId === input.task.id && value.status === "AVAILABLE");
   const runs = input.runs.filter((value) => value.taskId === input.task.id);
   const latestCommit = runs.at(-1)?.commitSha;
+
+  // The durable merge record. `merged` is passed explicitly by callers that resolve delivery from
+  // audit as well (older tasks predate PULL_REQUEST_REPORT); otherwise the artifact is the source.
+  const mergedReport = [...artifacts]
+    .reverse()
+    .find((artifact) => artifact.kind === "PULL_REQUEST_REPORT" && (artifact.content as { merged?: boolean }).merged === true);
+  const merged = input.merged ?? Boolean(mergedReport);
+  const pullRequestUrl = (mergedReport?.content as { pullRequest?: { url?: string } } | undefined)?.pullRequest?.url;
 
   const required = requiredGateArtifacts(input.plan, input.requiresExternalCi);
   const present = required.filter((kind) => artifacts.some((a) => a.kind === kind));
@@ -161,10 +177,17 @@ export function taskReadiness(input: {
     taskId: input.task.id,
     externalKey: input.task.externalKey,
     state: input.task.state,
-    nextAction: input.executionInFlight ? null : (nextByState[input.task.state] ?? null),
+    nextAction: merged || input.executionInFlight ? null : (nextByState[input.task.state] ?? null),
     blockers,
     gateArtifacts: { required, present, missing },
     verification: input.plan?.verification ?? null,
+    completion: merged
+      ? {
+          state: "MERGED",
+          ...(pullRequestUrl ? { pullRequestUrl } : {}),
+          reason: "The pull request for this task is recorded as merged into the default branch; nothing in the formal path remains.",
+        }
+      : null,
     gateArtifactsComplete: blockers.length === 0,
   };
 }
