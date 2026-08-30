@@ -157,7 +157,15 @@ export interface EpicVerificationInput {
   members: EpicMemberInput[];
   /** Every evidence row recorded for this epic, at any commit. Staleness is decided here, not by the caller. */
   headEvidence: EpicHeadEvidence[];
-  /** The repository the epic releases from; falls back to whatever the evidence ran against. */
+  /**
+   * Restricts the verdict to evidence that actually ran against this repository.
+   *
+   * This is a FILTER, never a label. It used to be neither: it was written straight onto the
+   * report, so a caller could stamp any repository name onto a verdict, and a rename made that
+   * visible -- asking about the new name returned a PASS built entirely from evidence recorded
+   * against the old one. The reported repository is now always read back out of the evidence that
+   * was actually counted.
+   */
   repository?: string | undefined;
   generatedAt: string;
 }
@@ -278,9 +286,17 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
 
   const unassessed = invariantsUnassessed(effective);
 
+  // Evidence is bound to a commit AND to the repository it ran against. Matching on the commit
+  // alone would let a verdict be assembled from runs against something else that happens to share
+  // a SHA -- and, after a repository is renamed, would quietly answer a question about the new
+  // name with evidence from the old one.
+  const headEvidence = input.repository
+    ? input.headEvidence.filter((evidence) => evidence.provenance.repository === input.repository)
+    : input.headEvidence;
+
   const dimensions: EpicDimensionResult[] = epicDimensions.map((dimension): EpicDimensionResult => {
     const required = requirementFor(dimension, effective);
-    const passingAtHead = input.headEvidence.filter(
+    const passingAtHead = headEvidence.filter(
       (evidence) => evidence.dimension === dimension && evidence.commitSha === input.headSha && evidence.passed,
     );
     // "Nobody was asked" only blocks while nobody has answered either. Once a run at the head
@@ -312,7 +328,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         evidence: [],
       };
     }
-    const atHead = input.headEvidence.filter(
+    const atHead = headEvidence.filter(
       (evidence) => evidence.dimension === dimension && evidence.commitSha === input.headSha,
     );
     const passing = passingAtHead;
@@ -378,7 +394,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
 
   // Evidence recorded for this epic at any OTHER commit. Never counted, always listed: an operator
   // looking at a blocked epic needs to see that a check did run, just not on the commit in question.
-  const staleEvidence = input.headEvidence
+  const staleEvidence = headEvidence
     .filter((evidence) => evidence.commitSha !== input.headSha)
     .map((evidence) => ({ ...ref(evidence), dimension: evidence.dimension, commitSha: evidence.commitSha }));
 
@@ -395,8 +411,11 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         ? "CI_VERIFIED"
         : "OPERATOR_ASSERTED";
 
-  const repository =
-    input.repository ?? input.headEvidence.find((evidence) => evidence.commitSha === input.headSha)?.provenance.repository;
+  // Read back out of the evidence, never echoed from the input. `findLast` so a repository that has
+  // been re-verified reports under the identity of its most recent run rather than its first.
+  const repository = headEvidence
+    .filter((evidence) => evidence.commitSha === input.headSha)
+    .at(-1)?.provenance.repository;
 
   return {
     epicKey: input.epicKey,
