@@ -72,16 +72,6 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 20
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: autopilotepic
-          MINIO_ROOT_PASSWORD: autopilotepicsecret
-          MINIO_DEFAULT_BUCKETS: autopilot-epic
-        ports: ["9000:9000"]
-        options: >-
-          --health-cmd "mc ready local || curl -f http://127.0.0.1:9000/minio/health/live"
-          --health-interval 10s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -96,17 +86,30 @@ jobs:
           distribution: temurin
           java-version: '21'
       - run: pnpm install --frozen-lockfile
-      - name: Wait for the disposable object store
+      # Started as a step rather than a service container: a service cannot override the image
+      # command, and the official MinIO image needs `server /data`. The auto-starting bitnami image
+      # avoided that, but it no longer publishes a `latest` tag, so the pull failed before any step
+      # ran at all.
+      - name: Start the disposable object store
         run: |
+          docker run -d --name autopilot-epic-minio             -p 9000:9000             -e MINIO_ROOT_USER="$AUTOPILOT_EPIC_S3_ACCESS_KEY"             -e MINIO_ROOT_PASSWORD="$AUTOPILOT_EPIC_S3_SECRET_KEY"             minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+      - name: Wait for the disposable object store and create its bucket
+        run: |
+          ready=""
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+              ready="yes"
               echo "object storage ready after ${attempt} attempt(s)"
-              exit 0
+              break
             fi
             sleep 2
           done
-          # Not fatal on its own: the runner records an unreachable dependency as an unverified
-          # dimension rather than pretending the epic passed without it.
-          echo "::warning::object storage did not report healthy; storage-backed tests will be recorded as unverified"
+          if [ -z "$ready" ]; then
+            # Not fatal on its own: the runner records an unreachable dependency as an unverified
+            # dimension rather than pretending the epic passed without it.
+            echo "::warning::object storage did not report healthy; storage-backed tests will be recorded as unverified"
+            exit 0
+          fi
+          docker run --rm --network host --entrypoint sh minio/mc:RELEASE.2025-04-16T18-13-26Z -c             "mc alias set epic http://127.0.0.1:9000 $AUTOPILOT_EPIC_S3_ACCESS_KEY $AUTOPILOT_EPIC_S3_SECRET_KEY && mc mb -p epic/$AUTOPILOT_EPIC_S3_BUCKET"             || echo "::warning::bucket creation failed; storage-backed tests will be recorded as unverified"
       - name: Verify the epic at its exact commit
         run: pnpm epic:verify
