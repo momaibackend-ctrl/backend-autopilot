@@ -20,9 +20,38 @@ An epic is judged at one named head commit, and evidence counts only when it was
 
 **Nothing may be silently skipped.** Every dimension resolves to `PASS`, `NOT_APPLICABLE` with a stated reason, or `BLOCKED` with a remediation. There is no fourth state in which a dimension quietly does not appear in the report.
 
-The gate stays a pure function. Whatever performs the aggregate run — a workflow, or an operator recording a verified external run — records an `EPIC_DIMENSION_EVIDENCE` artifact carrying the dimension, the exact commit, the pass/fail result and a mandatory `source` so the verdict is attributable. `superadmin_epic_verify` derives `EPIC_VERIFICATION_REPORT` from those plus the members' own state, and is read-only unless `persist` is set, so an agent can ask "what does this epic still owe?" at any point without writing anything.
+The gate stays a pure function. Whatever performs the aggregate run — a workflow, or an operator recording a verified external run — records an `EPIC_DIMENSION_EVIDENCE` artifact carrying the dimension, the exact commit, the pass/fail result and structured provenance: repository, head SHA, workflow run id and URL, recording actor, artifact hash and runner version.
+
+**Trust is classified by the server, never accepted from the caller.** A free-text `source` field that anyone can set to `"github"` is a label, not a provenance. `sourceType` is therefore derived: evidence recorded by an actor matching the execution runner's own lease-owner format, and carrying a workflow run id, is `TRUSTED_CI`; everything else is `OPERATOR`; rows written before provenance existed read back as `HISTORICAL`. Manual evidence stays permitted — an operator may legitimately be recording a run performed elsewhere — but it can never masquerade as a CI run. The report carries a `trust` verdict of `CI_VERIFIED`, `OPERATOR_ASSERTED`, `MIXED` or `NONE` so the distinction is visible without reading every row.
+
+The report also lists `staleEvidence` — rows recorded for this epic at some other commit — and `missingDimensions`, the required dimensions with no evidence at all. Stale evidence is never counted and never hidden: an operator looking at a blocked epic needs to see that a check did run, just not on the commit in question, and "this ran and failed" is a different problem from "this never ran". `superadmin_epic_verify` derives `EPIC_VERIFICATION_REPORT` from those plus the members' own state, and is read-only unless `persist` is set, so an agent can ask "what does this epic still owe?" at any point without writing anything.
 
 `headSha` is a required input rather than resolved from the integration branch. An epic is a claim about one named commit; resolving "whatever `main` is right now" would let the subject of the verdict move underneath the run.
+
+## The evidence runner
+
+`autopilot-epic-verification.yml` produces what the gate judges. It takes the commit as an explicit
+input and checks it out **detached, verified by `rev-parse` before anything else runs**. A run that
+took half its results from one `main` and half from a `main` that had moved would describe a state
+that never existed — the exact failure the gate exists to end, so reproducing it in the runner would
+be self-defeating. Real disposable PostgreSQL, Redis and object storage come up alongside it,
+because an integration dimension whose tests skipped for want of a database is unverified, not
+passing.
+
+Results are attributed to dimensions by test class convention (`packages/core/src/epic-check-plan.ts`),
+and three things that look like success are refused: no attributed test ran at all, every attributed
+test skipped itself, or the suite passed while the generative layer inside it generated nothing.
+The runner never decides whether the epic passes — it records what ran and hands the verdict back to
+`superadmin_epic_verify`, so it cannot mark its own homework.
+
+The target project's own integration variable names stay out of the control plane. The workflow
+exposes canonical values (`AUTOPILOT_EPIC_POSTGRES_URL` and friends) and the dispatch input carries a
+`serviceEnv` map from the project's names onto them — project data, not Autopilot knowledge.
+
+The runner is dispatched rather than tracked as a durable job. `ExecutionJob` requires a `taskId` and
+an epic has none, so using it would have meant a schema migration for a run whose failure mode is
+already safe: a run that dies writes no evidence, and the gate stays `BLOCKED`. It fails closed, and
+that is the trade — there is no watchdog for a hung epic run, only the absence of a passing verdict.
 
 ## Consequences
 

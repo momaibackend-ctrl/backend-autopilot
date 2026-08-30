@@ -39,6 +39,15 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
   if(parts[1]==='projects'&&parts[3]==='runs'&&request.method==='GET')return json(await runtime.service.runList(projectId!,url.searchParams.get('taskId')??undefined),200,cors);
   if(parts[1]==='projects'&&parts[3]==='runs'&&parts[4]&&request.method==='GET')return json(await runtime.service.runGet(projectId!,parts[4]),200,cors);
   if(parts[1]==='projects'&&parts[3]==='audit'&&request.method==='GET')return json(await runtime.store.listAudit(projectId!),200,cors);
+  // Epic-level verification, published on the same authenticated surface as everything else it
+  // aggregates. Verify is a read: it evaluates evidence, it never runs anything, so a plain
+  // operator may ask what the epic still owes. Recording evidence is a write and carries the
+  // operator's own identity into the provenance, which is what keeps OPERATOR distinguishable
+  // from TRUSTED_CI.
+  if(parts[1]==='projects'&&parts[3]==='epic'&&parts[4]==='verify'&&request.method==='POST')
+    return json(await runtime.service.epicVerification({...await body() as object,projectId},`edge-operator:${viewer.id}`),200,cors);
+  if(parts[1]==='projects'&&parts[3]==='epic'&&parts[4]==='evidence'&&request.method==='POST')
+    return json(await runtime.service.epicEvidenceRecord({...await body() as object,projectId},`edge-operator:${viewer.id}`),201,cors);
   if(path==='/v1/console/overview'&&request.method==='GET')return json(await overview(runtime,viewer),200,cors);
   if(path==='/v1/console/screens'&&request.method==='GET')return json(await runtime.store.listConsoleScreens(),200,cors);
   if(parts[1]==='console'&&parts[2]==='screens'&&parts[3]&&request.method==='GET'){const screen=await runtime.store.getConsoleScreen(parts[3]);if(!screen)throw new NotFound('Console screen not found');return json(screen,200,cors);}

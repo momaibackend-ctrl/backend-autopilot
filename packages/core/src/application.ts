@@ -86,6 +86,13 @@ export interface ServiceDependencies {
   ids?: IdGenerator;
   maxAutoRepairAttempts?: number;
   artifactBlobs?: ArtifactBlobStore;
+  /**
+   * Recognises an actor whose evidence may be classified TRUSTED_CI. The default matches the
+   * execution runner's own lease-owner format, which is minted inside a GitHub Actions job from
+   * GITHUB_RUN_ID -- a value no MCP caller can present, because the MCP actor is fixed by
+   * deployment configuration rather than supplied per request.
+   */
+  trustedEvidenceActor?: (actor: string) => boolean;
 }
 export class AutopilotService {
   readonly store: StateStore;
@@ -100,6 +107,7 @@ export class AutopilotService {
   private guard = new ArchitectureGuard();
   private reviewer: IndependentReviewer;
   private maxRepairs: number;
+  private isTrustedEvidenceActor: (actor: string) => boolean;
   constructor(private deps: ServiceDependencies) {
     this.store = deps.store;
     this.clock = deps.clock ?? systemClock;
@@ -112,6 +120,7 @@ export class AutopilotService {
     this.audit = new AuditLog(deps.store, this.ids, this.clock);
     this.reviewer = new IndependentReviewer(this.clock);
     this.maxRepairs = deps.maxAutoRepairAttempts ?? 3;
+    this.isTrustedEvidenceActor = deps.trustedEvidenceActor ?? ((actor) => /^github-actions:\d+:\d+$/.test(actor));
   }
   async systemHealth() {
     return {
@@ -852,18 +861,32 @@ export class AutopilotService {
       .filter((artifact) => artifact.kind === "EPIC_DIMENSION_EVIDENCE" && artifact.status === "AVAILABLE")
       .map((artifact) => ({ artifact, content: artifact.content as Record<string, unknown> }))
       .filter((row) => row.content["epicKey"] === data.epicKey)
-      .map((row) => ({
-        dimension: row.content["dimension"] as EpicHeadEvidence["dimension"],
-        artifactId: row.artifact.id,
-        commitSha: String(row.content["commitSha"] ?? ""),
-        passed: row.content["passed"] === true,
-        ...(row.content["detail"] ? { detail: String(row.content["detail"]) } : {}),
-      }));
+      .map((row) => {
+        // Rows written before provenance existed carry no attribution at all. They are read as
+        // HISTORICAL rather than quietly promoted to something checkable.
+        const recorded = row.content["provenance"] as EpicHeadEvidence["provenance"] | undefined;
+        const provenance: EpicHeadEvidence["provenance"] = recorded ?? {
+          sourceType: "HISTORICAL",
+          repository: String(row.content["repository"] ?? "(unrecorded)"),
+          headSha: String(row.content["commitSha"] ?? ""),
+          actor: String(row.content["source"] ?? "(unrecorded)"),
+          createdAt: String(row.content["recordedAt"] ?? row.artifact.createdAt),
+        };
+        return {
+          dimension: row.content["dimension"] as EpicHeadEvidence["dimension"],
+          artifactId: row.artifact.id,
+          commitSha: String(row.content["commitSha"] ?? ""),
+          passed: row.content["passed"] === true,
+          provenance,
+          ...(row.content["detail"] ? { detail: String(row.content["detail"]) } : {}),
+        };
+      });
     const report = buildEpicVerification({
       epicKey: data.epicKey,
       headSha: data.headSha,
       members,
       headEvidence,
+      ...(data.repository ? { repository: data.repository } : {}),
       generatedAt: this.clock.now(),
     });
     if (!data.persist) return { report, persisted: null };
@@ -890,28 +913,42 @@ export class AutopilotService {
     const existing = (await this.store.listArtifacts(project.id)).find((artifact) => {
       if (artifact.kind !== "EPIC_DIMENSION_EVIDENCE" || artifact.status !== "AVAILABLE") return false;
       const content = artifact.content as Record<string, unknown>;
+      const provenance = content["provenance"] as { actor?: string } | undefined;
       return (
         content["epicKey"] === data.epicKey &&
         content["dimension"] === data.dimension &&
         content["commitSha"] === data.commitSha &&
-        content["source"] === data.source
+        provenance?.actor === actor
       );
     });
     if (existing) return { artifact: existing, idempotentReplay: true };
+    // The caller supplies facts; the server decides how far they are trusted. A workflow run id
+    // alone is not enough -- anyone can quote one -- so the recording actor has to be a runner too.
+    const sourceType = data.workflowRunId && this.isTrustedEvidenceActor(actor) ? "TRUSTED_CI" : "OPERATOR";
+    const provenance = {
+      sourceType,
+      repository: data.repository,
+      headSha: data.commitSha,
+      ...(data.workflowRunId ? { workflowRunId: data.workflowRunId } : {}),
+      ...(data.workflowRunUrl ? { workflowRunUrl: data.workflowRunUrl } : {}),
+      actor,
+      ...(data.artifactHash ? { artifactHash: data.artifactHash } : {}),
+      ...(data.runnerVersion ? { runnerVersion: data.runnerVersion } : {}),
+      createdAt: this.clock.now(),
+    };
     const artifact = await this.artifacts.write(project.id, "EPIC_DIMENSION_EVIDENCE", {
       epicKey: data.epicKey,
       dimension: data.dimension,
       commitSha: data.commitSha,
       passed: data.passed,
-      source: data.source,
       ...(data.detail ? { detail: data.detail } : {}),
-      recordedAt: this.clock.now(),
+      provenance,
     });
     await this.audit.record({
       actor,
       action: "epic.evidence.recorded",
       projectId: project.id,
-      input: { epicKey: data.epicKey, dimension: data.dimension, commitSha: data.commitSha, source: data.source },
+      input: { epicKey: data.epicKey, dimension: data.dimension, commitSha: data.commitSha, repository: data.repository, sourceType },
       result: { passed: data.passed, artifactId: artifact.id },
       reason: "Aggregate epic check result bound to its exact commit",
       correlationId: data.operationId,

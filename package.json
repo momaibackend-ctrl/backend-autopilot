@@ -14,6 +14,7 @@
     "deployment:export-state": "tsx scripts/export-deployment-state.ts",
     "deployment:bootstrap": "tsx scripts/deployment-bootstrap.ts",
     "execution:job": "tsx scripts/run-execution-job.ts",
+    "epic:verify": "tsx scripts/run-epic-verification.ts",
     "remote:e2e": "tsx scripts/remote-e2e.ts",
     "pages:e2e": "tsx scripts/pages-e2e.ts",
     "superadmin:remote:e2e": "tsx scripts/superadmin-remote-e2e.ts",
