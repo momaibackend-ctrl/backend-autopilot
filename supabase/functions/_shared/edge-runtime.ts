@@ -13,7 +13,7 @@ export function createEdgeRuntime(){
   const blobs=new SupabaseStorageArtifactBlobStore(url,serviceKey);const service=new AutopilotService({store,execution:{execute:unavailable},tests:{run:unavailable},git:{snapshot:unavailable,branch:unavailable,stage:unavailable,diff:unavailable,commit:unavailable},commands:{drain:()=>[]},artifactBlobs:blobs});
   const dispatcher=new GitHubActionsDispatcher(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'),required('AUTOPILOT_CONTROL_REPOSITORY'),Deno.env.get('AUTOPILOT_EXECUTION_WORKFLOW')??'autopilot-execution.yml',Deno.env.get('AUTOPILOT_CONTROL_REF')??'main');
   const asyncExecution=new AsyncExecutionCoordinator(store,dispatcher);const superadmin=new SuperadminService({store,service,asyncExecution,systemProjectId:required('AUTOPILOT_SYSTEM_PROJECT_ID'),artifactBlobs:blobs,deploymentStatus,secrets:edgeSecretResolver});
-  return {store,service,asyncExecution,superadmin,url,serviceKey,blobs};
+  return {store,service,asyncExecution,superadmin,dispatcher,url,serviceKey,blobs};
 }
 
 // Resolves an HTTP_API resource's registered secretRef name (never a raw value supplied by a

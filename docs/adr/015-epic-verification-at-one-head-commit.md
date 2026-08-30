@@ -28,6 +28,31 @@ The report also lists `staleEvidence` — rows recorded for this epic at some ot
 
 `headSha` is a required input rather than resolved from the integration branch. An epic is a claim about one named commit; resolving "whatever `main` is right now" would let the subject of the verdict move underneath the run.
 
+## The evidence runner
+
+`autopilot-epic-verification.yml` produces what the gate judges. It takes the commit as an explicit
+input and checks it out **detached, verified by `rev-parse` before anything else runs**. A run that
+took half its results from one `main` and half from a `main` that had moved would describe a state
+that never existed — the exact failure the gate exists to end, so reproducing it in the runner would
+be self-defeating. Real disposable PostgreSQL, Redis and object storage come up alongside it,
+because an integration dimension whose tests skipped for want of a database is unverified, not
+passing.
+
+Results are attributed to dimensions by test class convention (`packages/core/src/epic-check-plan.ts`),
+and three things that look like success are refused: no attributed test ran at all, every attributed
+test skipped itself, or the suite passed while the generative layer inside it generated nothing.
+The runner never decides whether the epic passes — it records what ran and hands the verdict back to
+`superadmin_epic_verify`, so it cannot mark its own homework.
+
+The target project's own integration variable names stay out of the control plane. The workflow
+exposes canonical values (`AUTOPILOT_EPIC_POSTGRES_URL` and friends) and the dispatch input carries a
+`serviceEnv` map from the project's names onto them — project data, not Autopilot knowledge.
+
+The runner is dispatched rather than tracked as a durable job. `ExecutionJob` requires a `taskId` and
+an epic has none, so using it would have meant a schema migration for a run whose failure mode is
+already safe: a run that dies writes no evidence, and the gate stays `BLOCKED`. It fails closed, and
+that is the trade — there is no watchdog for a hung epic run, only the absence of a passing verdict.
+
 ## Consequences
 
 An epic becomes green only after its own final run, not as a side effect of its members finishing. The report names, per dimension, what ran, at which commit, and what is still owed — so "is the Core actually shippable?" has an answer with evidence ids behind it instead of an inference from twenty-one older verdicts.

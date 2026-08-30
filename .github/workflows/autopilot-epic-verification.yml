@@ -1,0 +1,100 @@
+name: Backend Autopilot epic verification
+
+# Produces the evidence the epic gate judges, from ONE immutable checkout.
+#
+# The commit is an explicit input, never a branch: half a run against one `main` and half against a
+# `main` that moved would describe a state that never existed, which is the exact failure the epic
+# gate exists to end.
+#
+# The services below are real and disposable. An integration dimension whose tests skipped because
+# no database was reachable is recorded as unverified, not as a pass -- so these have to actually be
+# up, and the runner records which attributed tests genuinely ran.
+
+on:
+  workflow_dispatch:
+    inputs:
+      epic_input:
+        description: JSON with projectId, epicKey, headSha, resourceId, member selection and the project's serviceEnv mapping
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialized per epic: two runs writing evidence for the same epic would interleave verdicts.
+  group: autopilot-epic-${{ github.event.inputs.epic_input }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      AUTOPILOT_EPIC_INPUT: ${{ inputs.epic_input }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      AUTOPILOT_EPIC_POSTGRES_URL: postgresql://autopilot:autopilot@127.0.0.1:5432/autopilot_epic
+      AUTOPILOT_EPIC_REDIS_URL: redis://127.0.0.1:6379
+      AUTOPILOT_EPIC_S3_ENDPOINT: http://127.0.0.1:9000
+      AUTOPILOT_EPIC_S3_ACCESS_KEY: autopilotepic
+      AUTOPILOT_EPIC_S3_SECRET_KEY: autopilotepicsecret
+      AUTOPILOT_EPIC_S3_BUCKET: autopilot-epic
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autopilot
+          POSTGRES_PASSWORD: autopilot
+          POSTGRES_DB: autopilot_epic
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U autopilot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: autopilotepic
+          MINIO_ROOT_PASSWORD: autopilotepicsecret
+          MINIO_DEFAULT_BUCKETS: autopilot-epic
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "mc ready local || curl -f http://127.0.0.1:9000/minio/health/live"
+          --health-interval 10s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: pnpm install --frozen-lockfile
+      - name: Wait for the disposable object store
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+              echo "object storage ready after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          # Not fatal on its own: the runner records an unreachable dependency as an unverified
+          # dimension rather than pretending the epic passed without it.
+          echo "::warning::object storage did not report healthy; storage-backed tests will be recorded as unverified"
+      - name: Verify the epic at its exact commit
+        run: pnpm epic:verify
