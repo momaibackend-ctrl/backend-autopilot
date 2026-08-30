@@ -119,6 +119,13 @@ describe("scope classification", () => {
     expect(classifyScope("Rename the postgres driver settings class.").database.intended).toBe(false);
   });
 
+  it("does not read a URL scheme as a schema change", () => {
+    // The requirement enumerating which spellings a parser must accept named the scheme three
+    // times, and each one read as a database change.
+    const scope = classifyScope("Accept every spelling already accepted: jdbc:postgresql://, postgresql:// and postgres://, with or without userinfo.");
+    expect(scope.database.intended).toBe(false);
+  });
+
   it("still reads a real schema change in a clause that also names a component", () => {
     const scope = classifyScope("Add a column to the accounts table and update the database adapter to read it.");
     expect(scope.database.intended).toBe(true);
