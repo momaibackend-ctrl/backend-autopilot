@@ -46,6 +46,36 @@ describe("secret scanner", () => {
     expect(detectHardcodedSecret("src/x.ts", "const password = \"s3cr3t-real-value-1\";")).toBe(true);
     expect(detectHardcodedSecret("src/x.ts", "credential: 'a-genuinely-long-hardcoded-value'")).toBe(true);
   });
+  it("allows a connection string that documents the shape rather than leaking a target", () => {
+    // The rule this relaxes made one class of code impossible to write. Every fixture in a DSN
+    // parser is credential-shaped by construction, and so is every comment explaining what a
+    // malformed DSN looks like -- the scanner rejected the fix for a real connection-string defect
+    // on the strength of the sentence describing that defect.
+    for (const safe of [
+      "libpq writes credentials as userinfo -- `postgresql://user:password@host/db` -- which JDBC cannot read",
+      "adapter.normalizePostgresUrl('postgresql://autopilot:secret@127.0.0.1:5432/autopilot_epic')",
+      "postgres://svc:p%40ss@db.example:5432/app",
+      "redis://user:pass@localhost:6379",
+      "postgresql://user:pa@ss@host:5432/db",
+    ]) {
+      expect(detectHardcodedSecret("src/x.ts", safe), safe).toBe(false);
+    }
+  });
+
+  it("still blocks a connection string that points at a routable host", () => {
+    for (const leak of [
+      "const url = 'postgres://user:hunterhunterhunter@db.example.com:5432/app';",
+      "DATABASE_URL=postgresql://postgres.abcdefgh:Kd83Jf9Xm2@aws-0-us-east-1.pooler.supabase.com:5432/postgres",
+      "mongodb+srv://root:s3cr3tvalue@cluster0.mongodb.net/prod",
+    ]) {
+      expect(detectHardcodedSecret("src/x.ts", leak), leak).toBe(true);
+    }
+  });
+
+  it("does not treat a username-only url as secret material", () => {
+    expect(detectHardcodedSecret("src/x.ts", "postgres://reader@db.production.internal:5432/app")).toBe(false);
+  });
+
   it("blocks a connection string with embedded credentials", () => {
     expect(detectHardcodedSecret("src/x.ts", "const url = 'postgres://user:hunterhunterhunter@db.example.com:5432/app';")).toBe(true);
   });
