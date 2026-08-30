@@ -8,6 +8,7 @@ const now = "2026-08-30T00:00:00.000Z";
 
 const description = (reference: string, defaultBranch = "main") => ({
   externalReference: reference,
+  repositoryId: `id-${reference}`,
   defaultBranch,
   isEmpty: false,
   visibility: "private",

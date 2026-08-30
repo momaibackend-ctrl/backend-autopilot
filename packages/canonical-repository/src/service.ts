@@ -6,6 +6,8 @@ import { systemClock, uuidGenerator } from '../../core/src/ports.js';
 import { requireProjectGithubRepository } from '../../core/src/repository-guard.js';
 import {
   canonicalRepositoryPlanInputSchema,
+  repositoryRenameInputSchema,
+  repositoryRenamePlanInputSchema,
   canonicalRepositoryPromoteInputSchema,
   canonicalRepositoryRollbackInputSchema,
   repositoryExportInputSchema,
@@ -17,6 +19,7 @@ import {
   type Project,
   type RepositoryExportPlan,
   type RepositoryExportVerification,
+  type RepositoryRenamePlan,
   type Resource,
 } from '../../schemas/src/index.js';
 import {
@@ -25,6 +28,7 @@ import {
   verifyRepositoryExport,
 } from './export.js';
 import { buildDeveloperHandoverReport, requiredHandoverDocuments } from './handover.js';
+import { assertRenamePreservedIdentity, buildRepositoryRenamePlan, RenameIdentityMismatch } from './rename.js';
 import type { GitRepositoryProvider, RepositoryDescription, RepositoryExportDispatcher } from './ports.js';
 import {
   assertPromotionPlanIsCurrent,
@@ -238,6 +242,126 @@ export class CanonicalRepositoryService {
       result:'ROLLED_BACK',
     },'Canonical development repository binding rolled back; no Git history was changed');
     return {canonical:confirmed,rolledBack:written.displaced,reportArtifactId:report.id};
+  }
+
+  // -------------------------------------------------------------------- rename
+
+  /** Read-only. Reports what a rename would do and everything that would stop it. */
+  async renamePlan(input:unknown):Promise<RepositoryRenamePlan>{
+    const data=repositoryRenamePlanInputSchema.parse(input);
+    return this.buildRenamePlan(data.projectId,data.resourceId,data.newName);
+  }
+
+  /**
+   * Renames the repository a project is registered against, and re-points the registration to
+   * follow it.
+   *
+   * Changing a GITHUB_REPOSITORY binding is otherwise refused outright, because re-pointing a
+   * registration is how a project silently starts executing against a repository nobody chose.
+   * This is the one provably-safe case, and it earns the exception by checking it: the provider's
+   * stable repository id, the default branch and the exact head commit must be identical before
+   * and after. If they are not, the registration is left alone and the mismatch is reported.
+   */
+  async renameRepository(input:unknown,actor:string){
+    const data=repositoryRenameInputSchema.parse(input);
+    const project=await this.requireProject(data.projectId);
+    const resource=await this.requireProjectResource(project.id,data.resourceId);
+    if(resource.externalReference!==data.expectedCurrentReference)
+      throw new PolicyViolation('Current repository reference confirmation mismatch',{expected:data.expectedCurrentReference,actual:resource.externalReference});
+
+    const plan=await this.buildRenamePlan(project.id,data.resourceId,data.newName);
+    if(plan.result==='BLOCKED')
+      throw new PolicyViolation('Repository rename is blocked',{blockers:plan.blockers,plan});
+    if(plan.headSha!==data.expectedHeadSha)
+      throw new Conflict('The repository head moved after the rename plan was generated',{expected:data.expectedHeadSha,actual:plan.headSha,blockingReport:{code:'STALE_RENAME_PLAN',reason:'The default branch advanced between planning and rename.',remediation:'Re-run the rename plan and rename with the head it reports.'}});
+    if(!this.deps.repositories)
+      throw new UnsupportedOperation('No Git repository provider is configured in this runtime');
+
+    const before={repositoryId:plan.repositoryId!,defaultBranch:plan.defaultBranch!,headSha:plan.headSha!};
+    const renamed=await this.deps.repositories.rename(resource.externalReference,data.newName);
+    const headAfter=await this.deps.repositories.resolveRef(renamed.externalReference,renamed.defaultBranch);
+    try{
+      assertRenamePreservedIdentity({
+        before,
+        after:{repositoryId:renamed.repositoryId,defaultBranch:renamed.defaultBranch,headSha:headAfter??'',externalReference:renamed.externalReference},
+        expectedReference:plan.targetRepository,
+      });
+    }catch(error){
+      if(error instanceof RenameIdentityMismatch)
+        // Deliberately does NOT update the registration. The provider and the control plane now
+        // disagree, and a human has to see that rather than have it quietly reconciled.
+        throw new InvalidState('The repository was renamed but is not provably the same repository, so the registration was left unchanged',{
+          failures:error.failures,
+          previousRepository:resource.externalReference,
+          observedRepository:renamed.externalReference,
+          blockingReport:{code:'RENAME_IDENTITY_MISMATCH',reason:error.message,remediation:'Inspect the repository at the provider. Do not update the registration until the identity, default branch and head commit are confirmed by hand.'},
+        });
+      throw error;
+    }
+
+    const updatedResource=await this.deps.store.updateResource({...resource,externalReference:renamed.externalReference});
+    // The project's own repository identity is the other place the old name lives. Left behind, it
+    // is exactly the stale binding this platform has been bitten by before.
+    let projectRepositoryUpdated=false;
+    if(project.repository?.resourceId===resource.resourceId){
+      const [owner='',name='']=renamed.externalReference.split('/');
+      await this.deps.store.updateProject({...project,repository:{...project.repository,owner,name,defaultBranch:renamed.defaultBranch},updatedAt:this.clock.now()});
+      projectRepositoryUpdated=true;
+    }
+
+    const report=await this.artifacts.write(project.id,'REPOSITORY_RENAME_REPORT',{
+      projectId:project.id,
+      generatedAt:this.clock.now(),
+      operationId:data.operationId,
+      actor,
+      reason:data.reason,
+      resourceId:resource.resourceId,
+      previousRepository:resource.externalReference,
+      newRepository:renamed.externalReference,
+      repositoryId:renamed.repositoryId,
+      defaultBranch:renamed.defaultBranch,
+      headSha:headAfter!,
+      gitHistoryTouched:false,
+      registrationUpdated:true,
+      projectRepositoryUpdated,
+    });
+    await this.recordAudit(project.id,'repository.rename',actor,data.operationId,{
+      sourceResourceId:resource.resourceId,
+      targetResourceId:resource.resourceId,
+      sourceRepository:resource.externalReference,
+      targetRepository:renamed.externalReference,
+      repositoryId:renamed.repositoryId,
+      sourceSha:before.headSha,
+      targetSha:headAfter??null,
+      defaultBranch:renamed.defaultBranch,
+      result:'RENAMED',
+    },'Registered repository renamed in place; identity, history and head commit verified unchanged');
+    return {status:'RENAMED',resource:updatedResource,previousRepository:resource.externalReference,newRepository:renamed.externalReference,repositoryId:renamed.repositoryId,headSha:headAfter,defaultBranch:renamed.defaultBranch,projectRepositoryUpdated,reportArtifactId:report.id,plan};
+  }
+
+  private async buildRenamePlan(projectId:string,resourceId:string,newName:string):Promise<RepositoryRenamePlan>{
+    const project=await this.requireProject(projectId);
+    const resource=await this.requireProjectResource(project.id,resourceId);
+    const owner=resource.externalReference.split('/')[0]??'';
+    const [description,activeCanonical]=await Promise.all([
+      this.describe(resource.externalReference),
+      this.deps.store.getActiveCanonicalRepository(project.id),
+    ]);
+    const headSha=description?.defaultBranch?await this.deps.repositories?.resolveRef(resource.externalReference,description.defaultBranch):undefined;
+    const targetNameTaken=`${owner}/${newName}`===resource.externalReference
+      ? false
+      : (await this.deps.repositories?.exists(`${owner}/${newName}`))??false;
+    return buildRepositoryRenamePlan({
+      project,
+      resource,
+      newName,
+      ...(description?{description}:{}),
+      ...(this.deps.repositories?{}:{providerError:'No Git repository provider is configured in this runtime'}),
+      ...(headSha?{headSha}:{}),
+      targetNameTaken,
+      ...(activeCanonical?{activeCanonical}:{}),
+      now:this.clock.now(),
+    });
   }
 
   // ------------------------------------------------------------------- export

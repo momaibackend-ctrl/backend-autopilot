@@ -11,6 +11,12 @@ import type { RepositoryRef } from '../../schemas/src/index.js';
 export interface RepositoryDescription {
   /** Identity as the provider itself reports it, so a registration that drifted is detectable. */
   externalReference:string;
+  /**
+   * The provider's STABLE object id, which survives a rename. This is what makes "the registration
+   * followed a rename" distinguishable from "the registration was re-pointed at a different
+   * repository" -- the second is the failure the GitHub rebinding guard exists to prevent.
+   */
+  repositoryId:string;
   defaultBranch:string;
   isEmpty:boolean;
   visibility:string;
@@ -30,6 +36,14 @@ export interface GitRepositoryProvider {
   readFile(repository:string,path:string,ref?:string):Promise<string|undefined>;
   /** Entry paths in a directory at a ref, or undefined when the directory does not exist. */
   listDirectory(repository:string,path:string,ref?:string):Promise<string[]|undefined>;
+  /**
+   * Renames the repository in place, keeping its id, history, refs, issues and pull requests.
+   * Takes the new NAME only: an owner is never accepted, so a rename cannot move a repository
+   * between accounts or organizations.
+   */
+  rename(repository:string,newName:string):Promise<RepositoryDescription>;
+  /** Whether a repository exists at all, used to refuse a rename onto an occupied name. */
+  exists(repository:string):Promise<boolean>;
 }
 
 /** Starts the fixed control-repository workflow that performs a Git-level transfer. */
