@@ -5,8 +5,8 @@ const token=required("AUTOPILOT_SUPERADMIN_MCP_TOKEN");
 const githubToken=required("AUTOPILOT_GITHUB_TOKEN");
 const projectId=process.env["AUTOPILOT_KOTLIN_E2E_PROJECT_ID"]??"ac6d68be-272c-4bca-aab1-cd1a442cf960";
 const resourceId=process.env["AUTOPILOT_KOTLIN_E2E_RESOURCE_ID"]??"b6cb5344-cc45-46a1-bff7-d8520a7b69b8";
-const repository=process.env["AUTOPILOT_KOTLIN_E2E_REPOSITORY"]??"momaibackend-ctrl/kotlin-sandbox";
-if(repository!=="momaibackend-ctrl/kotlin-sandbox")throw new Error("Kotlin E2E is restricted to the explicit sandbox repository");
+const repository=process.env["AUTOPILOT_KOTLIN_E2E_REPOSITORY"]??"momaibackend-ctrl/momna-backend";
+if(repository!=="momaibackend-ctrl/momna-backend")throw new Error("Kotlin E2E is restricted to the explicit registered Momna backend repository");
 
 const suffix=Date.now().toString(36).toLowerCase();
 let taskId:string|undefined;

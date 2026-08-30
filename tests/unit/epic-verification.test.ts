@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEpicVerification, outstandingDimensions, resolveSupersession, type EpicMemberInput } from "../../packages/core/src/epic-verification.js";
+import { buildEpicVerification, epicDimensions, outstandingDimensions, resolveSupersession, type EpicMemberInput } from "../../packages/core/src/epic-verification.js";
 import type { Artifact, ImplementationPlan, Task } from "../../packages/schemas/src/index.js";
 
 const HEAD = "f121f544a43f7231db08cb977398aada46383fba";
@@ -61,6 +61,12 @@ const ci = (dimension: string, commitSha: string, passed = true, detail?: string
 const operator = (dimension: string, commitSha: string, passed = true) => ({
   ...ci(dimension, commitSha, passed),
   provenance: { sourceType: "OPERATOR" as const, repository: REPO, headSha: commitSha, actor: "release-agent", createdAt: NOW },
+});
+
+/** The same trusted CI claim, but recorded against a different repository. */
+const ciFrom = (repository: string, dimension: string, commitSha: string, passed = true) => ({
+  ...ci(dimension, commitSha, passed),
+  provenance: { ...ci(dimension, commitSha, passed).provenance, repository },
 });
 
 const supersedes = (member: EpicMemberInput, target: EpicMemberInput): EpicMemberInput => ({
@@ -360,5 +366,90 @@ describe("epic verification", () => {
     expect(outstanding).toContain("CONTRACTS");
     expect(outstanding).toContain("CONSUMERS");
     expect(outstanding).toContain("JOURNEYS");
+  });
+});
+
+// A repository rename is what made this visible: asking about the new name returned a PASS built
+// entirely from evidence recorded against the old one, because evidence was bound to a commit but
+// never to a repository -- and the reported repository was simply the caller's own input echoed
+// back onto an immutable artifact.
+describe("epic evidence is bound to the repository it ran against", () => {
+  const HEAD = "f".repeat(40);
+  const RENAMED = "momaibackend-ctrl/momna-backend";
+  const members = [member("CORE-BE-01", HEAD)];
+  const all = epicDimensions.map((value) => ci(value, HEAD));
+
+  it("reads the reported repository out of the evidence, never out of the caller's input", () => {
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE",
+      headSha: HEAD,
+      members,
+      headEvidence: all,
+      generatedAt: NOW,
+    });
+    expect(report.result).toBe("PASS");
+    expect(report.repository).toBe(REPO);
+  });
+
+  it("refuses to answer about one repository using another repository's evidence", () => {
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE",
+      headSha: HEAD,
+      members,
+      headEvidence: all,
+      repository: RENAMED,
+      generatedAt: NOW,
+    });
+    // Every dimension's evidence ran against the old name, so under the new one nothing is proven.
+    expect(report.result).toBe("BLOCKED");
+    expect(report.repository).toBeUndefined();
+    // Every dimension this epic actually requires is now unproven; the ones that never applied
+    // stay NOT_APPLICABLE rather than being counted as missing.
+    const required = report.dimensions.filter((value) => value.requirement === "REQUIRED");
+    expect(required.length).toBeGreaterThan(0);
+    expect(report.missingDimensions.length).toBe(required.length);
+    expect(report.dimensions.every((value) => value.evidence.length === 0)).toBe(true);
+  });
+
+  it("passes for the new identity once a run has actually happened against it", () => {
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE",
+      headSha: HEAD,
+      members,
+      headEvidence: [...all, ...epicDimensions.map((value) => ciFrom(RENAMED, value, HEAD))],
+      repository: RENAMED,
+      generatedAt: NOW,
+    });
+    expect(report.result).toBe("PASS");
+    expect(report.repository).toBe(RENAMED);
+    // The filter is what makes this honest: only the re-run evidence was counted.
+    for (const value of report.dimensions)
+      for (const evidence of value.evidence) expect(evidence.provenance.repository).toBe(RENAMED);
+  });
+
+  it("reports a re-verified repository under its most recent identity, not its first", () => {
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE",
+      headSha: HEAD,
+      members,
+      // Old-name evidence first, new-name evidence appended by the later run.
+      headEvidence: [...all, ...epicDimensions.map((value) => ciFrom(RENAMED, value, HEAD))],
+      generatedAt: NOW,
+    });
+    expect(report.result).toBe("PASS");
+    expect(report.repository).toBe(RENAMED);
+  });
+
+  it("cannot be made to claim a repository nothing ever ran against", () => {
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE",
+      headSha: HEAD,
+      members,
+      headEvidence: all,
+      repository: "attacker/somewhere-else",
+      generatedAt: NOW,
+    });
+    expect(report.result).toBe("BLOCKED");
+    expect(report.repository).not.toBe("attacker/somewhere-else");
   });
 });
