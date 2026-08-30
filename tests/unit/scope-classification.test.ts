@@ -109,6 +109,21 @@ describe("scope classification", () => {
     expect(classifyScope("Treat HTTP/load evidence as supplemental.").api.mentioned).toBe(true);
   });
 
+  it("does not read a component's name as a schema change", () => {
+    // Found on a real task: fixing a connection-string parser was made to owe a MIGRATION_MANIFEST
+    // because its description says "the database adapter". The word after decides which is meant.
+    const scope = classifyScope(
+      "The database adapter accepts a legal libpq PostgreSQL URL and converts it into a JDBC URL that cannot connect.",
+    );
+    expect(scope.database.intended).toBe(false);
+    expect(classifyScope("Rename the postgres driver settings class.").database.intended).toBe(false);
+  });
+
+  it("still reads a real schema change in a clause that also names a component", () => {
+    const scope = classifyScope("Add a column to the accounts table and update the database adapter to read it.");
+    expect(scope.database.intended).toBe(true);
+  });
+
   it("reads 'restart' as recovery language rather than a REST mention", () => {
     // Present verbatim in the standard requirement template on every task.
     const scope = classifyScope(
