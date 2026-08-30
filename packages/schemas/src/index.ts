@@ -523,14 +523,43 @@ export const epicDimensionSchema = z.enum([
 ]);
 export type EpicDimension = z.infer<typeof epicDimensionSchema>;
 
+// Where a verdict came from. Classified by the server from the recording actor, never accepted
+// from the caller: a free-text "source" that anyone can set to "github" is a label, not a
+// provenance. Manual evidence stays permitted -- it just cannot masquerade as a CI run.
+export const evidenceSourceTypeSchema = z.enum(["TRUSTED_CI", "OPERATOR", "HISTORICAL", "UNKNOWN"]);
+export type EvidenceSourceType = z.infer<typeof evidenceSourceTypeSchema>;
+
+export const epicEvidenceProvenanceSchema = z.object({
+  sourceType: evidenceSourceTypeSchema,
+  /** The repository the check ran against, so evidence cannot drift between targets. */
+  repository: z.string().min(1),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/),
+  workflowRunId: z.string().optional(),
+  workflowRunUrl: z.string().optional(),
+  /** The service principal or operator identity that recorded it. */
+  actor: z.string().min(1),
+  /** Digest of the run output the verdict was read from, when the runner captured one. */
+  artifactHash: z.string().optional(),
+  runnerVersion: z.string().optional(),
+  createdAt: z.string().datetime(),
+});
+export type EpicEvidenceProvenance = z.infer<typeof epicEvidenceProvenanceSchema>;
+
+export const epicEvidenceRefSchema = z.object({
+  artifactId: z.string(),
+  provenance: epicEvidenceProvenanceSchema,
+  detail: z.string().optional(),
+});
+export type EpicEvidenceRef = z.infer<typeof epicEvidenceRefSchema>;
+
 export const epicDimensionResultSchema = z.object({
   dimension: epicDimensionSchema,
   requirement: z.enum(["REQUIRED", "NOT_APPLICABLE"]),
   status: z.enum(["PASS", "BLOCKED", "NOT_APPLICABLE"]),
   reasons: z.array(z.string().min(1)).min(1),
   remediation: z.string().optional(),
-  /** Artifact ids for the checks that actually ran at the epic head SHA. */
-  evidenceIds: z.array(z.string()),
+  /** The checks that actually ran at the epic head SHA, each with where it came from. */
+  evidence: z.array(epicEvidenceRefSchema),
 });
 export type EpicDimensionResult = z.infer<typeof epicDimensionResultSchema>;
 
@@ -556,19 +585,25 @@ export const epicDimensionEvidenceSchema = z.object({
   dimension: epicDimensionSchema,
   commitSha: z.string().regex(/^[0-9a-f]{40}$/),
   passed: z.boolean(),
-  /** What produced this result: a workflow run URL, a job id, or an equally checkable reference. */
-  source: z.string().min(1),
   detail: z.string().optional(),
-  recordedAt: z.string().datetime(),
+  provenance: epicEvidenceProvenanceSchema,
 });
 export type EpicDimensionEvidence = z.infer<typeof epicDimensionEvidenceSchema>;
 
 export const epicVerificationReportSchema = z.object({
   epicKey: z.string().min(1),
+  /** The repository the epic is released from, taken from the evidence that ran against it. */
+  repository: z.string().optional(),
   headSha: z.string().min(1),
   result: z.enum(["PASS", "BLOCKED"]),
+  /** Whether the passing evidence came from CI, from an operator's assertion, or from both. */
+  trust: z.enum(["CI_VERIFIED", "OPERATOR_ASSERTED", "MIXED", "NONE"]),
   members: z.array(epicMemberViewSchema),
   dimensions: z.array(epicDimensionResultSchema),
+  /** Evidence recorded for this epic at some OTHER commit; listed so it is visible, never counted. */
+  staleEvidence: z.array(epicEvidenceRefSchema.extend({ dimension: epicDimensionSchema, commitSha: z.string() })),
+  /** Required dimensions with no passing evidence at the head commit. */
+  missingDimensions: z.array(epicDimensionSchema),
   blockers: z.array(z.object({ code: z.string(), reason: z.string(), remediation: z.string() })),
   generatedAt: z.string().datetime(),
 });
@@ -581,8 +616,14 @@ export const epicEvidenceRecordInputSchema = z.object({
   dimension: epicDimensionSchema,
   commitSha: z.string().regex(/^[0-9a-f]{40}$/),
   passed: z.boolean(),
-  source: z.string().min(1),
+  repository: z.string().min(1),
   detail: z.string().optional(),
+  // Provenance facts only. `sourceType` is deliberately absent: the server classifies it from the
+  // recording actor, so a caller cannot declare its own verdict trusted.
+  workflowRunId: z.string().optional(),
+  workflowRunUrl: z.string().optional(),
+  artifactHash: z.string().optional(),
+  runnerVersion: z.string().optional(),
 });
 export type EpicEvidenceRecordInput = z.infer<typeof epicEvidenceRecordInputSchema>;
 
@@ -593,6 +634,7 @@ export const epicVerifyInputSchema = z
     // Required on purpose. An epic is judged at one named commit; resolving "whatever main is right
     // now" would let the subject of the verdict move underneath the run.
     headSha: z.string().regex(/^[0-9a-f]{40}$/),
+    repository: z.string().min(1).optional(),
     taskIds: z.array(z.string().uuid()).optional(),
     externalKeyPrefix: z.string().min(1).optional(),
     /** Persist the report as an artifact. Omitted or false makes this a read-only preflight. */

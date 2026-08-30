@@ -1,4 +1,4 @@
-import type { Artifact, EpicDimension, EpicDimensionResult, EpicVerificationReport, ImplementationPlan, Task } from "../../schemas/src/index.js";
+import type { Artifact, EpicDimension, EpicDimensionResult, EpicEvidenceProvenance, EpicEvidenceRef, EpicVerificationReport, ImplementationPlan, Task } from "../../schemas/src/index.js";
 import { requiresLayer } from "./verification-profile.js";
 
 // Whether a set of individually-green tasks composes into a green system.
@@ -37,7 +37,7 @@ export interface EpicMemberInput {
   artifacts: Artifact[];
 }
 
-/** One aggregate check performed at the epic head SHA, whatever produced it. */
+/** One aggregate check performed for this epic, whatever produced it and whenever. */
 export interface EpicHeadEvidence {
   dimension: EpicDimension;
   artifactId: string;
@@ -46,6 +46,7 @@ export interface EpicHeadEvidence {
   passed: boolean;
   /** What ran, in the target project's own terms -- suite names, service containers, journey ids. */
   detail?: string;
+  provenance: EpicEvidenceProvenance;
 }
 
 export interface EpicVerificationInput {
@@ -53,8 +54,15 @@ export interface EpicVerificationInput {
   /** The single commit the whole epic is being judged at, normally the integration branch head. */
   headSha: string;
   members: EpicMemberInput[];
+  /** Every evidence row recorded for this epic, at any commit. Staleness is decided here, not by the caller. */
   headEvidence: EpicHeadEvidence[];
+  /** The repository the epic releases from; falls back to whatever the evidence ran against. */
+  repository?: string | undefined;
   generatedAt: string;
+}
+
+function ref(evidence: EpicHeadEvidence): EpicEvidenceRef {
+  return { artifactId: evidence.artifactId, provenance: evidence.provenance, ...(evidence.detail ? { detail: evidence.detail } : {}) };
 }
 
 const dimensionRemediation: Record<EpicDimension, string> = {
@@ -170,7 +178,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         ],
         remediation:
           "Re-plan those members so each records a verification profile, then re-run this gate. A member that genuinely carries no invariant will say so with its reason, which is a different claim from silence.",
-        evidenceIds: [],
+        evidence: [],
       };
     }
     if (!required) {
@@ -179,7 +187,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         requirement: "NOT_APPLICABLE" as const,
         status: "NOT_APPLICABLE" as const,
         reasons: [notApplicableReason(dimension, input.members.length)],
-        evidenceIds: [] as string[],
+        evidence: [],
       };
     }
     const atHead = input.headEvidence.filter(
@@ -191,8 +199,10 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         dimension,
         requirement: "REQUIRED" as const,
         status: "PASS" as const,
-        reasons: passing.map((evidence) => evidence.detail ?? `verified at ${input.headSha}`),
-        evidenceIds: passing.map((evidence) => evidence.artifactId),
+        reasons: passing.map(
+          (evidence) => `${evidence.provenance.sourceType}: ${evidence.detail ?? `verified at ${input.headSha}`}`,
+        ),
+        evidence: passing.map(ref),
       };
     }
     const failed = atHead.filter((evidence) => !evidence.passed);
@@ -212,7 +222,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
       status: "BLOCKED" as const,
       reasons,
       remediation: dimensionRemediation[dimension],
-      evidenceIds: failed.map((evidence) => evidence.artifactId),
+      evidence: failed.map(ref),
     };
   });
 
@@ -238,12 +248,40 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
     });
   }
 
+  // Evidence recorded for this epic at any OTHER commit. Never counted, always listed: an operator
+  // looking at a blocked epic needs to see that a check did run, just not on the commit in question.
+  const staleEvidence = input.headEvidence
+    .filter((evidence) => evidence.commitSha !== input.headSha)
+    .map((evidence) => ({ ...ref(evidence), dimension: evidence.dimension, commitSha: evidence.commitSha }));
+
+  const passingSources = new Set(
+    dimensions.flatMap((dimension) =>
+      dimension.status === "PASS" ? dimension.evidence.map((value) => value.provenance.sourceType) : [],
+    ),
+  );
+  const trust: EpicVerificationReport["trust"] = passingSources.size === 0
+    ? "NONE"
+    : passingSources.size > 1
+      ? "MIXED"
+      : passingSources.has("TRUSTED_CI")
+        ? "CI_VERIFIED"
+        : "OPERATOR_ASSERTED";
+
+  const repository =
+    input.repository ?? input.headEvidence.find((evidence) => evidence.commitSha === input.headSha)?.provenance.repository;
+
   return {
     epicKey: input.epicKey,
+    ...(repository ? { repository } : {}),
     headSha: input.headSha,
     result: blockers.length ? "BLOCKED" : "PASS",
+    trust,
     members,
     dimensions,
+    staleEvidence,
+    missingDimensions: dimensions
+      .filter((dimension) => dimension.status === "BLOCKED" && dimension.evidence.length === 0)
+      .map((dimension) => dimension.dimension),
     blockers,
     generatedAt: input.generatedAt,
   };

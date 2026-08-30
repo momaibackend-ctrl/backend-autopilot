@@ -40,6 +40,29 @@ const member = (externalKey: string, verifiedSha: string, over: Partial<EpicMemb
 const dimension = (report: ReturnType<typeof buildEpicVerification>, name: string) =>
   report.dimensions.find((value) => value.dimension === name)!;
 
+const REPO = "momaibackend-ctrl/kotlin-sandbox";
+/** Evidence as a trusted CI runner records it. */
+const ci = (dimension: string, commitSha: string, passed = true, detail?: string) => ({
+  dimension: dimension as never,
+  artifactId: `art-${dimension}`,
+  commitSha,
+  passed,
+  ...(detail ? { detail } : {}),
+  provenance: {
+    sourceType: "TRUSTED_CI" as const,
+    repository: REPO,
+    headSha: commitSha,
+    workflowRunId: "33279000000",
+    actor: "github-actions:33279000000:1",
+    createdAt: NOW,
+  },
+});
+/** The same claim, asserted by a person instead. */
+const operator = (dimension: string, commitSha: string, passed = true) => ({
+  ...ci(dimension, commitSha, passed),
+  provenance: { sourceType: "OPERATOR" as const, repository: REPO, headSha: commitSha, actor: "release-agent", createdAt: NOW },
+});
+
 describe("epic verification", () => {
   it("refuses to call an epic green just because every member is green", () => {
     // The exact CORE-BE-01..21 situation. Twenty-one members, every one READY with its own passing
@@ -65,7 +88,7 @@ describe("epic verification", () => {
       epicKey: "CORE-BE",
       headSha: HEAD,
       members,
-      headEvidence: required.map((d) => ({ dimension: d, artifactId: `art-${d}`, commitSha: HEAD, passed: true, detail: `${d} suite green at head` })),
+      headEvidence: required.map((d) => ci(d, HEAD, true, `${d} suite green at head`)),
       generatedAt: NOW,
     });
     expect(report.result).toBe("PASS");
@@ -73,7 +96,9 @@ describe("epic verification", () => {
     // Members are still stale in their own right; the epic is green because the epic ran, not
     // because the members did.
     expect(report.members.every((value) => value.evidenceIsAtHead)).toBe(false);
-    expect(dimension(report, "CONTRACTS").evidenceIds).toEqual(["art-CONTRACTS"]);
+    expect(dimension(report, "CONTRACTS").evidence.map((e) => e.artifactId)).toEqual(["art-CONTRACTS"]);
+    expect(report.trust).toBe("CI_VERIFIED");
+    expect(report.repository).toBe(REPO);
   });
 
   it("rejects evidence produced at any other commit, however recent", () => {
@@ -82,11 +107,14 @@ describe("epic verification", () => {
       epicKey: "CORE-BE",
       headSha: HEAD,
       members,
-      headEvidence: [{ dimension: "CONTRACTS", artifactId: "art-1", commitSha: "c".repeat(40), passed: true, detail: "green, but not at head" }],
+      headEvidence: [ci("CONTRACTS", "c".repeat(40), true, "green, but not at head")],
       generatedAt: NOW,
     });
     expect(dimension(report, "CONTRACTS").status).toBe("BLOCKED");
     expect(report.result).toBe("BLOCKED");
+    // Never counted, but never hidden either: an operator has to see that a check did run.
+    expect(report.staleEvidence).toHaveLength(1);
+    expect(report.staleEvidence[0]!.commitSha).toBe("c".repeat(40));
   });
 
   it("reports a failed epic run as the failure it was, not as missing evidence", () => {
@@ -95,13 +123,13 @@ describe("epic verification", () => {
       epicKey: "CORE-BE",
       headSha: HEAD,
       members,
-      headEvidence: [{ dimension: "CONSUMERS", artifactId: "art-2", commitSha: HEAD, passed: false, detail: "diary module no longer resolves the timeline contract" }],
+      headEvidence: [ci("CONSUMERS", HEAD, false, "diary module no longer resolves the timeline contract")],
       generatedAt: NOW,
     });
     const consumers = dimension(report, "CONSUMERS");
     expect(consumers.status).toBe("BLOCKED");
     expect(consumers.reasons.join(" ")).toContain("no longer resolves the timeline contract");
-    expect(consumers.evidenceIds).toEqual(["art-2"]);
+    expect(consumers.evidence.map((e) => e.artifactId)).toEqual(["art-CONSUMERS"]);
   });
 
   it("gives every dimension a verdict, so nothing can be silently skipped", () => {
@@ -181,13 +209,47 @@ describe("epic verification", () => {
     expect(report.blockers.find((b) => b.code === "EPIC_MEMBER_NOT_READY")?.reason).toContain("CORE-BE-02 (IMPLEMENTING)");
   });
 
+  it("says whether a pass came from CI or from a person asserting it", () => {
+    // Manual evidence is permitted -- an operator may have run the suites elsewhere and be
+    // recording a real result. What is not permitted is for that to be indistinguishable from a
+    // CI run, which is all a free-text source="github" ever gave you.
+    const members = [member("A", HEAD), member("B", HEAD)];
+    const required = ["CONTRACTS", "CONSUMERS", "INTEGRATION_DEPENDENCIES", "SECURITY_PRIVACY", "JOURNEYS"] as const;
+    const asserted = buildEpicVerification({
+      epicKey: "E", headSha: HEAD, members, headEvidence: required.map((d) => operator(d, HEAD)), generatedAt: NOW,
+    });
+    expect(asserted.result).toBe("PASS");
+    expect(asserted.trust).toBe("OPERATOR_ASSERTED");
+    expect(dimension(asserted, "CONTRACTS").reasons[0]).toContain("OPERATOR");
+
+    const mixed = buildEpicVerification({
+      epicKey: "E", headSha: HEAD, members,
+      headEvidence: [ci("CONTRACTS", HEAD), ...required.slice(1).map((d) => operator(d, HEAD))],
+      generatedAt: NOW,
+    });
+    expect(mixed.trust).toBe("MIXED");
+  });
+
+  it("lists which required dimensions have no evidence at all, separately from failed ones", () => {
+    const members = [member("A", HEAD), member("B", HEAD)];
+    const report = buildEpicVerification({
+      epicKey: "E", headSha: HEAD, members,
+      headEvidence: [ci("CONTRACTS", HEAD, false, "contract suite failed")],
+      generatedAt: NOW,
+    });
+    // CONTRACTS ran and failed; the rest never ran. Both block, but they are not the same problem.
+    expect(report.missingDimensions).not.toContain("CONTRACTS");
+    expect(report.missingDimensions).toContain("CONSUMERS");
+    expect(report.missingDimensions).toContain("JOURNEYS");
+  });
+
   it("names exactly which dimensions an epic run still has to cover", () => {
     const members = [member("CORE-BE-01", "a".repeat(40)), member("CORE-BE-02", "b".repeat(40))];
     const report = buildEpicVerification({
       epicKey: "CORE-BE",
       headSha: HEAD,
       members,
-      headEvidence: [{ dimension: "SECURITY_PRIVACY", artifactId: "art-sec", commitSha: HEAD, passed: true }],
+      headEvidence: [ci("SECURITY_PRIVACY", HEAD)],
       generatedAt: NOW,
     });
     const outstanding = outstandingDimensions(report);
