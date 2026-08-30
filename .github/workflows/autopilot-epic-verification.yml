@@ -49,7 +49,11 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
       AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
-      AUTOPILOT_EPIC_POSTGRES_URL: postgresql://autopilot:autopilot@127.0.0.1:5432/autopilot_epic
+      # Credentials as query parameters, not as userinfo. A consumer that reaches PostgreSQL over
+      # JDBC cannot use the libpq "user:password@host" form -- the driver reads the whole
+      # "user:password@host" as the hostname and fails with UnknownHostException. Both forms are
+      # spelled "postgresql://", which is what makes this worth stating rather than guessing at.
+      AUTOPILOT_EPIC_POSTGRES_URL: postgresql://127.0.0.1:5432/autopilot_epic?user=autopilot&password=autopilot
       AUTOPILOT_EPIC_REDIS_URL: redis://127.0.0.1:6379
       AUTOPILOT_EPIC_S3_ENDPOINT: http://127.0.0.1:9000
       AUTOPILOT_EPIC_S3_ACCESS_KEY: autopilotepic
