@@ -165,7 +165,14 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
 
   const dimensions: EpicDimensionResult[] = epicDimensions.map((dimension): EpicDimensionResult => {
     const required = requirementFor(dimension, input.members);
-    if (dimension === "INVARIANTS" && !required && unassessed.length) {
+    const passingAtHead = input.headEvidence.filter(
+      (evidence) => evidence.dimension === dimension && evidence.commitSha === input.headSha && evidence.passed,
+    );
+    // "Nobody was asked" only blocks while nobody has answered either. Once a run at the head
+    // commit has actually exercised the generative layer and passed, the question of whether the
+    // members declared it is moot -- it was performed. Blocking anyway would be the mirror of the
+    // silent skip: refusing to count evidence that exists.
+    if (dimension === "INVARIANTS" && !required && unassessed.length && !passingAtHead.length) {
       return {
         dimension,
         requirement: "REQUIRED",
@@ -181,7 +188,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         evidence: [],
       };
     }
-    if (!required) {
+    if (!required && !passingAtHead.length) {
       return {
         dimension,
         requirement: "NOT_APPLICABLE" as const,
@@ -193,7 +200,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
     const atHead = input.headEvidence.filter(
       (evidence) => evidence.dimension === dimension && evidence.commitSha === input.headSha,
     );
-    const passing = atHead.filter((evidence) => evidence.passed);
+    const passing = passingAtHead;
     if (passing.length) {
       return {
         dimension,

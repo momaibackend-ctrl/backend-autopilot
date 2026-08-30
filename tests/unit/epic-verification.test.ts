@@ -185,6 +185,25 @@ describe("epic verification", () => {
     expect(invariants.remediation).toContain("Re-plan");
   });
 
+  it("counts a check that actually ran even when the members were never asked for it", () => {
+    // Found on the first fully green epic run: every dimension passed, INVARIANTS included -- 14
+    // properties, 8600 generated cases, trusted CI -- and the epic was still BLOCKED on INVARIANTS
+    // because the members predated verification profiles. Refusing evidence that exists is the
+    // mirror image of the silent skip, and just as wrong.
+    const legacy = [
+      member("CORE-BE-01", "a".repeat(40), { plan: legacyPlan() }),
+      member("CORE-BE-02", "b".repeat(40), { plan: legacyPlan() }),
+    ];
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE", headSha: HEAD, members: legacy,
+      headEvidence: [ci("INVARIANTS", HEAD, true, "14 properties generated 8600 cases")],
+      generatedAt: NOW,
+    });
+    const invariants = dimension(report, "INVARIANTS");
+    expect(invariants.status).toBe("PASS");
+    expect(report.missingDimensions).not.toContain("INVARIANTS");
+  });
+
   it("still reports a genuine not-applicable once every member has been asked", () => {
     const members = [member("A", HEAD), member("B", HEAD)];
     const report = buildEpicVerification({ epicKey: "ASKED", headSha: HEAD, members, headEvidence: [], generatedAt: NOW });
