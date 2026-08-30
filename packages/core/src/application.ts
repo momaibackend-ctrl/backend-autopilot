@@ -853,7 +853,15 @@ export class AutopilotService {
       const own = artifacts.filter((artifact) => artifact.taskId === task.id && artifact.status === "AVAILABLE");
       const planArtifact = [...own].reverse().find((artifact) => artifact.kind === "IMPLEMENTATION_PLAN");
       const parsed = planArtifact ? implementationPlanSchema.safeParse(planArtifact.content) : undefined;
-      return { task, artifacts: own, ...(parsed?.success ? { plan: parsed.data } : {}) };
+      const contained = input && typeof input === "object" && "containment" in input
+        ? (input as { containment?: Record<string, boolean> }).containment?.[task.id]
+        : undefined;
+      return {
+        task,
+        artifacts: own,
+        ...(parsed?.success ? { plan: parsed.data } : {}),
+        ...(contained === undefined ? {} : { verifiedCommitContainedInHead: contained }),
+      };
     });
     // Evidence is project-scoped rather than task-scoped: it belongs to the epic run, not to any
     // member. Only rows for this epic key are considered.

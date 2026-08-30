@@ -28,6 +28,31 @@ The report also lists `staleEvidence` — rows recorded for this epic at some ot
 
 `headSha` is a required input rather than resolved from the integration branch. An epic is a claim about one named commit; resolving "whatever `main` is right now" would let the subject of the verdict move underneath the run.
 
+## Supersession
+
+A member that was replaced is still history, and history has to stay true. The gate counted
+`CORE-BE-05` (IMPLEMENTING), `06` (PLANNED) and `11` (FAILED) as unfinished members of the epic while
+`CORE-BE-05-FINAL`, `06-FINAL` and `11-FINAL` sat `READY` with explicit `SUPERSEDES` edges — so the
+epic was blocked and the stated reason, "three members are not finished", was simply untrue.
+
+Forcing the old tasks to `READY` would falsify the record of what actually happened to them. Instead
+the epic's composition is resolved: a member superseded by another member **of the same epic** keeps
+its real state, appears in the report as `supersededBy`, and stops counting toward the readiness
+verdict; the replacement is judged in its place. Chains resolve to their end (`A ← B ← C` counts `C`).
+A cycle blocks, and two active members claiming to supersede the same one block as ambiguous —
+neither may be resolved by guessing.
+
+Resolution is by explicit relationship only. A `-FINAL` suffix is a convention someone happens to
+follow, and reading it as a relationship would let a rename silently drop a member out of an epic's
+verdict. A replacement outside the selected member set is likewise ignored: the epic as selected does
+not contain the work that replaced it, and saying otherwise would report a system nobody assembled.
+
+The report carries `effectiveMembers` and `supersededMembers`. Separately, the runner asks git whether
+each effective member's verified commit is actually reachable from the head — a member green about
+work that never landed is not evidence about what is being released — and `EPIC_MEMBER_NOT_IN_HEAD`
+blocks when it demonstrably is not. A commit missing from the clone entirely (squash-merge, deleted
+branch) is left unknown rather than reported as unreachable.
+
 ## The evidence runner
 
 `autopilot-epic-verification.yml` produces what the gate judges. It takes the commit as an explicit
