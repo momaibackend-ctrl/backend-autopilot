@@ -106,11 +106,12 @@ function apiIndex(clause: string): number {
   return clause.search(apiPattern);
 }
 
-// "database adapter", "postgres driver", "connection url" name a piece of code, not a schema
-// change. The word that follows decides which is meant, and without this a task about fixing a
-// connection-string parser was made to owe a MIGRATION_MANIFEST -- the same false REQUIRED as the
-// hyphenated-compound case, arrived at from the other direction.
-const componentQualifier = /^[\s-]*(?:adapters?|drivers?|clients?|connections?|urls?|uris?|pools?|settings?|providers?|dialects?|credentials?|strings?|libraries|library)\b/i;
+// "database adapter", "postgres driver", "connection url" name a piece of code, and
+// "postgresql://" names a URL scheme. None of them is a schema change. What follows the keyword
+// decides which is meant, and without this a task about fixing a connection-string parser was made
+// to owe a MIGRATION_MANIFEST -- twice: once for its description, once for the requirement that
+// enumerates the URL spellings it has to accept.
+const componentQualifier = /^(?::\/\/)|^[\s-]*(?:adapters?|drivers?|clients?|connections?|urls?|uris?|pools?|settings?|providers?|dialects?|credentials?|strings?|libraries|library)\b/i;
 
 function databaseIndex(clause: string): number {
   for (const match of clause.matchAll(new RegExp(databasePattern.source, "gi"))) {
