@@ -8,6 +8,8 @@ import { systemClock, uuidGenerator } from './ports.js';
 import { deterministicTaskBranch } from './branch.js';
 import { detectHardcodedSecret } from '../../secret-scanner/src/index.js';
 import { requireProjectGithubRepository } from './repository-guard.js';
+import { resolveDevelopmentTarget } from '../../canonical-repository/src/target-resolution.js';
+import type { GitRepositoryProvider } from '../../canonical-repository/src/ports.js';
 
 export interface ExecutionJobDispatcher {
   dispatch(job:ExecutionJob):Promise<{workflowRunId?:string;workflowRunUrl?:string}>;
@@ -42,10 +44,15 @@ export class AsyncExecutionCoordinator {
   private readonly policy:PolicyEngine;
   private readonly workflow:WorkflowEngine;
   private readonly audit:AuditLog;
-  constructor(private readonly store:StateStore,private readonly dispatcher:ExecutionJobDispatcher,private readonly clock:Clock=systemClock,private readonly ids:IdGenerator=uuidGenerator){
+  constructor(private readonly store:StateStore,private readonly dispatcher:ExecutionJobDispatcher,private readonly clock:Clock=systemClock,private readonly ids:IdGenerator=uuidGenerator,private readonly repositories?:GitRepositoryProvider){
     this.policy=new PolicyEngine(store);this.workflow=new WorkflowEngine(store,ids,clock);this.audit=new AuditLog(store,ids,clock);
   }
-  async enqueueImplementation(input:unknown,resourceId:string,actor='external-agent'){
+  /**
+   * `resourceId` is optional only because a project with an ACTIVE canonical development
+   * repository resolves its own target. With no canonical binding -- which is every project that
+   * predates one -- the caller still names the repository and behaviour is exactly as before.
+   */
+  async enqueueImplementation(input:unknown,resourceId:string|undefined,actor='external-agent'){
     const data=executeInputSchema.parse(input);const project=await this.store.getProject(data.projectId);if(!project)throw new NotFound('Project not found');let task=await this.store.getTask(data.projectId,data.taskId);if(!task)throw new NotFound('Task not found');
     const existing=await this.store.findExecutionJobByOperation(project.id,data.operationId);
     if(existing){
@@ -53,21 +60,27 @@ export class AsyncExecutionCoordinator {
       return executionResult(existing,existingRun,true);
     }
     if(!['PLANNED','IMPLEMENTING'].includes(task.state))throw new InvalidState('Task must be PLANNED or IMPLEMENTING before remote execution');
-    await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
-    await requireProjectGithubRepository(this.store,project.id,resourceId);
+    const target=await this.resolveTarget(project.id,task.id,resourceId);
+    const targetResourceId=target.resourceId;
+    await this.policy.authorize({project,action:'EXECUTE',resourceId:targetResourceId,requiredPermission:'WRITE',actor});
+    const repository=await requireProjectGithubRepository(this.store,project.id,targetResourceId);
     // A delete carries no content, so there is nothing to scan for secret material.
     for(const change of data.changes)if(change.content!==undefined)assertSafeChange(change.path,change.content);
-    const dependencyBase=await this.resolveDependencyBase(project.id,task,actor);
+    // A canonical repository says WHERE to take the base from; it never means "execute against
+    // whatever main happens to be". The default branch is resolved to an exact commit here and
+    // persisted on the job, so the checkout is pinned the same way a dependency base already is.
+    const dependencyBase=await this.resolveDependencyBase(project.id,task,actor)
+      ??(target.source==='ACTIVE_CANONICAL'?await this.resolveCanonicalBase(repository.externalReference):undefined);
     if(task.state==='PLANNED')task=await this.workflow.transition(task,'IMPLEMENTING','Remote execution job queued',actor);
     const now=this.clock.now();const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,startedAt:now};
     await this.store.saveRun(run);
     const previous=(await this.store.listExecutionJobs(project.id,task.id)).filter(value=>value.commitSha).at(-1);
-    let job:ExecutionJob={id:this.ids.next(),projectId:project.id,taskId:task.id,resourceId,runId:run.id,operationId:data.operationId,kind:task.repairAttempts?'REPAIR':'IMPLEMENTATION',status:'QUEUED',payload:{changes:data.changes},branch:deterministicTaskBranch(task),...(previous?.commitSha?{commitSha:previous.commitSha}:{}),...(dependencyBase?{baseBranch:dependencyBase.branch,baseCommitSha:dependencyBase.commitSha}:{}),attempt:task.repairAttempts,queuedAt:now,updatedAt:now};
+    let job:ExecutionJob={id:this.ids.next(),projectId:project.id,taskId:task.id,resourceId:targetResourceId,runId:run.id,operationId:data.operationId,kind:task.repairAttempts?'REPAIR':'IMPLEMENTATION',status:'QUEUED',payload:{changes:data.changes},branch:deterministicTaskBranch(task),...(previous?.commitSha?{commitSha:previous.commitSha}:{}),...(dependencyBase?{baseBranch:dependencyBase.branch,baseCommitSha:dependencyBase.commitSha}:{}),attempt:task.repairAttempts,queuedAt:now,updatedAt:now};
     job=await this.store.createExecutionJob(job);
-    await this.audit.record({actor,action:'execution.job.queued',projectId:project.id,taskId:task.id,resourceId,input:{operationId:data.operationId,changePaths:data.changes.map(value=>value.path)},result:{jobId:job.id,runId:run.id},reason:'Authorized asynchronous GitHub Actions execution',correlationId:data.operationId});
+    await this.audit.record({actor,action:'execution.job.queued',projectId:project.id,taskId:task.id,resourceId:targetResourceId,input:{operationId:data.operationId,changePaths:data.changes.map(value=>value.path)},result:{jobId:job.id,runId:run.id,repositoryResolution:target.source,repository:repository.externalReference,...(dependencyBase?{baseCommitSha:dependencyBase.commitSha}:{})},reason:'Authorized asynchronous GitHub Actions execution',correlationId:data.operationId});
     try{
       job=await this.store.updateExecutionJob({...job,status:'DISPATCHING',updatedAt:this.clock.now()});const dispatched=await this.dispatcher.dispatch(job);job=await this.store.updateExecutionJob({...job,status:'DISPATCHED',...dispatched,updatedAt:this.clock.now()});
-      await this.audit.record({actor:'github-actions-dispatcher',action:'execution.job.dispatched',projectId:project.id,taskId:task.id,resourceId,input:{jobId:job.id},result:{workflowRunId:job.workflowRunId??'pending'},reason:'Execution workflow accepted the safe job identifier',correlationId:data.operationId});
+      await this.audit.record({actor:'github-actions-dispatcher',action:'execution.job.dispatched',projectId:project.id,taskId:task.id,resourceId:targetResourceId,input:{jobId:job.id},result:{workflowRunId:job.workflowRunId??'pending'},reason:'Execution workflow accepted the safe job identifier',correlationId:data.operationId});
       return executionResult(job,run,false);
     }catch(error){
       const reason=error instanceof Error?error.message:'Unknown dispatch error';
@@ -116,6 +129,30 @@ export class AsyncExecutionCoordinator {
   }
   async get(projectId:string,jobId:string){const job=await this.store.getExecutionJob(projectId,jobId);if(!job)throw new NotFound('Execution job not found');return job;}
   list(projectId:string,taskId?:string){return this.store.listExecutionJobs(projectId,taskId);}
+
+  /**
+   * Resolves which repository this work belongs to, server-side. A task that already executed keeps
+   * its repository; otherwise the project's ACTIVE canonical binding decides, and a caller-supplied
+   * resourceId may only ever confirm it. Projects with no binding are unaffected.
+   */
+  private async resolveTarget(projectId:string,taskId:string,requestedResourceId:string|undefined){
+    const [jobs,active]=await Promise.all([
+      this.store.listExecutionJobs(projectId,taskId),
+      this.store.getActiveCanonicalRepository(projectId),
+    ]);
+    const pinnedResourceId=jobs.at(-1)?.resourceId;
+    return resolveDevelopmentTarget({
+      ...(requestedResourceId?{requestedResourceId}:{}),
+      ...(pinnedResourceId?{pinnedResourceId}:{}),
+      ...(active?{activeCanonical:{id:active.id,resourceId:active.resourceId,repository:active.repositoryIdentity.externalReference}}:{}),
+    });
+  }
+  private async resolveCanonicalBase(repository:string):Promise<{branch:string;commitSha:string}|undefined>{
+    if(!this.repositories)return undefined;
+    const description=await this.repositories.describe(repository);
+    const commitSha=await this.repositories.resolveRef(repository,description.defaultBranch);
+    return commitSha?{branch:description.defaultBranch,commitSha}:undefined;
+  }
 
   private async resolveDependencyBase(projectId:string,task:Task,actor:string):Promise<{branch:string;commitSha:string}|undefined>{
     const dependsOn=task.relationships.filter(relationship=>relationship.type==='DEPENDS_ON');

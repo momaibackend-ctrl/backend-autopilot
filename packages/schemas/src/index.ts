@@ -662,6 +662,280 @@ export const epicVerifyInputSchema = z
   });
 export type EpicVerifyInput = z.infer<typeof epicVerifyInputSchema>;
 
+// ---------------------------------------------------------------------------
+// Canonical Development Repository
+//
+// A ROLE a registered repository plays for a project -- "this is the one source of further
+// development" -- not a name, a host, or a claim about production. It references a registered
+// GITHUB_REPOSITORY resource rather than carrying its own owner/name, so there stays exactly one
+// repository registry: the resource answers "what may Autopilot touch at all", this answers
+// "which of those is this project's development target". Bindings are append-only and versioned;
+// a replaced binding becomes SUPERSEDED and is never deleted, so which repository was canonical
+// when stays readable alongside the runs and artifacts produced against it.
+// ---------------------------------------------------------------------------
+export const canonicalRepositoryStatusSchema = z.enum([
+  "CANDIDATE",
+  "ACTIVE",
+  "SUPERSEDED",
+  "ROLLED_BACK",
+]);
+export type CanonicalRepositoryStatus = z.infer<typeof canonicalRepositoryStatusSchema>;
+export const canonicalRepositoryIdentitySchema = z.object({
+  provider: z.string().min(1),
+  owner: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+  name: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+  /** Exactly the registered resource's externalReference; never a caller-supplied URL. */
+  externalReference: z.string().min(1),
+});
+export type CanonicalRepositoryIdentity = z.infer<typeof canonicalRepositoryIdentitySchema>;
+export const canonicalRepositorySchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  repositoryIdentity: canonicalRepositoryIdentitySchema,
+  defaultBranch: z.string().min(1),
+  /** The exact default-branch head at the moment the binding was made. Never a floating ref. */
+  canonicalSinceSha: z.string().regex(/^[0-9a-f]{40}$/),
+  canonicalSinceAt: z.string().datetime(),
+  status: canonicalRepositoryStatusSchema,
+  /** Monotonic per project. The value a mutation pins with expectedCurrentCanonicalVersion. */
+  version: z.number().int().positive(),
+  createdBy: z.string().min(1),
+  operationId: z.string().min(8).max(200),
+  reason: z.string().max(500).default(""),
+  /** Set on the binding this one replaced, and on the binding that replaced it. */
+  supersedes: z.string().uuid().optional(),
+  supersededBy: z.string().uuid().optional(),
+  supersededAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type CanonicalDevelopmentRepository = z.infer<typeof canonicalRepositorySchema>;
+
+export const blockerSchema = z.object({
+  code: z.string().min(1),
+  reason: z.string().min(1),
+  remediation: z.string().min(1),
+});
+export type Blocker = z.infer<typeof blockerSchema>;
+
+// What a promotion WOULD do, computed without touching anything. Every fact here is read from the
+// registry and from the provider; an unknown verification state is reported as UNKNOWN rather
+// than as a pass, because a plan that flatters the candidate is worse than no plan.
+export const canonicalRepositoryPlanSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  currentCanonical: canonicalRepositorySchema.optional(),
+  candidateResourceId: z.string().uuid(),
+  candidateRepository: z.string().optional(),
+  candidateDefaultBranch: z.string().optional(),
+  candidateHeadSha: z.string().optional(),
+  permissions: z.array(resourcePermissionSchema),
+  verificationState: z.object({
+    source: z.enum(["EPIC_VERIFICATION_REPORT", "CI_REPORT", "NONE"]),
+    status: z.enum(["PASS", "BLOCKED", "UNKNOWN"]),
+    headSha: z.string().optional(),
+    /** True only when that evidence was produced at candidateHeadSha itself. */
+    atCandidateHead: z.boolean(),
+    detail: z.string(),
+  }),
+  changesThatWouldOccur: z.array(z.string()),
+  warnings: z.array(z.string()),
+  blockers: z.array(blockerSchema),
+  /** Pin these into the promotion call; drift between plan and mutation blocks it. */
+  expectedHeadSha: z.string().optional(),
+  expectedCurrentCanonicalVersion: z.number().int().nonnegative(),
+  result: z.enum(["READY_TO_PROMOTE", "BLOCKED"]),
+});
+export type CanonicalRepositoryPlan = z.infer<typeof canonicalRepositoryPlanSchema>;
+
+export const canonicalRepositoryPlanInputSchema = z.object({
+  projectId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+});
+export const canonicalRepositoryPromoteInputSchema = z.object({
+  projectId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  operationId: z.string().min(8).max(200),
+  /** The head the plan was computed at. A moved branch is a stale plan, never a silent retarget. */
+  expectedHeadSha: z.string().regex(/^[0-9a-f]{40}$/),
+  /** 0 means "the plan saw no ACTIVE binding". Any drift blocks with STALE_PROMOTION_PLAN. */
+  expectedCurrentCanonicalVersion: z.number().int().nonnegative(),
+  confirmation: z.literal("PROMOTE_CANONICAL_DEVELOPMENT_REPOSITORY"),
+  reason: z.string().min(8).max(500),
+});
+export type CanonicalRepositoryPromoteInput = z.infer<typeof canonicalRepositoryPromoteInputSchema>;
+export const canonicalRepositoryRollbackInputSchema = z.object({
+  projectId: z.string().uuid(),
+  operationId: z.string().min(8).max(200),
+  /** The binding being rolled back. Pinning it keeps a rollback from racing a promotion. */
+  expectedCurrentCanonicalVersion: z.number().int().positive(),
+  confirmation: z.literal("ROLLBACK_CANONICAL_DEVELOPMENT_REPOSITORY"),
+  reason: z.string().min(8).max(500),
+});
+export type CanonicalRepositoryRollbackInput = z.infer<typeof canonicalRepositoryRollbackInputSchema>;
+
+// ---------------------------------------------------------------------------
+// Repository export / transfer
+//
+// Moving Git as an engineering object -- commit graph, branches, tags, refs -- not a file archive.
+// Deliberately separate from promotion: a successful export says a target now holds the history,
+// and says nothing whatsoever about where the project develops next. Making the target canonical
+// is a second, explicit decision.
+// ---------------------------------------------------------------------------
+export const secretHandoverEntrySchema = z.object({
+  /** A reference NAME. This artifact carries no values, by construction. */
+  name: secretRefSchema,
+  purpose: z.string().min(1),
+  consumer: z.string().min(1),
+  environment: environmentSchema,
+  requirement: z.enum(["REQUIRED", "OPTIONAL"]),
+  destinationSystem: z.string().min(1),
+  owner: z.string().min(1),
+  setupStatus: z.enum(["VERIFIED", "REQUIRES_OPERATOR_SETUP", "UNAVAILABLE", "NOT_APPLICABLE"]),
+});
+export type SecretHandoverEntry = z.infer<typeof secretHandoverEntrySchema>;
+export const secretConfigHandoverSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  sourceRepository: z.string().min(1),
+  targetRepository: z.string().optional(),
+  entries: z.array(secretHandoverEntrySchema),
+  /** Always false, and asserted by tests: no value ever travels with a handover. */
+  valuesTransferred: z.literal(false),
+  notes: z.array(z.string()),
+});
+export type SecretConfigHandover = z.infer<typeof secretConfigHandoverSchema>;
+
+export const repositoryRefSchema = z.object({
+  name: z.string().min(1),
+  sha: z.string().regex(/^[0-9a-f]{40}$/),
+});
+export type RepositoryRef = z.infer<typeof repositoryRefSchema>;
+export const nonTransferableConfigurationSchema = z.object({
+  item: z.string().min(1),
+  classification: z.enum([
+    "ACTIONS_SECRET",
+    "BRANCH_PROTECTION",
+    "IAM",
+    "CLOUD_ACCOUNT",
+    "DATABASE_CREDENTIAL",
+    "HOSTED_ENVIRONMENT",
+  ]),
+  status: z.enum(["VERIFIED", "REQUIRES_OPERATOR_SETUP", "UNAVAILABLE", "NOT_APPLICABLE"]),
+  detail: z.string().min(1),
+});
+export const repositoryExportPlanSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  sourceResourceId: z.string().uuid(),
+  sourceRepository: z.string(),
+  sourceDefaultBranch: z.string().optional(),
+  sourceHeadSha: z.string().optional(),
+  targetResourceId: z.string().uuid(),
+  targetRepository: z.string(),
+  targetDefaultBranch: z.string().optional(),
+  targetHeadSha: z.string().optional(),
+  targetIsEmpty: z.boolean(),
+  branches: z.array(repositoryRefSchema),
+  tags: z.array(repositoryRefSchema),
+  /** Refs the transfer must create in the target before it can be judged complete. */
+  requiredRefs: z.array(z.string()),
+  transferMechanism: z.literal("GIT_MIRROR_PUSH"),
+  requiredPermissions: z.object({
+    source: z.array(resourcePermissionSchema),
+    target: z.array(resourcePermissionSchema),
+  }),
+  protectedBranches: z.array(z.string()),
+  /** Repository content that travels as Git, listed so an operator can see what is included. */
+  transferableConfiguration: z.array(z.string()),
+  /** Provider/hosting state Git cannot carry. Never marked VERIFIED without evidence. */
+  nonTransferableConfiguration: z.array(nonTransferableConfigurationSchema),
+  secretHandover: secretConfigHandoverSchema,
+  verificationProcedure: z.array(z.string()),
+  warnings: z.array(z.string()),
+  blockers: z.array(blockerSchema),
+  result: z.enum(["READY_TO_EXPORT", "BLOCKED"]),
+});
+export type RepositoryExportPlan = z.infer<typeof repositoryExportPlanSchema>;
+
+export const repositoryExportPlanInputSchema = z.object({
+  projectId: z.string().uuid(),
+  sourceResourceId: z.string().uuid(),
+  targetResourceId: z.string().uuid(),
+});
+export const repositoryExportInputSchema = z.object({
+  projectId: z.string().uuid(),
+  sourceResourceId: z.string().uuid(),
+  targetResourceId: z.string().uuid(),
+  operationId: z.string().min(8).max(200),
+  expectedSourceHeadSha: z.string().regex(/^[0-9a-f]{40}$/),
+  confirmation: z.literal("EXPORT_REPOSITORY_HISTORY"),
+  reason: z.string().min(8).max(500),
+});
+export type RepositoryExportInput = z.infer<typeof repositoryExportInputSchema>;
+
+// Judged on refs actually read back from the target. A transfer that cannot be checked is
+// BLOCKED, not "probably fine": partial success is not a state this is able to report.
+export const repositoryExportVerificationSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  sourceRepository: z.string(),
+  targetRepository: z.string(),
+  sourceHeadSha: z.string().optional(),
+  targetHeadSha: z.string().optional(),
+  defaultBranch: z.string().optional(),
+  checks: z.array(z.object({
+    check: z.enum([
+      "SOURCE_IDENTITY",
+      "TARGET_IDENTITY",
+      "SOURCE_HEAD",
+      "TARGET_HEAD",
+      "DEFAULT_BRANCH",
+      "REQUIRED_REFS",
+      "REQUIRED_TAGS",
+      "HISTORY_EQUIVALENCE",
+      "NO_SECRET_TRANSFER",
+    ]),
+    status: z.enum(["PASS", "BLOCKED", "NOT_APPLICABLE"]),
+    detail: z.string().min(1),
+  })),
+  missingRefs: z.array(z.string()),
+  missingTags: z.array(z.string()),
+  blockers: z.array(blockerSchema),
+  result: z.enum(["PASS", "BLOCKED"]),
+});
+export type RepositoryExportVerification = z.infer<typeof repositoryExportVerificationSchema>;
+
+// ---------------------------------------------------------------------------
+// Developer handover
+//
+// Machine-checkable facts about whether a human backend developer with no MCP and no Superadmin
+// token can pick this repository up. It judges presence and objective content, never prose
+// quality, and it never invents infrastructure facts: anything unproven reads UNVERIFIED.
+// ---------------------------------------------------------------------------
+export const handoverCheckSchema = z.object({
+  check: z.string().min(1),
+  requirement: z.enum(["REQUIRED", "NOT_APPLICABLE"]),
+  status: z.enum(["PASS", "BLOCKED", "NOT_APPLICABLE", "UNVERIFIED"]),
+  detail: z.string().min(1),
+  remediation: z.string().optional(),
+});
+export type HandoverCheck = z.infer<typeof handoverCheckSchema>;
+export const developerHandoverReportSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  repository: z.string().optional(),
+  defaultBranch: z.string().optional(),
+  /** The exact commit the documentation was read at, so two reports are comparable. */
+  headSha: z.string().optional(),
+  canonicalRepositoryStatus: z.enum(["ACTIVE", "ABSENT"]),
+  checks: z.array(handoverCheckSchema),
+  blockers: z.array(blockerSchema),
+  result: z.enum(["PASS", "BLOCKED"]),
+});
+export type DeveloperHandoverReport = z.infer<typeof developerHandoverReportSchema>;
+
 export const artifactKindSchema = z.enum([
   "REQUIREMENTS_SNAPSHOT",
   "IMPLEMENTATION_PLAN",
@@ -692,6 +966,11 @@ export const artifactKindSchema = z.enum([
   "REBASE_REPORT",
   "EPIC_DIMENSION_EVIDENCE",
   "EPIC_VERIFICATION_REPORT",
+  "CANONICAL_REPOSITORY_REPORT",
+  "REPOSITORY_EXPORT_REPORT",
+  "REPOSITORY_EXPORT_VERIFICATION",
+  "SECRET_CONFIG_HANDOVER",
+  "DEVELOPER_HANDOVER_REPORT",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({

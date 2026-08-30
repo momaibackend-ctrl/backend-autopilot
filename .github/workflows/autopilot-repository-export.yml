@@ -1,0 +1,138 @@
+name: Autopilot repository export
+
+# Bounded Git-level transfer of one registered repository's history into another.
+#
+# The control plane has no subprocess and must not gain one, so the mirror runs here, in a fixed
+# workflow of the control repository. The workflow is not steerable by whoever triggered it: the
+# only input that carries meaning is a JSON payload the control plane built from REGISTERED
+# resource identities, and every repository it touches is re-derived from `owner/name` here rather
+# than from a URL. There is no force push and no history rewrite anywhere in this file -- an
+# already-populated target is refused by the control plane before dispatch, and refused again below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: Control-plane operation ID (idempotency key)
+        required: true
+      export_input:
+        description: JSON export payload built by the control plane
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopilot-repository-export-${{ github.event.inputs.operation_id }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse and validate the export payload
+        id: payload
+        env:
+          EXPORT_INPUT: ${{ github.event.inputs.export_input }}
+        run: |
+          set -euo pipefail
+          source_repo=$(jq -r '.sourceRepository' <<<"$EXPORT_INPUT")
+          target_repo=$(jq -r '.targetRepository' <<<"$EXPORT_INPUT")
+          expected_sha=$(jq -r '.expectedSourceHeadSha' <<<"$EXPORT_INPUT")
+          default_branch=$(jq -r '.defaultBranch' <<<"$EXPORT_INPUT")
+          # owner/name only. Anything that is not exactly that shape never reaches a git command.
+          for value in "$source_repo" "$target_repo"; do
+            [[ "$value" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Invalid repository identity"; exit 1; }
+          done
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::An exact source head SHA is required"; exit 1; }
+          [[ "$source_repo" != "$target_repo" ]] || { echo "::error::Source and target must differ"; exit 1; }
+          {
+            echo "source_repo=$source_repo"
+            echo "target_repo=$target_repo"
+            echo "expected_sha=$expected_sha"
+            echo "default_branch=$default_branch"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Refuse a target that already has history
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.payload.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          # An occupied target could only be overwritten by force-pushing over someone's history.
+          # This platform does not do that, so a non-empty target is a hard stop, not a prompt.
+          refs=$(gh api "repos/$TARGET_REPO/git/refs" --jq 'length' 2>/dev/null || echo 0)
+          if [ "$refs" != "0" ]; then
+            echo "::error::Export target $TARGET_REPO already contains refs. Exporting into it would require a force push, which is not performed."
+            exit 1
+          fi
+
+      - name: Mirror-clone the source history
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ steps.payload.outputs.source_repo }}
+          EXPECTED_SHA: ${{ steps.payload.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git" mirror.git
+          cd mirror.git
+          # The commit the control plane pinned must be the one actually in hand, or the transfer
+          # would be of something nobody planned.
+          git cat-file -e "${EXPECTED_SHA}^{commit}"
+          git for-each-ref --format='%(refname)' | sort >../source-refs.txt
+          echo "Source refs to transfer:"; cat ../source-refs.txt
+
+      - name: Push the full history to the target
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.payload.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          cd mirror.git
+          git remote set-url --push origin "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
+          # --mirror carries branches, tags and the whole commit graph. No --force anywhere: the
+          # target was proved empty above, so nothing can be overwritten.
+          git push --mirror
+
+      - name: Verify the target holds the same refs and the pinned commit
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.payload.outputs.target_repo }}
+          EXPECTED_SHA: ${{ steps.payload.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" verify.git
+          cd verify.git
+          git cat-file -e "${EXPECTED_SHA}^{commit}"
+          git for-each-ref --format='%(refname)' | sort >../target-refs.txt
+          # Every source ref must be present in the target. A missing ref is a failed export, and
+          # this workflow reports failure rather than a partial success.
+          if ! comm -23 ../source-refs.txt ../target-refs.txt | grep -q .; then
+            echo "All source refs are present in $TARGET_REPO"
+          else
+            echo "::error::Refs missing from the target:"; comm -23 ../source-refs.txt ../target-refs.txt
+            exit 1
+          fi
+
+      - name: Record the export verification in the control plane
+        if: always()
+        env:
+          MCP_URL: ${{ secrets.AUTOPILOT_REMOTE_MCP_URL }}
+          MCP_TOKEN: ${{ secrets.AUTOPILOT_SUPERADMIN_MCP_TOKEN }}
+          EXPORT_INPUT: ${{ github.event.inputs.export_input }}
+          OPERATION_ID: ${{ github.event.inputs.operation_id }}
+        run: |
+          set -euo pipefail
+          # Verification is re-derived server-side from both repositories; this call only asks for
+          # it. The workflow cannot declare its own verdict.
+          payload=$(jq -n \
+            --arg projectId "$(jq -r '.projectId' <<<"$EXPORT_INPUT")" \
+            --arg sourceResourceId "$(jq -r '.sourceResourceId' <<<"$EXPORT_INPUT")" \
+            --arg targetResourceId "$(jq -r '.targetResourceId' <<<"$EXPORT_INPUT")" \
+            --arg operationId "${OPERATION_ID}-verify" \
+            '{jsonrpc:"2.0",id:"export-verify",method:"tools/call",params:{name:"superadmin_repository_export_verify",arguments:{projectId:$projectId,sourceResourceId:$sourceResourceId,targetResourceId:$targetResourceId,operationId:$operationId}}}')
+          curl -sS -X POST "$MCP_URL" \
+            -H "authorization: Bearer $MCP_TOKEN" \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json, text/event-stream' \
+            -d "$payload"

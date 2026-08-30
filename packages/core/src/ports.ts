@@ -1,4 +1,25 @@
-import type { AdminOperation, Artifact, AuditEvent, CommandRecord, ConsoleScreen, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, CommandRecord, ConsoleScreen, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
+
+/**
+ * One durable, atomic canonical-binding replacement. Both promotion and metadata rollback go
+ * through this single primitive so the "at most one ACTIVE canonical repository per project"
+ * invariant has exactly one enforcement point rather than one per caller.
+ *
+ * `expectedCurrent` is the optimistic lock: `undefined` asserts that the project currently has no
+ * ACTIVE binding at all, and any other value must match the ACTIVE row's id AND version. A store
+ * that cannot satisfy the assertion must throw `Conflict` rather than write -- an application-level
+ * read/check/write cannot survive two concurrent promotions, which is why the PostgreSQL stores
+ * back this with a partial unique index on (project_id) WHERE status='ACTIVE' as well.
+ */
+export interface CanonicalPromotionRequest {
+  projectId:string;
+  /** The new binding, already built with status ACTIVE and the next version number. */
+  record:CanonicalDevelopmentRepository;
+  expectedCurrent?:{id:string;version:number};
+  /** What the displaced binding becomes: replaced by a promotion, or undone by a rollback. */
+  displacedStatus:'SUPERSEDED'|'ROLLED_BACK';
+  displacedAt:string;
+}
 
 export interface StateStore {
   createProject(project:Project):Promise<Project>; updateProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
@@ -18,6 +39,10 @@ export interface StateStore {
   upsertMembership(value:ProjectMembership):Promise<ProjectMembership>; getMembership(userId:string,projectId:string):Promise<ProjectMembership|undefined>; listMemberships(projectId?:string,userId?:string):Promise<ProjectMembership[]>; deleteMembership(userId:string,projectId:string):Promise<void>;
   saveAdminOperation(value:AdminOperation):Promise<AdminOperation>; getAdminOperation(operationId:string):Promise<AdminOperation|undefined>; listAdminOperations():Promise<AdminOperation[]>;
   listMigrationMarkers():Promise<MigrationMarker[]>;
+  getCanonicalRepository(projectId:string,id:string):Promise<CanonicalDevelopmentRepository|undefined>;
+  getActiveCanonicalRepository(projectId:string):Promise<CanonicalDevelopmentRepository|undefined>;
+  listCanonicalRepositories(projectId:string):Promise<CanonicalDevelopmentRepository[]>;
+  promoteCanonicalRepository(request:CanonicalPromotionRequest):Promise<{active:CanonicalDevelopmentRepository;displaced?:CanonicalDevelopmentRepository}>;
 }
 
 export interface Clock { now():string; }

@@ -1,8 +1,9 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq } from 'drizzle-orm';
 import { Pool } from 'pg';
-import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import { Conflict } from '../../core/src/errors.js';
+import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
 export class PostgresStateStore implements StateStore {
@@ -69,6 +70,40 @@ export class PostgresStateStore implements StateStore {
   async getAdminOperation(id:string){const r=await this.pool.query<{data:AdminOperation}>('select data from admin_operations where operation_id=$1 limit 1',[id]);return r.rows[0]?.data;}
   async listAdminOperations(){return (await this.pool.query<{data:AdminOperation}>('select data from admin_operations order by created_at')).rows.map(v=>v.data);}
   async listMigrationMarkers(){return (await this.pool.query<{key:string,checksum:string,data:unknown,created_at:string}>('select * from migration_markers order by created_at')).rows.map((v):MigrationMarker=>({key:v.key,checksum:v.checksum,data:v.data,createdAt:new Date(v.created_at).toISOString()}));}
+  async getCanonicalRepository(projectId:string,id:string){const r=await this.pool.query<{data:CanonicalDevelopmentRepository}>('select data from canonical_development_repositories where id=$1 and project_id=$2 limit 1',[id,projectId]);return r.rows[0]?.data;}
+  async getActiveCanonicalRepository(projectId:string){const r=await this.pool.query<{data:CanonicalDevelopmentRepository}>("select data from canonical_development_repositories where project_id=$1 and status='ACTIVE' limit 1",[projectId]);return r.rows[0]?.data;}
+  async listCanonicalRepositories(projectId:string){return (await this.pool.query<{data:CanonicalDevelopmentRepository}>('select data from canonical_development_repositories where project_id=$1 order by version',[projectId])).rows.map(v=>v.data);}
+  // One transaction, and the optimistic lock is taken as a row lock (FOR UPDATE) rather than as a
+  // plain read: two concurrent promotions serialise on it instead of both reading the same
+  // pre-state. The partial unique index is the backstop -- if anything still raced through, the
+  // second INSERT violates it and surfaces as Conflict rather than as a second ACTIVE binding.
+  async promoteCanonicalRepository(request:CanonicalPromotionRequest){
+    const client=await this.pool.connect();
+    try{
+      await client.query('begin');
+      const current=await client.query<{id:string;version:number;data:CanonicalDevelopmentRepository}>("select id,version,data from canonical_development_repositories where project_id=$1 and status='ACTIVE' for update",[request.projectId]);
+      const active=current.rows[0];
+      if(request.expectedCurrent){
+        if(!active)throw new Conflict('Expected an ACTIVE canonical repository that no longer exists',{expected:request.expectedCurrent});
+        if(active.id!==request.expectedCurrent.id||Number(active.version)!==request.expectedCurrent.version)
+          throw new Conflict('Canonical repository changed since the plan was generated',{expected:request.expectedCurrent,actual:{id:active.id,version:Number(active.version)}});
+      }else if(active)throw new Conflict('Project already has an ACTIVE canonical repository',{actual:{id:active.id,version:Number(active.version)}});
+      let displaced:CanonicalDevelopmentRepository|undefined;
+      if(active){
+        displaced={...active.data,status:request.displacedStatus,supersededBy:request.record.id,supersededAt:request.displacedAt,updatedAt:request.displacedAt};
+        await client.query('update canonical_development_repositories set status=$1,data=$2,updated_at=$3 where id=$4',[request.displacedStatus,displaced,request.displacedAt,active.id]);
+      }
+      const v=request.record;
+      await client.query('insert into canonical_development_repositories(id,project_id,resource_id,status,version,operation_id,data,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9)',[v.id,v.projectId,v.resourceId,v.status,v.version,v.operationId,v,v.createdAt,v.updatedAt]);
+      await client.query('commit');
+      return {active:v,...(displaced?{displaced}:{})};
+    }catch(error){
+      await client.query('rollback').catch(()=>undefined);
+      if(error instanceof Conflict)throw error;
+      if((error as {code?:string}).code==='23505')throw new Conflict('Concurrent canonical promotion was rejected by the durable uniqueness invariant',{projectId:request.projectId});
+      throw error;
+    }finally{client.release();}
+  }
 }
 function data<T>(row:{data:unknown}|undefined):T|undefined{return row?.data as T|undefined;}
 function jobValues(v:ExecutionJob){return {id:v.id,projectId:v.projectId,taskId:v.taskId,resourceId:v.resourceId,runId:v.runId??null,operationId:v.operationId,kind:v.kind,status:v.status,attempt:v.attempt,workflowRunId:v.workflowRunId??null,leaseOwner:v.leaseOwner??null,leaseExpiresAt:v.leaseExpiresAt?new Date(v.leaseExpiresAt):null,data:v,createdAt:new Date(v.queuedAt),updatedAt:new Date(v.updatedAt)};}
