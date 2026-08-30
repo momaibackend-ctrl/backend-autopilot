@@ -64,7 +64,7 @@ jobs:
           POSTGRES_DB: autopilot_epic
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U autopilot"
+          --health-cmd "pg_isready -U autopilot -d autopilot_epic"
           --health-interval 5s --health-timeout 5s --health-retries 20
       redis:
         image: redis:7-alpine

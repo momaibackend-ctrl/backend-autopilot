@@ -64,7 +64,7 @@ try {
     commands,
     artifactBlobs: blobs,
   });
-  void new ArtifactStore(store, uuidGenerator, systemClock, blobs);
+  const artifacts = new ArtifactStore(store, uuidGenerator, systemClock, blobs);
 
   const resource = await requireProjectGithubRepository(store, input.projectId, input.resourceId);
   if (resource.environment !== 'SANDBOX') throw new PolicyViolation('Epic verification targets an allowlisted sandbox repository only');
@@ -83,14 +83,30 @@ try {
   const { tests, transcript } = await runSuite(workspace, stack);
   log('info', 'epic.suite.complete', { stack, tests: tests.length });
 
+  // The whole transcript, kept as evidence. Without it a failed dimension reports which tests
+  // failed but never why, and the run log carries only this script's own verdict events -- which is
+  // how the first real epic run produced six failures nobody could diagnose without re-running it.
+  const transcriptHash = createHash('sha256').update(transcript).digest('hex');
+  const transcriptArtifact = await artifacts.write(input.projectId, 'COMMAND_STDOUT', {
+    epicKey: input.epicKey,
+    headSha: input.headSha,
+    scope: 'EPIC_VERIFICATION_SUITE',
+    sha256: transcriptHash,
+    transcript,
+  });
+  log('info', 'epic.transcript.recorded', { artifactId: transcriptArtifact.id, sha256: transcriptHash, bytes: transcript.length });
+
   const parsed = parsePropertyRunnerOutput(transcript);
+  // Scoped to the property suite on purpose. Deriving this from "did anything in the build fail"
+  // reported INVARIANTS as failed because five unrelated integration tests failed -- attributing
+  // one dimension's verdict to another dimension's problem, which is the opposite of the point.
+  const propertyTestsFailed = dimensionOutcome('INVARIANTS', tests).failedTests.length > 0;
   const propertyReport = buildPropertyBasedReport({
     required: required_.includes('INVARIANTS'),
-    suitePassed: !tests.some((test) => test.outcome === 'FAILED'),
+    suitePassed: !propertyTestsFailed,
     parsed,
     source: parsed ? 'PARSED_RUNNER_OUTPUT' : 'NONE',
   });
-  const transcriptHash = createHash('sha256').update(transcript).digest('hex');
 
   for (const dimension of required_) {
     const outcome = dimensionOutcome(
@@ -178,7 +194,13 @@ async function runSuite(workspace: string, stack: string) {
   // failures rather than losing the whole run.
   const result = await commands.run({ command, args, cwd: workspace, taskId, allowed: ['TEST', 'BUILD'], env });
   const tests = await collectJUnitResults(workspace);
-  return { tests, transcript: `${result.stdout}\n${result.stderr}` };
+  const transcript = `${result.stdout}\n${result.stderr}`;
+  if (result.record.exitCode !== 0) {
+    // Surfaced in the run log too, not only in the artifact: the first thing anyone does with a red
+    // epic run is open the log, and finding only a verdict there sends them re-running it by hand.
+    console.log(transcript.split(/\r?\n/).slice(-150).join('\n'));
+  }
+  return { tests, transcript };
 }
 
 /** Applies the project's own variable names to this run's disposable services. */
