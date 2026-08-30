@@ -13,6 +13,14 @@ name: Backend Autopilot epic verification
 on:
   workflow_dispatch:
     inputs:
+      epic_key:
+        description: Epic identifier, used for the concurrency group and the run title
+        required: true
+        type: string
+      head_sha:
+        description: The exact commit the epic is verified at
+        required: true
+        type: string
       epic_input:
         description: JSON with projectId, epicKey, headSha, resourceId, member selection and the project's serviceEnv mapping
         required: true
@@ -22,14 +30,18 @@ permissions:
   contents: read
 
 concurrency:
-  # Serialized per epic: two runs writing evidence for the same epic would interleave verdicts.
-  group: autopilot-epic-${{ github.event.inputs.epic_input }}
+  # Serialized per epic and commit: two runs writing evidence for the same epic would interleave
+  # verdicts. Built from the two short inputs rather than the payload -- a concurrency group is
+  # capped at 255 characters, and the JSON payload silently exceeded it, which failed the workflow
+  # before any job was created and left nothing in the logs to read.
+  group: autopilot-epic-${{ inputs.epic_key }}-${{ inputs.head_sha }}
   cancel-in-progress: false
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    name: ${{ inputs.epic_key }} @ ${{ inputs.head_sha }}
     env:
       AUTOPILOT_EPIC_INPUT: ${{ inputs.epic_input }}
       DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
