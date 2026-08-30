@@ -28,6 +28,7 @@ import '../../../packages/canonical-repository/src/ports.ts';
 import '../../../packages/canonical-repository/src/promotion.ts';
 import '../../../packages/canonical-repository/src/export.ts';
 import '../../../packages/canonical-repository/src/handover.ts';
+import '../../../packages/canonical-repository/src/rename.ts';
 import '../../../packages/canonical-repository/src/target-resolution.ts';
 import '../../../packages/canonical-repository/src/service.ts';
 import '../../../packages/adapters/github/src/repository-provider.ts';

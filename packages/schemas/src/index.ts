@@ -776,6 +776,74 @@ export const canonicalRepositoryRollbackInputSchema = z.object({
 export type CanonicalRepositoryRollbackInput = z.infer<typeof canonicalRepositoryRollbackInputSchema>;
 
 // ---------------------------------------------------------------------------
+// Registered repository rename
+//
+// Renaming the repository a project is registered against is normally forbidden: changing a
+// GITHUB_REPOSITORY binding through generic input is exactly how a project ends up executing
+// against a repository nobody chose. A rename is the one case that is provably NOT that, because
+// the provider's repository object keeps its stable id across it. So this operation is allowed
+// only when it can prove, before and after, that the underlying repository is the same object at
+// the same commit -- and it re-points the registration itself rather than leaving Autopilot to
+// rely on the host's redirect, which would let the old and new names drift apart in resources,
+// evidence and new tasks.
+// ---------------------------------------------------------------------------
+export const repositoryRenamePlanInputSchema = z.object({
+  projectId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  newName: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/),
+});
+export const repositoryRenameInputSchema = z.object({
+  projectId: z.string().uuid(),
+  resourceId: z.string().uuid(),
+  operationId: z.string().min(8).max(200),
+  /** The new repository name only. The owner is never caller-supplied: a rename cannot move hosts. */
+  newName: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/),
+  expectedCurrentReference: z.string().min(1),
+  /** Pinned so a rename cannot quietly happen across a commit nobody looked at. */
+  expectedHeadSha: z.string().regex(/^[0-9a-f]{40}$/),
+  confirmation: z.literal("RENAME_REGISTERED_REPOSITORY"),
+  reason: z.string().min(8).max(500),
+});
+export type RepositoryRenameInput = z.infer<typeof repositoryRenameInputSchema>;
+export const repositoryRenamePlanSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  resourceId: z.string().uuid(),
+  currentRepository: z.string(),
+  targetRepository: z.string(),
+  /** The provider's stable repository id. Equality across the rename is what proves identity. */
+  repositoryId: z.string().optional(),
+  defaultBranch: z.string().optional(),
+  headSha: z.string().optional(),
+  /** Present when something already occupies the target name. */
+  targetNameTaken: z.boolean(),
+  changesThatWouldOccur: z.array(z.string()),
+  warnings: z.array(z.string()),
+  blockers: z.array(blockerSchema),
+  expectedHeadSha: z.string().optional(),
+  result: z.enum(["READY_TO_RENAME", "BLOCKED"]),
+});
+export type RepositoryRenamePlan = z.infer<typeof repositoryRenamePlanSchema>;
+export const repositoryRenameReportSchema = z.object({
+  projectId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  operationId: z.string(),
+  actor: z.string(),
+  reason: z.string(),
+  resourceId: z.string().uuid(),
+  previousRepository: z.string(),
+  newRepository: z.string(),
+  /** Identical before and after, or the rename is not reported as a rename. */
+  repositoryId: z.string(),
+  defaultBranch: z.string(),
+  headSha: z.string(),
+  gitHistoryTouched: z.literal(false),
+  registrationUpdated: z.boolean(),
+  projectRepositoryUpdated: z.boolean(),
+});
+export type RepositoryRenameReport = z.infer<typeof repositoryRenameReportSchema>;
+
+// ---------------------------------------------------------------------------
 // Repository export / transfer
 //
 // Moving Git as an engineering object -- commit graph, branches, tags, refs -- not a file archive.
@@ -971,6 +1039,7 @@ export const artifactKindSchema = z.enum([
   "REPOSITORY_EXPORT_VERIFICATION",
   "SECRET_CONFIG_HANDOVER",
   "DEVELOPER_HANDOVER_REPORT",
+  "REPOSITORY_RENAME_REPORT",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({

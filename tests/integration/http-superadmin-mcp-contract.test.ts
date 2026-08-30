@@ -18,8 +18,9 @@ describe("HTTP SUPERADMIN MCP contract",()=>{
       "superadmin_sandbox_pull_request_open","superadmin_sandbox_pull_request_merge","superadmin_sandbox_repository_read",
       "superadmin_canonical_repository_get","superadmin_canonical_repository_plan","superadmin_canonical_repository_promote","superadmin_canonical_repository_rollback",
       "superadmin_repository_export_plan","superadmin_repository_export","superadmin_repository_export_verify","superadmin_developer_handover_report",
+      "superadmin_repository_rename_plan","superadmin_repository_rename",
     ])expect(tools).toContain(name);
-    expect(tools.length).toBeGreaterThanOrEqual(75);
+    expect(tools.length).toBeGreaterThanOrEqual(77);
     expect(tools.some(name=>/(shell|sql|filesystem|run_any_command)/i.test(name))).toBe(false);
     expect(service).toContain("GitHub/Git bindings require the dedicated verified provider registration flow");
     expect(source).toContain("AUTOPILOT_SUPERADMIN_MCP_TOKEN");

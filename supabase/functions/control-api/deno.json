@@ -35,6 +35,7 @@
     "../../../packages/canonical-repository/src/handover.js": "../../../packages/canonical-repository/src/handover.ts",
     "../../../packages/canonical-repository/src/target-resolution.js": "../../../packages/canonical-repository/src/target-resolution.ts",
     "../../../packages/canonical-repository/src/service.js": "../../../packages/canonical-repository/src/service.ts",
-    "../../../packages/adapters/github/src/repository-provider.js": "../../../packages/adapters/github/src/repository-provider.ts"
+    "../../../packages/adapters/github/src/repository-provider.js": "../../../packages/adapters/github/src/repository-provider.ts",
+    "../../../packages/canonical-repository/src/rename.js": "../../../packages/canonical-repository/src/rename.ts"
   }
 }

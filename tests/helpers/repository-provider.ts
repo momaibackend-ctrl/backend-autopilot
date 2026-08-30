@@ -15,6 +15,10 @@ export interface FakeRepositoryState {
   unreachable?: boolean;
   /** Identity the provider reports, when it deliberately differs from the registration. */
   reportedIdentity?: string;
+  /** Stable object id. Equality across a rename is what proves it was a rename. */
+  repositoryId?: string;
+  /** Lets a test simulate a rename that did not preserve identity. */
+  renameMutates?: Partial<FakeRepositoryState> & { name?: string };
 }
 
 /**
@@ -40,6 +44,7 @@ export class FakeRepositoryProvider implements GitRepositoryProvider {
     const state = this.state(repository);
     return {
       externalReference: state.reportedIdentity ?? repository,
+      repositoryId: state.repositoryId ?? `id-${repository}`,
       defaultBranch: state.defaultBranch ?? "main",
       isEmpty: !state.head,
       visibility: state.visibility ?? "private",
@@ -60,6 +65,21 @@ export class FakeRepositoryProvider implements GitRepositoryProvider {
   async listRefs(repository: string) {
     const state = this.state(repository);
     return { branches: state.branches ?? [], tags: state.tags ?? [] };
+  }
+  /** Moves the entry to the new name, keeping its state — which is what a real rename does. */
+  async rename(repository: string, newName: string) {
+    const state = this.state(repository);
+    const owner = repository.split("/")[0];
+    const target = `${owner}/${newName}`;
+    const next: FakeRepositoryState = { ...state, repositoryId: state.repositoryId ?? `id-${repository}`, ...(state.renameMutates ?? {}) };
+    delete next.renameMutates;
+    delete this.repositories[repository];
+    this.repositories[state.renameMutates?.name ?? target] = next;
+    return this.describe(state.renameMutates?.name ?? target);
+  }
+  async exists(repository: string) {
+    const value = this.repositories[repository];
+    return Boolean(value) && !value?.unreachable;
   }
   async readFile(repository: string, path: string) {
     return this.state(repository).files?.[path];

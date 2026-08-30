@@ -16,13 +16,16 @@ export class GitHubRestRepositoryProvider implements GitRepositoryProvider {
   }
 
   async describe(repository:string):Promise<RepositoryDescription>{
-    const value=await this.json<{full_name:string;default_branch:string;size:number;private:boolean;visibility?:string;permissions?:{pull?:boolean;push?:boolean;admin?:boolean}}>(`/repos/${this.path(repository)}`);
+    const value=await this.json<{id:number;node_id:string;full_name:string;default_branch:string;size:number;private:boolean;visibility?:string;permissions?:{pull?:boolean;push?:boolean;admin?:boolean}}>(`/repos/${this.path(repository)}`);
     const branches=await this.json<Array<{name:string;protected?:boolean}>>(`/repos/${this.path(repository)}/branches?per_page=100`).catch(()=>[]);
     // `size` is 0 for a repository with no commits; confirming against the default branch avoids
     // treating a tiny repository as empty.
     const head=await this.resolveRef(repository,value.default_branch);
     return {
       externalReference:value.full_name,
+      // node_id is GitHub's stable global object id: it survives a rename, and it changes if the
+      // name ever comes to point at a different repository.
+      repositoryId:value.node_id,
       defaultBranch:value.default_branch,
       isEmpty:!head,
       visibility:value.visibility??(value.private?'private':'public'),
@@ -65,6 +68,23 @@ export class GitHubRestRepositoryProvider implements GitRepositoryProvider {
     return Array.isArray(value)?value.map(entry=>entry.path):undefined;
   }
 
+  async rename(repository:string,newName:string):Promise<RepositoryDescription>{
+    if(!/^[A-Za-z0-9_.-]{1,100}$/.test(newName))throw new PolicyViolation('Invalid repository name',{newName});
+    const current=this.path(repository);
+    const response=await this.fetchImpl(`https://api.github.com/repos/${current}`,{
+      method:'PATCH',
+      headers:{accept:'application/vnd.github+json',authorization:`Bearer ${this.token}`,'content-type':'application/json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'},
+      // Only `name`. The owner is not in the payload at all, so this call cannot transfer the
+      // repository to another account even if something upstream tried to make it.
+      body:JSON.stringify({name:newName}),
+    });
+    if(!response.ok)throw new ExecutionFailed('GitHub repository rename failed',{repository,newName,status:response.status,body:(await response.text()).slice(0,300)});
+    const owner=current.split('/')[0];
+    return this.describe(`${owner}/${newName}`);
+  }
+  async exists(repository:string):Promise<boolean>{
+    return Boolean(await this.json<{id:number}>(`/repos/${this.path(repository)}`,{allowMissing:true}));
+  }
   private path(repository:string){
     if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new PolicyViolation('Invalid repository identity',{repository});
     return repository;

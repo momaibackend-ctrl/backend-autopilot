@@ -32,6 +32,7 @@ import {
   canonicalRepositoryPromoteInputSchema,
   canonicalRepositoryRollbackInputSchema,
   repositoryExportInputSchema,
+  repositoryRenameInputSchema,
   validationScenarioSaveInputSchema,
   validationSuiteSchema,
   type DeveloperHandoverReport,
@@ -579,6 +580,29 @@ export class SuperadminService {
     const data = canonicalRepositoryRollbackInputSchema.parse(input);
     return this.mutate(principal, "canonical_repository_rollback", data.projectId, data.operationId, { expectedCurrentCanonicalVersion: data.expectedCurrentCanonicalVersion, reason: data.reason }, () =>
       this.canonical.rollback(data, principal.actor),
+    );
+  }
+
+  /**
+   * Read-only dry run for renaming the repository a project is registered against. Reports the
+   * identity that would have to be preserved, everything that would block, and the exact changes.
+   */
+  async repositoryRenamePlan(principal: SuperadminPrincipal, projectId: string, resourceId: string, newName: string) {
+    this.requireSuperadmin(principal);
+    await this.requireProject(projectId);
+    return this.canonical.renamePlan({ projectId, resourceId, newName });
+  }
+
+  /**
+   * Renames a registered repository in place and re-points its registration. This is the single
+   * exception to "GitHub repository bindings cannot be changed through generic MCP input", and it
+   * earns the exception by proving the repository object, default branch and head commit are
+   * unchanged across the rename. Nothing else can move a GITHUB_REPOSITORY binding.
+   */
+  repositoryRename(principal: SuperadminPrincipal, input: unknown) {
+    const data = repositoryRenameInputSchema.parse(input);
+    return this.mutate(principal, "repository_rename", data.projectId, data.operationId, { resourceId: data.resourceId, expectedCurrentReference: data.expectedCurrentReference, newName: data.newName, expectedHeadSha: data.expectedHeadSha, reason: data.reason }, () =>
+      this.canonical.renameRepository(data, principal.actor),
     );
   }
 

@@ -67,6 +67,14 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
     const outcome=await runtime.superadmin.canonicalRepositoryRollback(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
     return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
   }
+  if(parts[1]==='projects'&&parts[3]==='repository-rename'&&parts[4]==='plan'&&request.method==='POST'){
+    const value=await body() as {resourceId:string;newName:string};
+    return json(await runtime.superadmin.repositoryRenamePlan(consolePrincipal(viewer),projectId!,value.resourceId,value.newName),200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='repository-rename'&&parts.length===4&&request.method==='POST'){
+    const outcome=await runtime.superadmin.repositoryRename(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
+    return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
+  }
   if(parts[1]==='projects'&&parts[3]==='repository-export'&&parts[4]==='plan'&&request.method==='POST'){
     const value=await body() as {sourceResourceId:string;targetResourceId:string};
     return json(await runtime.superadmin.repositoryExportPlan(consolePrincipal(viewer),projectId!,value.sourceResourceId,value.targetResourceId),200,cors);
