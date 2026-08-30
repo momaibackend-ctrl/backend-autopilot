@@ -13,7 +13,7 @@ import { dimensionOutcome, parseJUnitResults, type ExecutedTest } from '../packa
 import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, buildPropertyBasedReport, detectStack, parsePropertyRunnerOutput } from '../packages/execution-engine/src/index.js';
 import { requireProjectGithubRepository } from '../packages/core/src/repository-guard.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
-import type { EpicDimension } from '../packages/schemas/src/index.js';
+import type { EpicDimension, EpicVerificationReport } from '../packages/schemas/src/index.js';
 
 // Produces the evidence the epic gate judges.
 //
@@ -79,6 +79,11 @@ try {
   log('info', 'epic.preflight', { required: required_, members: preflight.report.members.length });
 
   const workspace = await checkoutExactCommit(resource.externalReference);
+  // Each effective member proved its work at some commit; this asks git whether that commit is
+  // actually reachable from the head being released. A member verified on a branch that never
+  // landed is green about work nobody is shipping.
+  const containment = await commitContainment(workspace, preflight.report);
+  log('info', 'epic.containment', containment);
   const stack = await detectStack(workspace);
   const { tests, transcript } = await runSuite(workspace, stack);
   log('info', 'epic.suite.complete', { stack, tests: tests.length });
@@ -136,7 +141,7 @@ try {
   }
 
   const verified = await service.epicVerification(
-    { projectId: input.projectId, epicKey: input.epicKey, headSha: input.headSha, repository: resource.externalReference, persist: true, ...select() },
+    { projectId: input.projectId, epicKey: input.epicKey, headSha: input.headSha, repository: resource.externalReference, persist: true, containment, ...select() },
     actor,
   );
   const report = verified.report;
@@ -153,6 +158,25 @@ try {
   }
 } finally {
   await store.close();
+}
+
+/** Asks git, per member, whether the commit it was verified at is an ancestor of the epic head. */
+async function commitContainment(workspace: string, report: EpicVerificationReport) {
+  const commands = new CommandRunner(new CommandPolicy(), systemClock);
+  const containment: Record<string, boolean> = {};
+  for (const member of report.members) {
+    if (member.supersededBy || !member.verifiedCommitSha) continue;
+    const known = await commands.run({ command: 'git', args: ['cat-file', '-e', `${member.verifiedCommitSha}^{commit}`], cwd: workspace, taskId: uuidGenerator.next(), allowed: ['READ'] });
+    if (known.record.exitCode !== 0) {
+      // The commit is not in this clone at all -- a squash-merge or a deleted branch. Unknown is
+      // not the same as absent, so it is left unset rather than reported as unreachable.
+      log('warn', 'epic.containment.unknown_commit', { externalKey: member.externalKey, commitSha: member.verifiedCommitSha });
+      continue;
+    }
+    const ancestor = await commands.run({ command: 'git', args: ['merge-base', '--is-ancestor', member.verifiedCommitSha, input.headSha], cwd: workspace, taskId: uuidGenerator.next(), allowed: ['READ'] });
+    containment[member.taskId] = ancestor.record.exitCode === 0;
+  }
+  return containment;
 }
 
 function select() {

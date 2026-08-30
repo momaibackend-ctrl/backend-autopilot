@@ -573,6 +573,13 @@ export const epicMemberViewSchema = z.object({
   planned: z.boolean(),
   /** False whenever the member was verified at an earlier commit than the epic head. */
   evidenceIsAtHead: z.boolean(),
+  /**
+   * The member that replaced this one, resolved from an explicit SUPERSEDES relationship. Set only
+   * on historical members: they keep their true state and are excluded from the readiness verdict.
+   */
+  supersededBy: z.string().optional(),
+  /** Whether this member's verified commit is actually reachable from the epic head. */
+  verifiedCommitContainedInHead: z.boolean().optional(),
 });
 export type EpicMemberView = z.infer<typeof epicMemberViewSchema>;
 
@@ -604,6 +611,10 @@ export const epicVerificationReportSchema = z.object({
   staleEvidence: z.array(epicEvidenceRefSchema.extend({ dimension: epicDimensionSchema, commitSha: z.string() })),
   /** Required dimensions with no passing evidence at the head commit. */
   missingDimensions: z.array(epicDimensionSchema),
+  /** Members that actually compose the released system, after supersession is resolved. */
+  effectiveMembers: z.number().int().nonnegative(),
+  /** Historical members and what replaced them; recorded, never counted. */
+  supersededMembers: z.array(z.object({ externalKey: z.string(), state: z.string(), supersededBy: z.string() })),
   blockers: z.array(z.object({ code: z.string(), reason: z.string(), remediation: z.string() })),
   generatedAt: z.string().datetime(),
 });
@@ -635,6 +646,11 @@ export const epicVerifyInputSchema = z
     // now" would let the subject of the verdict move underneath the run.
     headSha: z.string().regex(/^[0-9a-f]{40}$/),
     repository: z.string().min(1).optional(),
+    /**
+     * taskId -> whether that member's verified commit is reachable from headSha. Supplied by a
+     * caller that has a checkout; an absent entry means nobody checked, which does not block.
+     */
+    containment: z.record(z.boolean()).optional(),
     taskIds: z.array(z.string().uuid()).optional(),
     externalKeyPrefix: z.string().min(1).optional(),
     /** Persist the report as an artifact. Omitted or false makes this a read-only preflight. */

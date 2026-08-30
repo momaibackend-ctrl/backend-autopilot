@@ -35,6 +35,107 @@ export interface EpicMemberInput {
   /** The member's approved plan, when it has one. A member without a plan cannot be assessed. */
   plan?: Pick<ImplementationPlan, "testsRequired" | "databaseChanges" | "apiChanges" | "verification"> | undefined;
   artifacts: Artifact[];
+  /**
+   * Whether this member's verified commit is reachable from the epic head. Supplied by a caller
+   * that has a checkout (the runner asks git); undefined means nobody checked, which is not the
+   * same as false and does not block.
+   */
+  verifiedCommitContainedInHead?: boolean | undefined;
+}
+
+/**
+ * Which members actually compose the released system.
+ *
+ * A task that was replaced is still history, and history has to stay true: forcing CORE-BE-05 to
+ * READY because CORE-BE-05-FINAL exists would falsify the record of what actually happened to it.
+ * So the old member keeps its real state and stops being counted, and the replacement is judged in
+ * its place.
+ *
+ * Resolution is by explicit SUPERSEDES relationship only. Nothing here reads names: a "-FINAL"
+ * suffix is a convention someone happens to follow, and inferring supersession from it would let a
+ * rename silently drop a member out of an epic's readiness verdict.
+ */
+export interface SupersessionResolution {
+  effective: EpicMemberInput[];
+  superseded: { externalKey: string; state: string; supersededBy: string }[];
+  conflicts: { code: string; reason: string; remediation: string }[];
+}
+
+export function resolveSupersession(members: EpicMemberInput[]): SupersessionResolution {
+  const byId = new Map(members.map((member) => [member.task.id, member]));
+  // successor -> predecessor, as the relationship is actually written: the replacement declares
+  // what it supersedes.
+  const supersedersOf = new Map<string, EpicMemberInput[]>();
+  for (const member of members) {
+    for (const relationship of member.task.relationships) {
+      if (relationship.type !== "SUPERSEDES") continue;
+      // Only a replacement inside this epic can stand in for a member of it. One outside means the
+      // epic as selected does not contain the work that replaced it, and saying otherwise would
+      // report a system nobody assembled.
+      if (!byId.has(relationship.targetTaskId)) continue;
+      const existing = supersedersOf.get(relationship.targetTaskId) ?? [];
+      existing.push(member);
+      supersedersOf.set(relationship.targetTaskId, existing);
+    }
+  }
+
+  const conflicts: SupersessionResolution["conflicts"] = [];
+  const supersededBy = new Map<string, EpicMemberInput>();
+
+  for (const member of members) {
+    const seen = new Set<string>([member.task.id]);
+    let current = member;
+    let terminal: EpicMemberInput | undefined;
+    for (;;) {
+      const candidates = (supersedersOf.get(current.task.id) ?? []).filter(
+        // A superseder that was itself superseded is not competing for this slot; it is a link in
+        // the same chain.
+        (candidate) => !(supersedersOf.get(candidate.task.id) ?? []).length || candidate.task.id !== current.task.id,
+      );
+      if (!candidates.length) break;
+      const active = candidates.filter((candidate) => !isSupersededSomewhere(candidate, supersedersOf));
+      const chosen = active.length ? active : candidates;
+      if (chosen.length > 1) {
+        conflicts.push({
+          code: "EPIC_SUPERSESSION_AMBIGUOUS",
+          reason: `${current.task.externalKey} is superseded by more than one active member (${chosen.map((c) => c.task.externalKey).join(", ")}), so which one composes the epic is undecidable`,
+          remediation: "Remove the SUPERSEDES relationship from every replacement except the one that actually stands, then re-run this gate.",
+        });
+        terminal = undefined;
+        break;
+      }
+      const next = chosen[0]!;
+      if (seen.has(next.task.id)) {
+        conflicts.push({
+          code: "EPIC_SUPERSESSION_CYCLE",
+          reason: `SUPERSEDES relationships form a cycle through ${[...seen].map((id) => byId.get(id)?.task.externalKey ?? id).join(" -> ")}, so no member is the canonical one`,
+          remediation: "Break the cycle so the chain ends at exactly one replacement, then re-run this gate.",
+        });
+        terminal = undefined;
+        break;
+      }
+      seen.add(next.task.id);
+      current = next;
+      terminal = next;
+    }
+    if (terminal && terminal.task.id !== member.task.id) supersededBy.set(member.task.id, terminal);
+  }
+
+  return {
+    effective: members.filter((member) => !supersededBy.has(member.task.id)),
+    superseded: members
+      .filter((member) => supersededBy.has(member.task.id))
+      .map((member) => ({
+        externalKey: member.task.externalKey,
+        state: member.task.state,
+        supersededBy: supersededBy.get(member.task.id)!.task.externalKey,
+      })),
+    conflicts,
+  };
+}
+
+function isSupersededSomewhere(member: EpicMemberInput, supersedersOf: Map<string, EpicMemberInput[]>) {
+  return (supersedersOf.get(member.task.id) ?? []).length > 0;
 }
 
 /** One aggregate check performed for this epic, whatever produced it and whenever. */
@@ -142,6 +243,13 @@ export function memberVerifiedSha(member: EpicMemberInput): string | undefined {
 }
 
 export function buildEpicVerification(input: EpicVerificationInput): EpicVerificationReport {
+  // Resolved first: everything downstream -- which dimensions are required, which members must be
+  // settled -- is a statement about the members that actually compose the system, not about the
+  // ones history recorded on the way there.
+  const supersession = resolveSupersession(input.members);
+  const supersededKeys = new Set(supersession.superseded.map((value) => value.externalKey));
+  const effective = supersession.effective;
+
   const members = input.members.map((member) => {
     const verifiedCommitSha = memberVerifiedSha(member);
     return {
@@ -154,17 +262,24 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
       settled: member.task.state === "READY",
       planned: Boolean(member.plan),
       evidenceIsAtHead: verifiedCommitSha === input.headSha,
+      ...(supersession.superseded.find((value) => value.externalKey === member.task.externalKey)
+        ? { supersededBy: supersession.superseded.find((value) => value.externalKey === member.task.externalKey)!.supersededBy }
+        : {}),
+      ...(member.verifiedCommitContainedInHead === undefined ? {} : { verifiedCommitContainedInHead: member.verifiedCommitContainedInHead }),
     };
   });
 
-  const unsettled = members.filter((member) => !member.settled);
-  const unplanned = members.filter((member) => !member.planned);
-  const staleMembers = members.filter((member) => member.settled && !member.evidenceIsAtHead);
+  // A superseded member keeps its true state in the report and stops counting anywhere else.
+  const active = members.filter((member) => !supersededKeys.has(member.externalKey));
+  const unsettled = active.filter((member) => !member.settled);
+  const unplanned = active.filter((member) => !member.planned);
+  const staleMembers = active.filter((member) => member.settled && !member.evidenceIsAtHead);
+  const notInHead = members.filter((member) => !supersededKeys.has(member.externalKey) && member.verifiedCommitContainedInHead === false);
 
-  const unassessed = invariantsUnassessed(input.members);
+  const unassessed = invariantsUnassessed(effective);
 
   const dimensions: EpicDimensionResult[] = epicDimensions.map((dimension): EpicDimensionResult => {
-    const required = requirementFor(dimension, input.members);
+    const required = requirementFor(dimension, effective);
     const passingAtHead = input.headEvidence.filter(
       (evidence) => evidence.dimension === dimension && evidence.commitSha === input.headSha && evidence.passed,
     );
@@ -193,7 +308,7 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
         dimension,
         requirement: "NOT_APPLICABLE" as const,
         status: "NOT_APPLICABLE" as const,
-        reasons: [notApplicableReason(dimension, input.members.length)],
+        reasons: [notApplicableReason(dimension, effective.length)],
         evidence: [],
       };
     }
@@ -233,7 +348,13 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
     };
   });
 
-  const blockers: EpicVerificationReport["blockers"] = [];
+  const blockers: EpicVerificationReport["blockers"] = [...supersession.conflicts];
+  if (notInHead.length)
+    blockers.push({
+      code: "EPIC_MEMBER_NOT_IN_HEAD",
+      reason: `These members were verified at a commit that is not reachable from ${input.headSha}, so the work they proved is not in what is being released: ${notInHead.map((m) => `${m.externalKey}@${m.verifiedCommitSha?.slice(0, 7) ?? "unknown"}`).join(", ")}`,
+      remediation: "Rebase or re-land the missing work, then re-run the epic verification against the new head.",
+    });
   if (unplanned.length)
     blockers.push({
       code: "EPIC_MEMBER_UNPLANNED",
@@ -289,6 +410,8 @@ export function buildEpicVerification(input: EpicVerificationInput): EpicVerific
     missingDimensions: dimensions
       .filter((dimension) => dimension.status === "BLOCKED" && dimension.evidence.length === 0)
       .map((dimension) => dimension.dimension),
+    effectiveMembers: effective.length,
+    supersededMembers: supersession.superseded,
     blockers,
     generatedAt: input.generatedAt,
   };

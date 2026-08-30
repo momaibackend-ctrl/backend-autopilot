@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEpicVerification, outstandingDimensions, type EpicMemberInput } from "../../packages/core/src/epic-verification.js";
+import { buildEpicVerification, outstandingDimensions, resolveSupersession, type EpicMemberInput } from "../../packages/core/src/epic-verification.js";
 import type { Artifact, ImplementationPlan, Task } from "../../packages/schemas/src/index.js";
 
 const HEAD = "f121f544a43f7231db08cb977398aada46383fba";
@@ -61,6 +61,90 @@ const ci = (dimension: string, commitSha: string, passed = true, detail?: string
 const operator = (dimension: string, commitSha: string, passed = true) => ({
   ...ci(dimension, commitSha, passed),
   provenance: { sourceType: "OPERATOR" as const, repository: REPO, headSha: commitSha, actor: "release-agent", createdAt: NOW },
+});
+
+const supersedes = (member: EpicMemberInput, target: EpicMemberInput): EpicMemberInput => ({
+  ...member,
+  task: { ...member.task, relationships: [{ type: "SUPERSEDES", targetTaskId: target.task.id }] } as Task,
+});
+
+describe("epic supersession", () => {
+  // Live finding: CORE-BE-05 (IMPLEMENTING), 06 (PLANNED) and 11 (FAILED) blocked the epic while
+  // CORE-BE-05-FINAL, 06-FINAL and 11-FINAL sat READY with explicit SUPERSEDES edges. The gate was
+  // counting history as if it were still the system, and the reported reason -- "three members are
+  // not finished" -- was simply untrue.
+  it("judges the replacement and leaves the replaced member's history intact", () => {
+    const old05 = { task: task("CORE-BE-05", "IMPLEMENTING"), plan: plan(), artifacts: [] };
+    const final05 = supersedes(member("CORE-BE-05-FINAL", HEAD), old05);
+    const report = buildEpicVerification({
+      epicKey: "CORE-BE", headSha: HEAD, members: [old05, final05],
+      headEvidence: [ci("SECURITY_PRIVACY", HEAD)], generatedAt: NOW,
+    });
+    expect(report.blockers.map((b) => b.code)).not.toContain("EPIC_MEMBER_NOT_READY");
+    expect(report.effectiveMembers).toBe(1);
+    expect(report.supersededMembers).toEqual([{ externalKey: "CORE-BE-05", state: "IMPLEMENTING", supersededBy: "CORE-BE-05-FINAL" }]);
+    // The historical member is still in the report, still telling the truth about itself.
+    const historical = report.members.find((m) => m.externalKey === "CORE-BE-05")!;
+    expect(historical.state).toBe("IMPLEMENTING");
+    expect(historical.settled).toBe(false);
+    expect(historical.supersededBy).toBe("CORE-BE-05-FINAL");
+  });
+
+  it("follows a chain to its end", () => {
+    const a = { task: task("A", "FAILED"), plan: plan(), artifacts: [] };
+    const b = supersedes({ task: task("B", "BLOCKED"), plan: plan(), artifacts: [] }, a);
+    const c = supersedes(member("C", HEAD), b);
+    const resolution = resolveSupersession([a, b, c]);
+    expect(resolution.effective.map((m) => m.task.externalKey)).toEqual(["C"]);
+    expect(resolution.superseded.map((m) => `${m.externalKey}->${m.supersededBy}`)).toEqual(["A->C", "B->C"]);
+  });
+
+  it("blocks on a supersession cycle instead of picking a winner", () => {
+    const a = { task: task("A"), plan: plan(), artifacts: [] };
+    const b = { task: task("B"), plan: plan(), artifacts: [] };
+    const cycleA = supersedes(a, b);
+    const cycleB = supersedes(b, a);
+    const resolution = resolveSupersession([cycleA, cycleB]);
+    expect(resolution.conflicts.map((c) => c.code)).toContain("EPIC_SUPERSESSION_CYCLE");
+  });
+
+  it("blocks when two active members claim to supersede the same one", () => {
+    const original = { task: task("ORIGINAL", "FAILED"), plan: plan(), artifacts: [] };
+    const first = supersedes(member("REPLACEMENT-A", HEAD), original);
+    const second = supersedes(member("REPLACEMENT-B", HEAD), original);
+    const report = buildEpicVerification({ epicKey: "E", headSha: HEAD, members: [original, first, second], headEvidence: [], generatedAt: NOW });
+    const ambiguous = report.blockers.find((b) => b.code === "EPIC_SUPERSESSION_AMBIGUOUS")!;
+    expect(ambiguous.reason).toContain("REPLACEMENT-A");
+    expect(ambiguous.reason).toContain("REPLACEMENT-B");
+  });
+
+  it("never infers supersession from a name", () => {
+    // "-FINAL" is a convention someone happens to follow. Reading it as a relationship would let a
+    // rename drop a member out of the readiness verdict silently.
+    const old11 = { task: task("CORE-BE-11", "FAILED"), plan: plan(), artifacts: [] };
+    const named = member("CORE-BE-11-FINAL", HEAD);
+    const resolution = resolveSupersession([old11, named]);
+    expect(resolution.superseded).toEqual([]);
+    expect(resolution.effective).toHaveLength(2);
+  });
+
+  it("ignores a replacement that is not part of the epic being judged", () => {
+    // The epic as selected does not contain the work that replaced it, so claiming the member is
+    // handled would report a system nobody assembled.
+    const old05 = { task: task("CORE-BE-05", "IMPLEMENTING"), plan: plan(), artifacts: [] };
+    const outsider = supersedes(member("OUT-OF-EPIC", HEAD), old05);
+    const resolution = resolveSupersession([old05]);
+    expect(resolution.superseded).toEqual([]);
+    expect(outsider.task.relationships).toHaveLength(1);
+  });
+
+  it("blocks when an effective member's verified work is not reachable from the head", () => {
+    const detached = { ...member("CORE-BE-09", "a".repeat(40)), verifiedCommitContainedInHead: false };
+    const report = buildEpicVerification({ epicKey: "E", headSha: HEAD, members: [detached, member("CORE-BE-10", HEAD)], headEvidence: [], generatedAt: NOW });
+    const blocker = report.blockers.find((b) => b.code === "EPIC_MEMBER_NOT_IN_HEAD")!;
+    expect(blocker.reason).toContain("CORE-BE-09");
+    expect(blocker.reason).toContain("not reachable");
+  });
 });
 
 describe("epic verification", () => {
