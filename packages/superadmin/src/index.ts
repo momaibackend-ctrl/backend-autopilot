@@ -29,14 +29,23 @@ import {
   resourceUpdateSchema,
   systemSettingUpsertSchema,
   taskUpdateSchema,
+  canonicalRepositoryPromoteInputSchema,
+  canonicalRepositoryRollbackInputSchema,
+  repositoryExportInputSchema,
   validationScenarioSaveInputSchema,
   validationSuiteSchema,
+  type DeveloperHandoverReport,
   type PrincipalRole,
   type Project,
   type Resource,
   type TaskState,
 } from "../../schemas/src/index.js";
 import { resolveRebasePlan } from "./rebase-eligibility.js";
+import {
+  CanonicalRepositoryService,
+  type GitRepositoryProvider,
+  type RepositoryExportDispatcher,
+} from "../../canonical-repository/src/index.js";
 import {
   HttpScenarioRunner,
   scenarioForStorage,
@@ -66,6 +75,11 @@ export interface SuperadminDependencies {
   secrets?: SecretResolver;
   /** Injectable transport, used by tests; production uses global fetch. */
   fetchImpl?: FetchLike;
+  /** Reads Git host state for canonical promotion, export and handover planning. */
+  repositories?: GitRepositoryProvider;
+  /** Starts the fixed control-repository workflow that performs a Git-level transfer. */
+  exportDispatcher?: RepositoryExportDispatcher;
+  exportWorkflow?: string;
 }
 
 const operationIdSchema = z.string().min(8).max(200);
@@ -89,6 +103,7 @@ export class SuperadminService {
   private readonly artifacts: ArtifactStore;
   private readonly policy: PolicyEngine;
   private readonly workflow: WorkflowEngine;
+  private readonly canonical: CanonicalRepositoryService;
 
   constructor(private readonly deps: SuperadminDependencies) {
     this.clock = deps.clock ?? systemClock;
@@ -102,6 +117,18 @@ export class SuperadminService {
     );
     this.policy = new PolicyEngine(deps.store);
     this.workflow = new WorkflowEngine(deps.store, this.ids, this.clock);
+    // One domain implementation, composed once. The MCP tools, the Control API routes and the
+    // documented manual operator path all end up here, so none of them can drift into a second
+    // set of rules or skip a gate the others enforce.
+    this.canonical = new CanonicalRepositoryService({
+      store: deps.store,
+      clock: this.clock,
+      ids: this.ids,
+      artifacts: this.artifacts,
+      ...(deps.repositories ? { repositories: deps.repositories } : {}),
+      ...(deps.exportDispatcher ? { exportDispatcher: deps.exportDispatcher } : {}),
+      ...(deps.exportWorkflow ? { exportWorkflow: deps.exportWorkflow } : {}),
+    });
   }
 
   executeMutation<T>(principal:SuperadminPrincipal,tool:string,projectId:string|undefined,operationId:string,input:unknown,action:()=>Promise<T>){
@@ -431,7 +458,7 @@ export class SuperadminService {
   async runDelete(principal: SuperadminPrincipal, projectId:string,runId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="DELETE_RUN")throw new PolicyViolation("DELETE_RUN confirmation is required");return this.mutate(principal,"run_delete",projectId,data.operationId,{runId,...data},async()=>{const run=await this.runGet(principal,projectId,runId);if(run.status==="RUNNING")throw new InvalidState("Running run must be cancelled through its job");return this.deps.store.updateRun({...run,deletedAt:this.clock.now()});});}
   async jobList(principal: SuperadminPrincipal, projectId:string,taskId?:string){this.requireSuperadmin(principal);return this.deps.store.listExecutionJobs(projectId,taskId);}
   async jobGet(principal: SuperadminPrincipal,projectId:string,jobId:string){this.requireSuperadmin(principal);const value=await this.deps.store.getExecutionJob(projectId,jobId);if(!value)throw new NotFound("Execution job not found");return value;}
-  jobCreate(principal:SuperadminPrincipal,input:unknown,resourceId:string,operationId:string){if(!this.deps.asyncExecution)throw new UnsupportedOperation("Remote execution dispatcher is unavailable");const parsed=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),changes:z.array(z.unknown())}).passthrough().parse(input);return this.mutate(principal,"job_create",parsed.projectId,operationId,{taskId:parsed.taskId,resourceId},()=>this.deps.asyncExecution!.enqueueImplementation({...parsed,operationId},resourceId,principal.actor));}
+  jobCreate(principal:SuperadminPrincipal,input:unknown,resourceId:string|undefined,operationId:string){if(!this.deps.asyncExecution)throw new UnsupportedOperation("Remote execution dispatcher is unavailable");const parsed=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),changes:z.array(z.unknown())}).passthrough().parse(input);return this.mutate(principal,"job_create",parsed.projectId,operationId,{taskId:parsed.taskId,resourceId},()=>this.deps.asyncExecution!.enqueueImplementation({...parsed,operationId},resourceId,principal.actor));}
   async jobCancel(principal:SuperadminPrincipal,projectId:string,jobId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="CANCEL_JOB")throw new PolicyViolation("CANCEL_JOB confirmation is required");return this.mutate(principal,"job_cancel",projectId,data.operationId,{jobId,...data},async()=>{const job=await this.jobGet(principal,projectId,jobId);if(["SUCCEEDED","FAILED","CANCELLED","TIMED_OUT","BLOCKED"].includes(job.status))return job;const updated=await this.deps.store.updateExecutionJob({...job,status:"CANCELLED",finishedAt:this.clock.now(),updatedAt:this.clock.now(),error:{code:"SUPERADMIN_CANCELLED",reason:data.reason}});if(job.runId){const run=await this.deps.store.getRun(projectId,job.runId);if(run&&run.status==="RUNNING")await this.deps.store.updateRun({...run,status:"CANCELLED",finishedAt:this.clock.now()});}return updated;});}
 
   async artifactList(principal:SuperadminPrincipal,projectId:string,taskId?:string){this.requireSuperadmin(principal);return this.deps.store.listArtifacts(projectId,taskId);}
@@ -512,6 +539,85 @@ export class SuperadminService {
   async membershipDelete(principal:SuperadminPrincipal,userId:string,projectId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="DELETE_MEMBERSHIP")throw new PolicyViolation("DELETE_MEMBERSHIP confirmation is required");return this.mutate(principal,"membership_delete",projectId,data.operationId,{userId,...data},async()=>{await this.membershipGet(principal,userId,projectId);await this.deps.store.deleteMembership(userId,projectId);return {userId,projectId,deleted:true};});}
   async auditList(principal:SuperadminPrincipal,projectId:string){this.requireSuperadmin(principal);return this.deps.store.listAudit(projectId);}
   async auditGet(principal:SuperadminPrincipal,projectId:string,id:string){this.requireSuperadmin(principal);const value=await this.deps.store.getAudit(projectId,id);if(!value)throw new NotFound("Audit event not found");return value;}
+
+  // ------------------------------------------------------------------------
+  // Canonical Development Repository
+  //
+  // Promotion assigns an already-registered repository the role of "the project's one source of
+  // further development". It copies no Git, creates no repository, renames nothing and changes no
+  // organization. Export is the separate operation that moves history, and a successful export
+  // never makes its target canonical on its own -- that stays an explicit second decision.
+  // ------------------------------------------------------------------------
+
+  /** Read-only. Current binding plus the full append-only history of what was canonical when. */
+  async canonicalRepositoryGet(principal: SuperadminPrincipal, projectId: string) {
+    this.requireSuperadmin(principal);
+    await this.requireProject(projectId);
+    return this.canonical.get(projectId);
+  }
+
+  /**
+   * Read-only dry run. Reports the exact change a promotion would make, every blocker with a
+   * remediation, and the pinned values the mutation must carry. It writes nothing, dispatches
+   * nothing and has no side effect of any kind.
+   */
+  async canonicalRepositoryPlan(principal: SuperadminPrincipal, projectId: string, resourceId: string) {
+    this.requireSuperadmin(principal);
+    await this.requireProject(projectId);
+    return this.canonical.plan({ projectId, resourceId });
+  }
+
+  canonicalRepositoryPromote(principal: SuperadminPrincipal, input: unknown) {
+    const data = canonicalRepositoryPromoteInputSchema.parse(input);
+    return this.mutate(principal, "canonical_repository_promote", data.projectId, data.operationId, { resourceId: data.resourceId, expectedHeadSha: data.expectedHeadSha, expectedCurrentCanonicalVersion: data.expectedCurrentCanonicalVersion, reason: data.reason }, () =>
+      this.canonical.promote(data, principal.actor),
+    );
+  }
+
+  /** Restores the previous BINDING. Never deletes a repository, force-pushes or rewrites history. */
+  canonicalRepositoryRollback(principal: SuperadminPrincipal, input: unknown) {
+    const data = canonicalRepositoryRollbackInputSchema.parse(input);
+    return this.mutate(principal, "canonical_repository_rollback", data.projectId, data.operationId, { expectedCurrentCanonicalVersion: data.expectedCurrentCanonicalVersion, reason: data.reason }, () =>
+      this.canonical.rollback(data, principal.actor),
+    );
+  }
+
+  /** Read-only. Describes the Git transfer as an engineering object, never as a file archive. */
+  async repositoryExportPlan(principal: SuperadminPrincipal, projectId: string, sourceResourceId: string, targetResourceId: string) {
+    this.requireSuperadmin(principal);
+    await this.requireProject(projectId);
+    return this.canonical.exportPlan({ projectId, sourceResourceId, targetResourceId });
+  }
+
+  repositoryExport(principal: SuperadminPrincipal, input: unknown) {
+    const data = repositoryExportInputSchema.parse(input);
+    return this.mutate(principal, "repository_export", data.projectId, data.operationId, { sourceResourceId: data.sourceResourceId, targetResourceId: data.targetResourceId, expectedSourceHeadSha: data.expectedSourceHeadSha, reason: data.reason }, () =>
+      this.canonical.exportRepository(data, principal.actor),
+    );
+  }
+
+  repositoryExportVerify(principal: SuperadminPrincipal, input: unknown) {
+    const data = z.object({ projectId: z.string().uuid(), sourceResourceId: z.string().uuid(), targetResourceId: z.string().uuid(), operationId: operationIdSchema }).parse(input);
+    return this.mutate(principal, "repository_export_verify", data.projectId, data.operationId, data, () =>
+      this.canonical.exportVerify({ ...data, persist: true }, principal.actor),
+    );
+  }
+
+  /**
+   * Machine-checkable developer handover readiness. Read-only unless `operationId` is supplied, in
+   * which case the report is persisted as a terminal DEVELOPER_HANDOVER_REPORT artifact.
+   */
+  async developerHandoverReport(principal: SuperadminPrincipal, projectId: string, operationId?: string) {
+    this.requireSuperadmin(principal);
+    await this.requireProject(projectId);
+    if (!operationId) return this.canonical.handoverReport({ projectId }, principal.actor);
+    // Unwrapped deliberately: persisting is a side effect of the same question, so the answer keeps
+    // one shape whether or not an operationId was supplied. A replay returns the stored report.
+    const outcome = await this.mutate(principal, "developer_handover_report", projectId, operationId, { projectId }, () =>
+      this.canonical.handoverReport({ projectId, persist: true, operationId }, principal.actor),
+    );
+    return outcome.value as DeveloperHandoverReport;
+  }
 
   private requireSuperadmin(principal: SuperadminPrincipal) {
     if (principal.role !== "SUPERADMIN")

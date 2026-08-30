@@ -27,6 +27,14 @@
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts",
     "../../../packages/core/src/repository-guard.js": "../../../packages/core/src/repository-guard.ts",
-    "../../../packages/core/src/application.js": "../../../packages/core/src/application.ts"
+    "../../../packages/core/src/application.js": "../../../packages/core/src/application.ts",
+    "../../../packages/canonical-repository/src/index.js": "../../../packages/canonical-repository/src/index.ts",
+    "../../../packages/canonical-repository/src/ports.js": "../../../packages/canonical-repository/src/ports.ts",
+    "../../../packages/canonical-repository/src/promotion.js": "../../../packages/canonical-repository/src/promotion.ts",
+    "../../../packages/canonical-repository/src/export.js": "../../../packages/canonical-repository/src/export.ts",
+    "../../../packages/canonical-repository/src/handover.js": "../../../packages/canonical-repository/src/handover.ts",
+    "../../../packages/canonical-repository/src/target-resolution.js": "../../../packages/canonical-repository/src/target-resolution.ts",
+    "../../../packages/canonical-repository/src/service.js": "../../../packages/canonical-repository/src/service.ts",
+    "../../../packages/adapters/github/src/repository-provider.js": "../../../packages/adapters/github/src/repository-provider.ts"
   }
 }

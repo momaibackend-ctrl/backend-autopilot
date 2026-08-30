@@ -1,10 +1,12 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import './edge-dependencies.ts';
 import { GitHubActionsDispatcher } from '../../../packages/adapters/github/src/actions-dispatcher.ts';
+import { GitHubRestRepositoryProvider } from '../../../packages/adapters/github/src/repository-provider.ts';
 import { SupabaseStorageArtifactBlobStore } from '../../../packages/adapters/supabase/src/artifact-storage.ts';
 import { AsyncExecutionCoordinator } from '../../../packages/core/src/async-execution.ts';
 import { AutopilotService } from '../../../packages/core/src/application.ts';
 import { UnsupportedOperation } from '../../../packages/core/src/errors.ts';
+import { systemClock, uuidGenerator } from '../../../packages/core/src/ports.ts';
 import { PostgrestStateStore } from '../../../packages/project-registry/src/postgrest-store.ts';
 import { SuperadminService } from '../../../packages/superadmin/src/index.ts';
 
@@ -12,8 +14,10 @@ export function createEdgeRuntime(){
   const url=required('SUPABASE_URL'),serviceKey=required('SUPABASE_SERVICE_ROLE_KEY');const store=new PostgrestStateStore(url,serviceKey);const unavailable=async():Promise<never>=>{throw new UnsupportedOperation('Subprocess execution is only available in GitHub Actions');};
   const blobs=new SupabaseStorageArtifactBlobStore(url,serviceKey);const service=new AutopilotService({store,execution:{execute:unavailable},tests:{run:unavailable},git:{snapshot:unavailable,branch:unavailable,stage:unavailable,diff:unavailable,commit:unavailable},commands:{drain:()=>[]},artifactBlobs:blobs});
   const dispatcher=new GitHubActionsDispatcher(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'),required('AUTOPILOT_CONTROL_REPOSITORY'),Deno.env.get('AUTOPILOT_EXECUTION_WORKFLOW')??'autopilot-execution.yml',Deno.env.get('AUTOPILOT_CONTROL_REF')??'main');
-  const asyncExecution=new AsyncExecutionCoordinator(store,dispatcher);const superadmin=new SuperadminService({store,service,asyncExecution,systemProjectId:required('AUTOPILOT_SYSTEM_PROJECT_ID'),artifactBlobs:blobs,deploymentStatus,secrets:edgeSecretResolver});
-  return {store,service,asyncExecution,superadmin,dispatcher,url,serviceKey,blobs};
+  const repositories=new GitHubRestRepositoryProvider(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'));
+  const asyncExecution=new AsyncExecutionCoordinator(store,dispatcher,systemClock,uuidGenerator,repositories);
+  const superadmin=new SuperadminService({store,service,asyncExecution,systemProjectId:required('AUTOPILOT_SYSTEM_PROJECT_ID'),artifactBlobs:blobs,deploymentStatus,secrets:edgeSecretResolver,repositories,exportDispatcher:dispatcher,exportWorkflow:Deno.env.get('AUTOPILOT_EXPORT_WORKFLOW')??'autopilot-repository-export.yml'});
+  return {store,service,asyncExecution,superadmin,dispatcher,repositories,url,serviceKey,blobs};
 }
 
 // Resolves an HTTP_API resource's registered secretRef name (never a raw value supplied by a

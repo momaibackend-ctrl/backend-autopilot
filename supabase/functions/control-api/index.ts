@@ -48,6 +48,43 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
     return json(await runtime.service.epicVerification({...await body() as object,projectId},`edge-operator:${viewer.id}`),200,cors);
   if(parts[1]==='projects'&&parts[3]==='epic'&&parts[4]==='evidence'&&request.method==='POST')
     return json(await runtime.service.epicEvidenceRecord({...await body() as object,projectId},`edge-operator:${viewer.id}`),201,cors);
+  // Canonical development repository, repository export and developer handover, on the same
+  // authenticated surface as everything else. Every route delegates to the SAME
+  // SuperadminService methods the MCP tools call, so the Control API cannot acquire its own
+  // business logic or skip a gate; a non-SUPERADMIN operator gets an explicit policy error
+  // from the service rather than a second, weaker code path.
+  if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts.length===4&&request.method==='GET')
+    return json(await runtime.superadmin.canonicalRepositoryGet(consolePrincipal(viewer),projectId!),200,cors);
+  if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts[4]==='plan'&&request.method==='POST'){
+    const value=await body() as {resourceId:string};
+    return json(await runtime.superadmin.canonicalRepositoryPlan(consolePrincipal(viewer),projectId!,value.resourceId),200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts[4]==='promote'&&request.method==='POST'){
+    const outcome=await runtime.superadmin.canonicalRepositoryPromote(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
+    return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts[4]==='rollback'&&request.method==='POST'){
+    const outcome=await runtime.superadmin.canonicalRepositoryRollback(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
+    return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='repository-export'&&parts[4]==='plan'&&request.method==='POST'){
+    const value=await body() as {sourceResourceId:string;targetResourceId:string};
+    return json(await runtime.superadmin.repositoryExportPlan(consolePrincipal(viewer),projectId!,value.sourceResourceId,value.targetResourceId),200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='repository-export'&&parts.length===4&&request.method==='POST'){
+    const outcome=await runtime.superadmin.repositoryExport(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
+    return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},202,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='repository-export'&&parts[4]==='verify'&&request.method==='POST'){
+    const outcome=await runtime.superadmin.repositoryExportVerify(consolePrincipal(viewer),{...await body() as Record<string,unknown>,projectId});
+    return json({result:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
+  }
+  if(parts[1]==='projects'&&parts[3]==='developer-handover'&&request.method==='GET')
+    return json(await runtime.superadmin.developerHandoverReport(consolePrincipal(viewer),projectId!),200,cors);
+  if(parts[1]==='projects'&&parts[3]==='developer-handover'&&request.method==='POST'){
+    const value=await body() as {operationId:string};
+    return json(await runtime.superadmin.developerHandoverReport(consolePrincipal(viewer),projectId!,value.operationId),200,cors);
+  }
   if(path==='/v1/console/overview'&&request.method==='GET')return json(await overview(runtime,viewer),200,cors);
   if(path==='/v1/console/screens'&&request.method==='GET')return json(await runtime.store.listConsoleScreens(),200,cors);
   if(parts[1]==='console'&&parts[2]==='screens'&&parts[3]&&request.method==='GET'){const screen=await runtime.store.getConsoleScreen(parts[3]);if(!screen)throw new NotFound('Console screen not found');return json(screen,200,cors);}

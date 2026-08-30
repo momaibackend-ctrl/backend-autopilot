@@ -44,6 +44,45 @@ A required generative layer is never satisfied by a suite's exit code. `PROPERTY
 
 `READY` requires implementation, ArchitectureGuard, all required suites, IndependentReview, and mandatory artifacts. Failed tests return to implementation until `maxAutoRepairAttempts`; then the task is `BLOCKED`.
 
+## Canonical development repository
+
+A project's **Canonical Development Repository** is a role a registered repository plays -- "this is
+the one source of further development" -- not a name, a host, or a claim about production. The
+binding references a registered `GITHUB_REPOSITORY` resource rather than carrying its own
+owner/name, so there stays exactly one repository registry: the resource answers what Autopilot may
+touch at all, the binding answers which of those the project develops in. Bindings are versioned and
+append-only; a replaced one becomes `SUPERSEDED` and is never deleted.
+
+"At most one `ACTIVE` binding per project" is a durable database invariant, not an application
+convention: a partial unique index on `(project_id) WHERE status='ACTIVE'`, plus a `FOR UPDATE` row
+lock inside one atomic promotion function that both promotion and metadata rollback go through. Two
+concurrent promotions cannot both win regardless of how their callers interleave.
+
+Promotion and export are deliberately separate operations. Promotion assigns the role and copies no
+Git, creates no repository, renames nothing and moves no organization. Export mirrors history into
+another registered repository and, on its own, changes nothing about which repository is canonical;
+making an export target canonical is a second explicit decision. Both have a read-only dry run, and
+both mutations pin the exact state that dry run saw -- a moved head or a changed binding version is
+`STALE_PROMOTION_PLAN`, never a silent retarget. Metadata rollback restores a previous binding and
+has no code path that reaches a repository.
+
+Once a project has an `ACTIVE` binding, new work resolves its repository server-side: a task that
+already executed keeps its pinned repository, and a caller-supplied `resourceId` may only confirm
+the canonical one. A project with no binding behaves exactly as it did before bindings existed,
+which is what keeps every historical project working. Canonical does not mean floating: the binding
+says where the base comes from, and execution still resolves the default branch to an exact commit
+and persists it on the job.
+
+Git-level transfer runs in a fixed control-repository workflow -- the control plane has no
+subprocess -- and verification reads the target back for identity, heads, default branch, every
+required ref and tag, and reachability of the source head. A transfer that cannot be proved is
+`BLOCKED`, never partial success. Secret and configuration **values** never travel: `SECRET_CONFIG_HANDOVER`
+carries reference names, purposes, owners and per-item setup status, and there is no parameter
+anywhere on the export path through which a value could enter. `DEVELOPER_HANDOVER_REPORT` checks
+objective facts about the canonical repository at an exact commit, including that ordinary local
+development requires no MCP client and no Superadmin token. Details are in
+`docs/canonical-development-repository.md`.
+
 ## Project context
 
 Context is versioned sections, not a prompt. Every section records source type/reference, import time, hash, and `trustedAsInstructions: false`. Repository/task text is always data and cannot alter policy.

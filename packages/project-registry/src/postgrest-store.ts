@@ -1,6 +1,6 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
-import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 // Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
 // a server-side cap we cannot see.
@@ -69,6 +69,24 @@ export class PostgrestStateStore implements StateStore {
   getAdminOperation(id:string){return this.one<AdminOperation>('admin_operations',`operation_id=eq.${encodeURIComponent(id)}`);}
   listAdminOperations(){return this.many<AdminOperation>('admin_operations','order=created_at.asc');}
   async listMigrationMarkers(){const rows=await this.request<Array<{key:string,checksum:string,data:unknown,created_at:string}>>('GET','/rest/v1/migration_markers?select=*&order=created_at.asc');return rows.map((v):MigrationMarker=>({key:v.key,checksum:v.checksum,data:v.data,createdAt:v.created_at}));}
+  getCanonicalRepository(projectId:string,id:string){return this.one<CanonicalDevelopmentRepository>('canonical_development_repositories',`id=eq.${id}&project_id=eq.${projectId}`);}
+  getActiveCanonicalRepository(projectId:string){return this.one<CanonicalDevelopmentRepository>('canonical_development_repositories',`project_id=eq.${projectId}&status=eq.ACTIVE`);}
+  listCanonicalRepositories(projectId:string){return this.many<CanonicalDevelopmentRepository>('canonical_development_repositories',`project_id=eq.${projectId}&order=version.asc`);}
+  // PostgREST has no transactions across requests, so the whole replacement is one database
+  // function. It takes the ACTIVE row FOR UPDATE, checks the caller's optimistic lock inside that
+  // lock, and inserts under the partial unique index -- the same guarantee the direct-Postgres
+  // store gets, expressed as an RPC because Edge speaks only PostgREST.
+  async promoteCanonicalRepository(request:CanonicalPromotionRequest){
+    const value=await this.rpc<{active:CanonicalDevelopmentRepository;displaced:CanonicalDevelopmentRepository|null}>('promote_canonical_repository',{
+      p_project_id:request.projectId,
+      p_record:request.record,
+      p_expected_id:request.expectedCurrent?.id??null,
+      p_expected_version:request.expectedCurrent?.version??null,
+      p_displaced_status:request.displacedStatus,
+      p_displaced_at:request.displacedAt,
+    });
+    return {active:value.active,...(value.displaced?{displaced:value.displaced}:{})};
+  }
   private async one<T>(table:string,query:string){const values=await this.request<{data:T}[]>('GET',`/rest/v1/${table}?select=data&${query}&limit=1`);return values[0]?.data;}
   // PostgREST caps an unbounded GET at its configured max rows (1000 on Supabase) and returns the
   // truncated page with a 200, giving no signal that anything was withheld. Every list here feeds

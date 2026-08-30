@@ -1,6 +1,6 @@
 import { Conflict } from '../../core/src/errors.js';
-import type { StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
   private projects=new Map<string,Project>(); private resources=new Map<string,Resource>(); private contexts:ProjectContext[]=[];
@@ -9,6 +9,7 @@ export class MemoryStateStore implements StateStore {
   private transitions:Transition[]=[]; private audit:AuditEvent[]=[];
   private settings=new Map<string,SystemSetting>(); private screens=new Map<string,ConsoleScreen>();
   private operators=new Map<string,Operator>(); private memberships=new Map<string,ProjectMembership>(); private operations=new Map<string,AdminOperation>();
+  private canonical=new Map<string,CanonicalDevelopmentRepository>();
   async createProject(v:Project){if([...this.projects.values()].some(p=>p.slug===v.slug))throw new Conflict('Project slug already exists');this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateProject(v:Project){this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async getProject(id:string){return clone(this.projects.get(id));} async listProjects(){return clones([...this.projects.values()]);}
@@ -53,6 +54,33 @@ export class MemoryStateStore implements StateStore {
   async saveAdminOperation(v:AdminOperation){this.operations.set(v.operationId,structuredClone(v));return structuredClone(v);} async getAdminOperation(id:string){return clone(this.operations.get(id));}
   async listAdminOperations(){return clones([...this.operations.values()]);}
   async listMigrationMarkers(){return [];}
+  /**
+   * Restores an already-valid persisted binding without re-running the promotion invariant. Not
+   * part of StateStore: it exists only so FileStateStore can rehydrate its snapshot, where the
+   * ACTIVE/SUPERSEDED set was already proved consistent when it was written.
+   */
+  async seedCanonicalRepository(value:CanonicalDevelopmentRepository){this.canonical.set(value.id,structuredClone(value));return structuredClone(value);}
+  async getCanonicalRepository(projectId:string,id:string){const value=this.canonical.get(id);return value?.projectId===projectId?structuredClone(value):undefined;}
+  async getActiveCanonicalRepository(projectId:string){return clone([...this.canonical.values()].find(v=>v.projectId===projectId&&v.status==='ACTIVE'));}
+  async listCanonicalRepositories(projectId:string){return clones([...this.canonical.values()].filter(v=>v.projectId===projectId).sort((a,b)=>a.version-b.version));}
+  // The in-memory stand-in for the partial unique index the PostgreSQL stores rely on. Everything
+  // between the read and the writes happens in one synchronous block, so an interleaved promotion
+  // cannot observe the intermediate state -- which is the same guarantee the index gives, and the
+  // reason the concurrency test can assert identical behaviour against either store.
+  async promoteCanonicalRepository(request:CanonicalPromotionRequest){
+    const active=[...this.canonical.values()].find(v=>v.projectId===request.projectId&&v.status==='ACTIVE');
+    if(request.expectedCurrent){
+      if(!active)throw new Conflict('Expected an ACTIVE canonical repository that no longer exists',{expected:request.expectedCurrent});
+      if(active.id!==request.expectedCurrent.id||active.version!==request.expectedCurrent.version)
+        throw new Conflict('Canonical repository changed since the plan was generated',{expected:request.expectedCurrent,actual:{id:active.id,version:active.version}});
+    }else if(active)throw new Conflict('Project already has an ACTIVE canonical repository',{actual:{id:active.id,version:active.version}});
+    if([...this.canonical.values()].some(v=>v.operationId===request.record.operationId))throw new Conflict('Canonical promotion operationId was already used');
+    if([...this.canonical.values()].some(v=>v.projectId===request.projectId&&v.version===request.record.version))throw new Conflict('Canonical repository version already exists',{version:request.record.version});
+    let displaced:CanonicalDevelopmentRepository|undefined;
+    if(active){displaced={...active,status:request.displacedStatus,supersededBy:request.record.id,supersededAt:request.displacedAt,updatedAt:request.displacedAt};this.canonical.set(displaced.id,structuredClone(displaced));}
+    this.canonical.set(request.record.id,structuredClone(request.record));
+    return {active:structuredClone(request.record),...(displaced?{displaced:structuredClone(displaced)}:{})};
+  }
 }
 function clone<T>(v:T|undefined):T|undefined{return v===undefined?undefined:structuredClone(v);}
 function clones<T>(v:T[]):T[]{return structuredClone(v);}
