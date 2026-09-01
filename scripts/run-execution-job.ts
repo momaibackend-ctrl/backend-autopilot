@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { parse as parseYaml } from 'yaml';
 import { ArtifactStore } from '../packages/artifact-store/src/index.js';
 import { AuditLog } from '../packages/audit/src/index.js';
+import { R2ArtifactBlobStore, readR2ConfigFromEnv } from '../packages/adapters/r2/src/artifact-storage.js';
 import { SupabaseStorageArtifactBlobStore } from '../packages/adapters/supabase/src/artifact-storage.js';
 import { LiveGitHubAdapter } from '../packages/adapters/github/src/index.js';
 import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
@@ -27,13 +28,16 @@ const rebasePayloadSchema=z.object({rebase:z.object({sourceBranch:z.string().min
 const jobId=argument('--job')??process.env['AUTOPILOT_JOB_ID'];
 const databaseUrl=required('DATABASE_URL');
 const githubToken=required('AUTOPILOT_GITHUB_TOKEN');
-const supabaseUrl=required('SUPABASE_URL');
-const serviceRoleKey=required('SUPABASE_SERVICE_ROLE_KEY');
+// SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are only resolved below, inside the ArtifactBlobStore
+// selection, so a fully configured AUTOPILOT_R2_* set never needs to require them.
 if(!jobId||!z.string().uuid().safeParse(jobId).success)throw new Error('A valid --job identifier is required');
 const store=new PostgresStateStore(databaseUrl);const owner=`github-actions:${process.env['GITHUB_RUN_ID']??crypto.randomUUID()}:${process.env['GITHUB_RUN_ATTEMPT']??'1'}`;
 const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error('Execution job not found');
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
-const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);const blobs=new SupabaseStorageArtifactBlobStore(supabaseUrl,serviceRoleKey);const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
+const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);
+const r2Config=readR2ConfigFromEnv(name=>process.env[name]);
+const blobs=r2Config?new R2ArtifactBlobStore(r2Config.accountId,r2Config.bucketName,r2Config.accessKeyId,r2Config.secretAccessKey):new SupabaseStorageArtifactBlobStore(required('SUPABASE_URL'),required('SUPABASE_SERVICE_ROLE_KEY'));
+const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
 try{
   // Stamp the GitHub run identity onto the job the moment it is actually running. The dispatch
   // endpoint answers 204 with an empty body, so the dispatcher never learns the run id -- which
