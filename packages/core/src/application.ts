@@ -1126,38 +1126,57 @@ export class AutopilotService {
   ) {
     const entries = this.deps.commands.drain(taskId);
     if (!entries.length) return;
-    const records = [];
-    for (const entry of entries) {
-      const stdout = entry.stdout
-        ? await this.artifacts.write(
-            projectId,
-            "COMMAND_STDOUT",
-            entry.stdout,
-            taskId,
-            runId,
-          )
-        : undefined;
-      const stderr = entry.stderr
-        ? await this.artifacts.write(
-            projectId,
-            "COMMAND_STDERR",
-            entry.stderr,
-            taskId,
-            runId,
-          )
-        : undefined;
-      records.push({
-        ...entry.record,
-        ...(stdout ? { stdoutRef: stdout.id } : {}),
-        ...(stderr ? { stderrRef: stderr.id } : {}),
-      });
+    // Command stdout/stderr/log persistence is debugging evidence, never the primary domain
+    // outcome (a test report, an execution result). A transient artifact-storage failure here
+    // must never mask or replace the caller's already-decided result: this is what stranded
+    // MOMNA-1063 in TESTING forever -- a Supabase Storage 502 while persisting command logs
+    // threw out of taskTest AFTER the real test report had already been computed, so the
+    // repairAttempts/BLOCKED-or-IMPLEMENTING transition that should have followed never ran,
+    // and the generic "artifact upload failed" error replaced the real, already-known test
+    // outcome as the job's terminal error.
+    try {
+      const records = [];
+      for (const entry of entries) {
+        const stdout = entry.stdout
+          ? await this.artifacts.write(
+              projectId,
+              "COMMAND_STDOUT",
+              entry.stdout,
+              taskId,
+              runId,
+            )
+          : undefined;
+        const stderr = entry.stderr
+          ? await this.artifacts.write(
+              projectId,
+              "COMMAND_STDERR",
+              entry.stderr,
+              taskId,
+              runId,
+            )
+          : undefined;
+        records.push({
+          ...entry.record,
+          ...(stdout ? { stdoutRef: stdout.id } : {}),
+          ...(stderr ? { stderrRef: stderr.id } : {}),
+        });
+      }
+      await this.artifacts.write(
+        projectId,
+        "COMMAND_LOG",
+        { commands: records },
+        taskId,
+        runId,
+      );
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "persist_commands.failed",
+          taskId,
+          runId,
+          message: error instanceof Error ? error.message : "unknown",
+        }),
+      );
     }
-    await this.artifacts.write(
-      projectId,
-      "COMMAND_LOG",
-      { commands: records },
-      taskId,
-      runId,
-    );
   }
 }
