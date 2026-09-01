@@ -9,7 +9,8 @@ export default tseslint.config(
       '**/.next-static/**',
       'node_modules/**',
       'tests/fixtures/**',
-      'supabase/functions/**'
+      'supabase/functions/**',
+      'reference-repos/**'
     ]
   },
   js.configs.recommended,
