@@ -26,21 +26,23 @@ The project-scoped `SECRETS_MANIFEST` artifact contains the same references and 
 
 Local copies use the gitignored `.env` under their `AUTOPILOT_CONTROL_*` names. Deployed copies are server-side only. Workflow inputs contain only a job UUID, never any value above.
 
-## Next Supabase project references (`supabase-next.yml`, manual-only)
+## Next control-plane references (`supabase-next.yml` / `autopilot-execution-next.yml`, manual-only)
 
-Not yet configured; the workflow fails closed until they are. Entirely separate from the references above -- none of them are read from or written to the current live Supabase project.
+This manifest records which references the next-runtime workflows *require*; it cannot observe whether a given GitHub secret currently exists. Each workflow reports that itself, in a preflight step that prints missing secret **names** only and refuses to contact any provider until they are all present.
+
+Only the five `AUTOPILOT_NEXT_*` references below are new. The next runtime reuses the existing `AUTOPILOT_GITHUB_TOKEN`, `AUTOPILOT_MCP_TOKEN`, `AUTOPILOT_SUPERADMIN_MCP_TOKEN` and `AUTOPILOT_RECONCILE_TOKEN` unchanged.
 
 | Reference | Provider/storage | Scope | Lifecycle |
 |---|---|---|---|
 | `AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN` | GitHub Actions secret | `supabase` CLI auth for the next project only | revoke through official Supabase account settings |
-| `AUTOPILOT_NEXT_SUPABASE_PROJECT_REF` | GitHub Actions secret | next Supabase project ref | replaced only if the next project itself changes |
-| `AUTOPILOT_NEXT_SUPABASE_URL` | GitHub Actions secret; becomes the next project's Edge secret `SUPABASE_URL` | new control-state store (`PostgrestStateStore`) | rotate in the next Supabase project |
-| `AUTOPILOT_NEXT_SUPABASE_SERVICE_ROLE_KEY` | GitHub Actions secret; becomes the next project's Edge secret `SUPABASE_SERVICE_ROLE_KEY` | new control-state store | rotate in the next Supabase project |
-| `AUTOPILOT_NEXT_R2_ACCOUNT_ID` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_R2_ACCOUNT_ID` | R2ArtifactBlobStore | rotate in Cloudflare R2 |
-| `AUTOPILOT_NEXT_R2_BUCKET_NAME` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_R2_BUCKET_NAME` | R2ArtifactBlobStore | replaced only if the bucket changes |
-| `AUTOPILOT_NEXT_R2_ACCESS_KEY_ID` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_R2_ACCESS_KEY_ID` | R2ArtifactBlobStore | rotate in Cloudflare R2 |
-| `AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_R2_SECRET_ACCESS_KEY` | R2ArtifactBlobStore | rotate in Cloudflare R2 |
-| `AUTOPILOT_NEXT_LEGACY_SUPABASE_URL` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_LEGACY_SUPABASE_URL` | reads pre-cutover `storage.provider === "supabase"` artifacts via `RoutingArtifactBlobStore`; points at the OLD/current live Supabase project's Storage, deliberately never at `SUPABASE_URL` itself | rotate in the current (soon-to-be-legacy) Supabase project |
-| `AUTOPILOT_NEXT_LEGACY_SUPABASE_SERVICE_ROLE_KEY` | GitHub Actions secret; becomes the next project's Edge secret `AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY` | same legacy artifact reads | rotate in the current (soon-to-be-legacy) Supabase project |
+| `AUTOPILOT_NEXT_SUPABASE_URL` | GitHub Actions secret | next project's API URL; the deploy derives the 20-character project ref from its host and validates it, so no separate project-ref secret exists | replaced only if the next project itself changes |
+| `AUTOPILOT_NEXT_DATABASE_URL` | GitHub Actions secret | next control-plane PostgreSQL: `pnpm db:migrate` in the deploy, and `DATABASE_URL` for `autopilot-execution-next.yml` | rotate in the next Supabase project |
+| `AUTOPILOT_NEXT_R2_ACCOUNT_ID` / `AUTOPILOT_NEXT_R2_BUCKET_NAME` / `AUTOPILOT_NEXT_R2_ACCESS_KEY_ID` / `AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY` | GitHub Actions secrets; set as the next project's Edge secrets `AUTOPILOT_R2_*`, and passed directly to the next execution runner | `R2ArtifactBlobStore` on both the Edge and runner sides | rotate in Cloudflare R2 |
 
-`supabase-next.yml` is `workflow_dispatch`-only, requires its `confirm` input to equal exactly `DEPLOY_NEXT_SUPABASE`, and never runs on push. No value from this table is ever printed by the workflow.
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are **not** in this table and must never be set through `supabase secrets set`: Supabase reserves the `SUPABASE_` prefix and injects both into every hosted Edge Function automatically, scoped to the project the function runs in. `createEdgeRuntime` reads them with `Deno.env.get` and therefore picks up the next project's own pair once deployed there.
+
+Legacy artifact reads need no duplicated secrets either. `supabase-next.yml` passes the **existing** `AUTOPILOT_SUPABASE_URL` and `AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY` into the next project as its `AUTOPILOT_LEGACY_SUPABASE_URL` / `AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY` Edge secrets, so `RoutingArtifactBlobStore` can keep resolving pre-cutover `storage.provider === "supabase"` references. That is a read credential handed to the new runtime -- nothing is deployed to, or changed in, the current Supabase project.
+
+`autopilot-execution-next.yml` needs no Supabase Storage credential at all: with a complete `AUTOPILOT_R2_*` set, `createArtifactBlobStore` selects R2 and never resolves one. It references neither `AUTOPILOT_CONTROL_DATABASE_URL` nor the `AUTOPILOT_SUPABASE_*` pair.
+
+`supabase-next.yml` is `workflow_dispatch`-only, requires its `confirm` input to equal exactly `DEPLOY_NEXT_SUPABASE`, and (until the migration branch merges) refuses to run from any branch other than `autopilot/migrate-next-supabase-r2`. No value from this table is ever printed by either workflow.

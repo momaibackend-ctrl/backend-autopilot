@@ -1,0 +1,81 @@
+name: Backend Autopilot execution (next)
+# Isolated twin of autopilot-execution.yml for the next control plane: the SAME durable-job entry
+# point and the same safety envelope (job-id-only input, per-job concurrency, timeout, read-only
+# token scope), but bound to the next Postgres and to R2 artifact storage.
+#
+# It deliberately references neither AUTOPILOT_CONTROL_DATABASE_URL nor AUTOPILOT_SUPABASE_URL /
+# AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY: with a complete AUTOPILOT_R2_* set, createArtifactBlobStore
+# selects R2 and never resolves Supabase Storage credentials at all. The current execution workflow
+# is untouched and keeps running the current control plane.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Durable Backend Autopilot execution job UUID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopilot-execution-next-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AUTOPILOT_JOB_ID: ${{ inputs.job_id }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+      AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+    steps:
+      # A partial R2 set already fails closed inside readR2ConfigFromEnv, but an entirely absent one
+      # would instead fall back to Supabase Storage and only fail later with an unrelated-looking
+      # "SUPABASE_URL is required". Naming the missing secret up front keeps that misconfiguration
+      # legible; only names are printed.
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+            "AUTOPILOT_R2_ACCOUNT_ID:AUTOPILOT_NEXT_R2_ACCOUNT_ID" \
+            "AUTOPILOT_R2_BUCKET_NAME:AUTOPILOT_NEXT_R2_BUCKET_NAME" \
+            "AUTOPILOT_R2_ACCESS_KEY_ID:AUTOPILOT_NEXT_R2_ACCESS_KEY_ID" \
+            "AUTOPILOT_R2_SECRET_ACCESS_KEY:AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY" \
+            "AUTOPILOT_GITHUB_TOKEN:AUTOPILOT_GITHUB_TOKEN" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to claim a durable job: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: pnpm install --frozen-lockfile
+      - name: Execute durable job
+        run: pnpm execution:job -- --job "$AUTOPILOT_JOB_ID"

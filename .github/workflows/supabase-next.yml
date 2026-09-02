@@ -1,10 +1,14 @@
 name: Deploy Supabase Next
-# Manual-only scaffold for the FUTURE Edge Functions deploy to the next Supabase project
-# ("mamai backend new") with R2 artifact storage. This workflow never runs on push -- only an
-# explicit workflow_dispatch, guarded by a typed confirmation input -- and it never touches the
-# current live Supabase project or its `supabase.yml` deployment workflow. It uses its own,
-# separate `AUTOPILOT_NEXT_*` secrets; the current-project `AUTOPILOT_SUPABASE_*` secrets are
-# never referenced here.
+# Manual-only scaffold for the FUTURE control-plane deploy to the next Supabase project
+# ("mamai backend new") with R2 artifact storage. It never runs on push, never touches the current
+# live Supabase project, and never modifies `supabase.yml` / `autopilot-execution.yml`.
+#
+# Two things are deliberately NOT set as Edge secrets here: SUPABASE_URL and
+# SUPABASE_SERVICE_ROLE_KEY. Supabase reserves the `SUPABASE_` prefix and injects both into every
+# hosted Edge Function automatically, scoped to the project the function is deployed in. Passing
+# our own copies through `supabase secrets set` is rejected by the platform -- and would be wrong
+# anyway, since the values must be the NEW project's. `createEdgeRuntime` keeps reading them with
+# `Deno.env.get`, and after this deploy it transparently gets the new project's own pair.
 on:
   workflow_dispatch:
     inputs:
@@ -24,40 +28,122 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      # Next-project provisioning credentials. The project ref is DERIVED from the URL below rather
+      # than kept as a second secret, so there is one less thing to configure and keep in sync.
       SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_PROJECT_ID: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_PROJECT_REF }}
-      # Edge Function runtime configuration for the next project (see packages/adapters/artifact-storage
-      # and supabase/functions/_shared/edge-runtime.ts): SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY back the
-      # new control-state store; the AUTOPILOT_R2_* four back the new R2ArtifactBlobStore; the
-      # AUTOPILOT_LEGACY_SUPABASE_* pair lets historical externalized artifacts (storage.provider ===
-      # "supabase") keep resolving against the OLD project's Storage after cutover, per
-      # RoutingArtifactBlobStore. Every value below is sourced from its own AUTOPILOT_NEXT_* GitHub
-      # secret and is never logged or printed by this workflow.
-      SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_SERVICE_ROLE_KEY }}
+      AUTOPILOT_NEXT_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
+      # Schema for the NEXT control-plane Postgres only. The current project's
+      # AUTOPILOT_CONTROL_DATABASE_URL is deliberately never referenced by this workflow.
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      # R2 artifact storage for the next runtime (packages/adapters/r2).
       AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
       AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
       AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
       AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
-      AUTOPILOT_LEGACY_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_LEGACY_SUPABASE_URL }}
-      AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_NEXT_LEGACY_SUPABASE_SERVICE_ROLE_KEY }}
+      # Legacy artifact READS only (RoutingArtifactBlobStore, provider "supabase"). These reuse the
+      # EXISTING current-project references rather than making the operator duplicate them under new
+      # names: the next runtime needs exactly those credentials to keep pre-cutover externalized
+      # artifacts readable. Nothing is deployed to, or changed in, the current Supabase project.
+      AUTOPILOT_LEGACY_SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
+      AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      # Non-reserved runtime configuration required by createEdgeRuntime.
+      AUTOPILOT_GITHUB_DISPATCH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+      AUTOPILOT_MCP_TOKEN: ${{ secrets.AUTOPILOT_MCP_TOKEN }}
+      AUTOPILOT_SUPERADMIN_MCP_TOKEN: ${{ secrets.AUTOPILOT_SUPERADMIN_MCP_TOKEN }}
+      AUTOPILOT_RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
     steps:
-      - name: Require explicit "DEPLOY_NEXT_SUPABASE" confirmation
+      # Every guard below runs before checkout and before any provider call, so a wrong trigger
+      # costs nothing and touches nothing.
+      - name: Guard - explicit confirmation and migration-branch-only
         env:
           CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
         run: |
           if [ "$CONFIRM_INPUT" != "DEPLOY_NEXT_SUPABASE" ]; then
-            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly DEPLOY_NEXT_SUPABASE. This manual-only workflow guards the next Supabase project against an accidental trigger." >&2
+            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly DEPLOY_NEXT_SUPABASE." >&2
             exit 1
           fi
+          # Temporary pre-merge guard: until the migration branch lands, the next project may only
+          # be provisioned from that branch. Remove this check as part of the cutover change.
+          if [ "$GITHUB_REF_NAME" != "autopilot/migrate-next-supabase-r2" ]; then
+            echo "::error::Refusing to run from '$GITHUB_REF_NAME': the next Supabase project may only be provisioned from autopilot/migrate-next-supabase-r2 until that migration branch is merged." >&2
+            exit 1
+          fi
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "SUPABASE_ACCESS_TOKEN:AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN" \
+            "AUTOPILOT_NEXT_SUPABASE_URL:AUTOPILOT_NEXT_SUPABASE_URL" \
+            "DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+            "AUTOPILOT_R2_ACCOUNT_ID:AUTOPILOT_NEXT_R2_ACCOUNT_ID" \
+            "AUTOPILOT_R2_BUCKET_NAME:AUTOPILOT_NEXT_R2_BUCKET_NAME" \
+            "AUTOPILOT_R2_ACCESS_KEY_ID:AUTOPILOT_NEXT_R2_ACCESS_KEY_ID" \
+            "AUTOPILOT_R2_SECRET_ACCESS_KEY:AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY" \
+            "AUTOPILOT_LEGACY_SUPABASE_URL:AUTOPILOT_SUPABASE_URL" \
+            "AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY:AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY" \
+            "AUTOPILOT_GITHUB_DISPATCH_TOKEN:AUTOPILOT_GITHUB_TOKEN" \
+            "AUTOPILOT_MCP_TOKEN:AUTOPILOT_MCP_TOKEN" \
+            "AUTOPILOT_SUPERADMIN_MCP_TOKEN:AUTOPILOT_SUPERADMIN_MCP_TOKEN" \
+            "AUTOPILOT_RECONCILE_TOKEN:AUTOPILOT_RECONCILE_TOKEN" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to contact any provider: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      - name: Resolve the next project ref from its URL (the URL itself is never printed)
+        run: |
+          host="${AUTOPILOT_NEXT_SUPABASE_URL#https://}"
+          host="${host%%/*}"
+          project_ref="${host%%.*}"
+          if ! printf '%s' "$project_ref" | grep -Eq '^[a-z0-9]{20}$'; then
+            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL does not yield a valid Supabase project ref. Expected exactly https://<20-char-ref>.supabase.co. The secret value is not printed." >&2
+            exit 1
+          fi
+          echo "SUPABASE_PROJECT_ID=$project_ref" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply the control-plane schema to the next Postgres
+        run: pnpm db:migrate
       - uses: supabase/setup-cli@v1
         with: { version: 2.75.0 }
-      - name: Configure Edge server secrets on the next Supabase project (names only; values come from GitHub Actions secrets and are never printed)
+      - name: Configure Edge runtime variables on the next project (no reserved SUPABASE_* names)
+        # AUTOPILOT_EXECUTION_WORKFLOW points at the isolated next execution workflow so dispatched
+        # jobs run against the next Postgres and R2. Note that the GitHub dispatch API resolves a
+        # workflow by file name from the default branch, so dispatch only starts working once
+        # autopilot-execution-next.yml has landed there -- that is part of the later cutover, not
+        # of this scaffold.
         run: >-
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
-          SUPABASE_URL="$SUPABASE_URL"
-          SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+          AUTOPILOT_GITHUB_DISPATCH_TOKEN="$AUTOPILOT_GITHUB_DISPATCH_TOKEN"
+          AUTOPILOT_CONTROL_REPOSITORY="momaibackend-ctrl/backend-autopilot"
+          AUTOPILOT_CONTROL_REF="$GITHUB_REF_NAME"
+          AUTOPILOT_EXECUTION_WORKFLOW="autopilot-execution-next.yml"
+          AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
+          AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
+          AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"
+          AUTOPILOT_OPERATOR_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
+          AUTOPILOT_MCP_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
+          AUTOPILOT_CONSOLE_ORIGINS="https://momaibackend-ctrl.github.io"
+          AUTOPILOT_MCP_TOKEN="$AUTOPILOT_MCP_TOKEN"
+          AUTOPILOT_SUPERADMIN_MCP_TOKEN="$AUTOPILOT_SUPERADMIN_MCP_TOKEN"
+          AUTOPILOT_SUPERADMIN_MCP_ACTOR="momaibackend-ctrl-superadmin"
+          AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"
           AUTOPILOT_R2_ACCOUNT_ID="$AUTOPILOT_R2_ACCOUNT_ID"
           AUTOPILOT_R2_BUCKET_NAME="$AUTOPILOT_R2_BUCKET_NAME"
           AUTOPILOT_R2_ACCESS_KEY_ID="$AUTOPILOT_R2_ACCESS_KEY_ID"
