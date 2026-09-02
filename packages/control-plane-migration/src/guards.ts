@@ -23,23 +23,56 @@ export function resolveNextSupabaseProjectRef(url: string): string | undefined {
   return url.trim().slice('https://'.length).split('.')[0];
 }
 
-const endpointIdentity = (value: string): string | undefined => {
+interface Endpoint {
+  /** host:port/database -- enough to identify an ordinary PostgreSQL endpoint. */
+  readonly identity: string;
+  readonly database: string;
+  /** Supabase project ref, when the URL identifies one. */
+  readonly projectRef?: string;
+}
+
+const decoded = (value: string): string => { try { return decodeURIComponent(value); } catch { return value; } };
+
+/**
+ * Which Supabase project a connection string addresses, when it says so.
+ *
+ * Two shapes carry it. A direct connection names it in the host (`db.<ref>.supabase.co`). A pooled
+ * connection does NOT: every project shares one regional pooler host, port and `postgres` database,
+ * and the tenant is carried in the username as `<role>.<ref>`. Ignoring the username there made two
+ * different projects behind the same pooler look like one database.
+ */
+function supabaseProjectRef(url: URL): string | undefined {
+  const host = url.hostname.toLowerCase();
+  if (host.endsWith('.pooler.supabase.com')) return /^[^.]+\.([a-z0-9]+)$/.exec(decoded(url.username))?.[1];
+  return /^db\.([a-z0-9]+)\.supabase\.co$/.exec(host)?.[1];
+}
+
+const parseEndpoint = (value: string): Endpoint | undefined => {
   try {
     const url = new URL(value.trim());
-    return `${url.hostname.toLowerCase()}:${url.port || '5432'}${url.pathname}`;
+    const projectRef = supabaseProjectRef(url);
+    return { identity: `${url.hostname.toLowerCase()}:${url.port || '5432'}${url.pathname}`, database: url.pathname, ...(projectRef ? { projectRef } : {}) };
   } catch { return undefined; }
 };
 
 /**
- * True when both connection strings address the same database. Compares the parsed host/port/path
- * as well as the raw strings, so a source and target that differ only in credentials or query
- * parameters are still recognised as one database -- which would turn a "copy" into a self-insert.
+ * True when both connection strings address the same database -- the one thing that would turn a
+ * "copy" into an insert of a table into itself.
+ *
+ * Ordinary endpoints are compared by host/port/database, so a source and target differing only in
+ * credentials or query parameters are still one database. When BOTH sides name a Supabase project,
+ * that project decides instead: it separates two tenants sharing a pooler host, and it also joins
+ * the same project reached two ways (session port 5432 vs transaction port 6543, or pooled vs
+ * direct). Anything unparseable stays fail-safe on the existing behaviour and is not claimed to
+ * match. No connection string, username or ref is ever surfaced by this function.
  */
 export function sameDatabaseEndpoint(source: string, target: string): boolean {
   if (source.trim() === target.trim()) return true;
-  const left = endpointIdentity(source);
-  const right = endpointIdentity(target);
-  return Boolean(left && right && left === right);
+  const left = parseEndpoint(source);
+  const right = parseEndpoint(target);
+  if (!left || !right) return false;
+  if (left.projectRef && right.projectRef) return left.projectRef === right.projectRef && left.database === right.database;
+  return left.identity === right.identity;
 }
 
 export interface Tally { readonly key: string; readonly count: number }

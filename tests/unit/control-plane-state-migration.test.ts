@@ -198,22 +198,88 @@ describe("source read-only semantics", () => {
     expect(readOnlySnapshotStatement).toBe("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   });
 
-  it("routes every source read through the guarded helper and opens the snapshot with that constant", () => {
+  it("opens the snapshot with that constant and keeps the guarded helper's rejection in place", () => {
     const script = readRepoFile("scripts/migrate-control-plane-state-next.ts");
     expect(script).toContain("readOnlySnapshotStatement");
-    // The only writer in the script is the target client; the source is reachable only through
-    // sourceQuery(), which rejects anything that is not a SELECT.
     expect(script).toContain("Refusing to run a non-read statement against the migration source");
     expect(script).not.toMatch(/source\.query\((['"`])\s*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE)/i);
   });
 
-  it("refuses a source and target that address the same database", () => {
+  it("has exactly one source.query callsite, inside sourceQuery itself", () => {
+    // Anything else -- a paged copy read, a tally, a hash page -- would reach the source without
+    // passing the read-only assertion, which is the whole point of the helper.
+    const script = readRepoFile("scripts/migrate-control-plane-state-next.ts");
+    const callsites = [...script.matchAll(/\bsource\.query\(/g)].map(match => match.index ?? -1);
+    expect(callsites).toHaveLength(1);
+    const start = script.indexOf("async function sourceQuery");
+    const end = script.indexOf("\n}", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(callsites[0]).toBeGreaterThan(start);
+    expect(callsites[0]).toBeLessThan(end);
+  });
+
+  it("reads copy pages through sourceQuery rather than the raw client", () => {
+    const script = readRepoFile("scripts/migrate-control-plane-state-next.ts");
+    const copyTable = script.slice(script.indexOf("async function copyTable"), script.indexOf("const insertPage"));
+    expect(copyTable).toContain("await sourceQuery<unknown[]>(selectPageSql(entry)");
+  });
+
+  it("collects the blocking ids inside the snapshot that blocked, before the rollback", () => {
+    const copyMode = readRepoFile("scripts/migrate-control-plane-state-next.ts");
+    const body = copyMode.slice(copyMode.indexOf("async function copy()"), copyMode.indexOf("async function verify()"));
+    expect(body.indexOf("await blockingJobIds()")).toBeGreaterThan(-1);
+    expect(body.indexOf("await blockingTaskIds()")).toBeGreaterThan(-1);
+    expect(body.indexOf("await blockingJobIds()")).toBeLessThan(body.indexOf("await sourceQuery('ROLLBACK')"));
+    expect(body.indexOf("await blockingTaskIds()")).toBeLessThan(body.indexOf("await sourceQuery('ROLLBACK')"));
+  });
+});
+
+describe("same-database detection", () => {
+  const pooler = (ref: string, extra = "") => `postgresql://postgres.${ref}:secret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres${extra}`;
+
+  it("treats one endpoint reached with different credentials as the same database", () => {
     expect(sameDatabaseEndpoint("postgresql://u:p@host:5432/db", "postgresql://u:p@host:5432/db")).toBe(true);
-    // Same database reached with a different credential or query string is still the same database.
     expect(sameDatabaseEndpoint("postgresql://u:p@host:5432/db", "postgresql://other:secret@host:5432/db?sslmode=require")).toBe(true);
     expect(sameDatabaseEndpoint("postgresql://u:p@host/db", "postgresql://u:p@host:5432/db")).toBe(true);
+  });
+
+  it("separates ordinary endpoints by host and database", () => {
     expect(sameDatabaseEndpoint("postgresql://u:p@host:5432/db", "postgresql://u:p@host:5432/other")).toBe(false);
     expect(sameDatabaseEndpoint("postgresql://u:p@host:5432/db", "postgresql://u:p@elsewhere:5432/db")).toBe(false);
+  });
+
+  it("tells two Supabase pooler tenants apart even though they share host, port and database", () => {
+    // The regression this guards: every project behind one regional pooler looks identical except
+    // for the project ref in the username, so ignoring the username reported them as one database
+    // and would have let a migration between two real projects be refused as a self-copy.
+    expect(sameDatabaseEndpoint(pooler("aaaaaaaaaaaaaaaaaaaa"), pooler("bbbbbbbbbbbbbbbbbbbb"))).toBe(false);
+  });
+
+  it("still recognises one pooler project reached with a different password or query string", () => {
+    expect(sameDatabaseEndpoint(pooler("aaaaaaaaaaaaaaaaaaaa"), "postgresql://postgres.aaaaaaaaaaaaaaaaaaaa:other@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require")).toBe(true);
+    expect(sameDatabaseEndpoint(pooler("aaaaaaaaaaaaaaaaaaaa"), pooler("aaaaaaaaaaaaaaaaaaaa", "?uselibpqcompat=true&sslmode=require"))).toBe(true);
+  });
+
+  it("recognises one project reached through different pooler ports or a direct connection", () => {
+    const transactionPort = "postgresql://postgres.aaaaaaaaaaaaaaaaaaaa:secret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
+    expect(sameDatabaseEndpoint(pooler("aaaaaaaaaaaaaaaaaaaa"), transactionPort)).toBe(true);
+    expect(sameDatabaseEndpoint(pooler("aaaaaaaaaaaaaaaaaaaa"), "postgresql://postgres:secret@db.aaaaaaaaaaaaaaaaaaaa.supabase.co:5432/postgres")).toBe(true);
+  });
+
+  it("separates two direct Supabase projects", () => {
+    expect(sameDatabaseEndpoint("postgresql://postgres:p@db.aaaaaaaaaaaaaaaaaaaa.supabase.co:5432/postgres", "postgresql://postgres:p@db.bbbbbbbbbbbbbbbbbbbb.supabase.co:5432/postgres")).toBe(false);
+  });
+
+  it("keeps the fail-safe behaviour for values that are not parseable URLs", () => {
+    expect(sameDatabaseEndpoint("not a url", "also not a url")).toBe(false);
+    expect(sameDatabaseEndpoint("not a url", "not a url")).toBe(true);
+    expect(sameDatabaseEndpoint("not a url", "postgresql://u:p@host:5432/db")).toBe(false);
+  });
+
+  it("falls back to host comparison when a pooler username carries no project ref", () => {
+    const withoutTenant = "postgresql://postgres:secret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres";
+    expect(sameDatabaseEndpoint(withoutTenant, "postgresql://postgres:other@aws-0-eu-central-1.pooler.supabase.com:5432/postgres")).toBe(true);
+    expect(sameDatabaseEndpoint(withoutTenant, pooler("aaaaaaaaaaaaaaaaaaaa"))).toBe(true);
   });
 });
 
