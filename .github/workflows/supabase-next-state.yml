@@ -1,0 +1,99 @@
+name: Next control-plane state migration
+# Manual-only. Moves durable control-plane state from the current PostgreSQL to the next one, in
+# three separately-confirmed steps: inventory (read-only), copy (one-shot, empty target), verify
+# (read-only comparison).
+#
+# It talks to PostgreSQL and nothing else -- no Supabase Management API, no Edge Function, no R2, no
+# object storage on either side. Pre-cutover artifact blobs stay exactly where they are: rows keep
+# their persisted `storage.provider`, and the next runtime reads the "supabase" ones through the
+# legacy reader in RoutingArtifactBlobStore.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'inventory (read-only) | copy (one-shot transfer) | verify (compare)'
+        required: true
+        type: choice
+        options: [inventory, copy, verify]
+      confirm:
+        description: 'INSPECT_NEXT_STATE for inventory, MIGRATE_NEXT_STATE for copy, VERIFY_NEXT_STATE for verify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-next-state
+  cancel-in-progress: false
+
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SOURCE_DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
+      TARGET_DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+    steps:
+      - name: Guard - per-mode confirmation and migration-branch-only
+        env:
+          MODE_INPUT: ${{ inputs.mode }}
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          # Temporary pre-merge guard, removed as part of the later cutover change.
+          if [ "$GITHUB_REF_NAME" != "autopilot/migrate-next-supabase-r2" ]; then
+            echo "::error::Refusing to run from '$GITHUB_REF_NAME': the next control-plane state migration may only run from autopilot/migrate-next-supabase-r2 until that branch is merged." >&2
+            exit 1
+          fi
+          case "$MODE_INPUT" in
+            inventory) expected=INSPECT_NEXT_STATE ;;
+            copy)      expected=MIGRATE_NEXT_STATE ;;
+            verify)    expected=VERIFY_NEXT_STATE ;;
+            *) echo "::error::Unsupported mode '$MODE_INPUT'." >&2; exit 1 ;;
+          esac
+          if [ "$CONFIRM_INPUT" != "$expected" ]; then
+            echo "::error::Refusing to run mode '$MODE_INPUT': input 'confirm' must be exactly $expected." >&2
+            exit 1
+          fi
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "SOURCE_DATABASE_URL:AUTOPILOT_CONTROL_DATABASE_URL" \
+            "TARGET_DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to open a database connection: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Schema first, and only for a copy: the target needs its tables before rows can land in them.
+      # inventory and verify never run migrations -- they are pure readers, and inventory has to stay
+      # able to describe a target that has not been prepared yet. DATABASE_URL is bound to the NEXT
+      # database only; the source is never addressed by db:migrate.
+      - name: Apply the control-plane schema to the next Postgres
+        if: ${{ inputs.mode == 'copy' }}
+        env:
+          DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+        run: pnpm db:migrate
+      - name: Run the control-plane state migration
+        run: pnpm state:migrate:next -- --mode "$MODE_INPUT"
+        env:
+          MODE_INPUT: ${{ inputs.mode }}

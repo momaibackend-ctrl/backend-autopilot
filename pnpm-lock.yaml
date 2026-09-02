@@ -97,6 +97,8 @@ importers:
 
   apps/worker: {}
 
+  packages/adapters/artifact-storage: {}
+
   packages/adapters/database: {}
 
   packages/adapters/design-source: {}
@@ -109,6 +111,8 @@ importers:
 
   packages/adapters/llm: {}
 
+  packages/adapters/r2: {}
+
   packages/adapters/supabase: {}
 
   packages/adapters/task-source: {}
@@ -120,6 +124,8 @@ importers:
   packages/audit: {}
 
   packages/bootstrap: {}
+
+  packages/canonical-repository: {}
 
   packages/context-engine: {}
 

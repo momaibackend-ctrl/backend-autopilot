@@ -46,3 +46,11 @@ Legacy artifact reads need no duplicated secrets either. `supabase-next.yml` pas
 `autopilot-execution-next.yml` needs no Supabase Storage credential at all: with a complete `AUTOPILOT_R2_*` set, `createArtifactBlobStore` selects R2 and never resolves one. It references neither `AUTOPILOT_CONTROL_DATABASE_URL` nor the `AUTOPILOT_SUPABASE_*` pair.
 
 `supabase-next.yml` is `workflow_dispatch`-only, requires its `confirm` input to equal exactly `DEPLOY_NEXT_SUPABASE`, and (until the migration branch merges) refuses to run from any branch other than `autopilot/migrate-next-supabase-r2`. No value from this table is ever printed by either workflow.
+
+### Control-plane state migration (`supabase-next-state.yml`)
+
+It introduces no new reference. The source is the **existing** `AUTOPILOT_CONTROL_DATABASE_URL`, the target is `AUTOPILOT_NEXT_DATABASE_URL`, and no other credential is in scope: the workflow reaches PostgreSQL only -- never the Supabase Management API, an Edge Function, R2, or object storage on either side.
+
+The source connection is opened `READ ONLY` at `REPEATABLE READ`, so PostgreSQL rejects any write to the current control plane regardless of what the script asks for. `copy` additionally refuses to start while the source has an in-flight execution job or a task in a transient state, and refuses a target whose operational tables are not empty; it writes inside one advisory-locked transaction that rolls back whole on any error.
+
+`autopilot_operators` and `autopilot_project_memberships` are **deliberately not copied** -- their `user_id` values belong to the current project's Supabase Auth namespace, and the next project has its own. The operator record is re-created by `createEdgeRuntime` from `AUTOPILOT_OPERATOR_EMAILS` / `AUTOPILOT_SUPERADMIN_EMAILS` / `AUTOPILOT_OPERATOR_PROJECT_IDS` against the new Auth identity. Externalized artifact blobs are likewise not moved: rows keep `storage.provider = "supabase"` and stay readable through the legacy reader described above. None of these workflows has been run yet.

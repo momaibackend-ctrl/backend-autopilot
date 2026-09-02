@@ -26,6 +26,7 @@
     "autopilot": "tsx apps/cli/src/main.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "state:migrate:remote": "tsx scripts/migrate-file-state.ts",
+    "state:migrate:next": "tsx scripts/migrate-control-plane-state-next.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

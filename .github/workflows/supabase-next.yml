@@ -100,14 +100,18 @@ jobs:
             exit 1
           fi
       - name: Resolve the next project ref from its URL (the URL itself is never printed)
+        # The whole URL must match, not just its first label: taking the leading label and checking
+        # only its shape would accept https://<20-char-ref>.evil.com, and an unanchored match would
+        # accept a trailing subdomain, path, query or fragment. The ref is extracted only after the
+        # full match succeeds. This pattern is kept identical to `nextSupabaseUrlPattern` in
+        # packages/control-plane-migration, which a unit test asserts and exercises case by case.
         run: |
-          host="${AUTOPILOT_NEXT_SUPABASE_URL#https://}"
-          host="${host%%/*}"
-          project_ref="${host%%.*}"
-          if ! printf '%s' "$project_ref" | grep -Eq '^[a-z0-9]{20}$'; then
-            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL does not yield a valid Supabase project ref. Expected exactly https://<20-char-ref>.supabase.co. The secret value is not printed." >&2
+          if ! printf '%s' "$AUTOPILOT_NEXT_SUPABASE_URL" | grep -Eq '^https://[a-z0-9]{20}\.supabase\.co/?$'; then
+            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL is not a Supabase project URL. Expected exactly https://<20-char-lowercase-ref>.supabase.co (one optional trailing slash). The secret value is not printed." >&2
             exit 1
           fi
+          project_ref="${AUTOPILOT_NEXT_SUPABASE_URL#https://}"
+          project_ref="${project_ref%%.*}"
           echo "SUPABASE_PROJECT_ID=$project_ref" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
