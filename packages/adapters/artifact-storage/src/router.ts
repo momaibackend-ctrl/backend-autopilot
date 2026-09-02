@@ -20,7 +20,11 @@ export class RoutingArtifactBlobStore implements ArtifactBlobStore {
   }
 
   async get(reference: { provider: string; bucket: string; path: string; contentType: string; size: number }) {
-    if (!(reference.provider in this.readers)) throw new PolicyViolation(`Unrecognized artifact storage provider "${reference.provider}"`, { provider: reference.provider });
+    // Object.hasOwn (not `in`) deliberately excludes the prototype chain: `in` treats
+    // "__proto__", "constructor", "toString" etc. as present on any plain object because they
+    // resolve through Object.prototype, which would let those provider strings slip past this
+    // guard as if they were a real, recognized provider instead of being rejected outright.
+    if (!Object.hasOwn(this.readers, reference.provider)) throw new PolicyViolation(`Unrecognized artifact storage provider "${reference.provider}"`, { provider: reference.provider });
     const reader = this.readers[reference.provider];
     if (!reader) throw new CredentialMissing(`No artifact storage reader is configured for provider "${reference.provider}"`, { provider: reference.provider });
     return reader.get(reference);

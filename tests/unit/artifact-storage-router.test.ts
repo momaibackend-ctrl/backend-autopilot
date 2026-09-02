@@ -72,6 +72,13 @@ describe("RoutingArtifactBlobStore (pure routing, no adapters)", () => {
     const router = new RoutingArtifactBlobStore(primary, { r2: primary, supabase: undefined });
     await expect(router.get({ provider: "supabase", bucket: "b", path: OBJECT_PATH, contentType: "application/json", size: 0 })).rejects.toBeInstanceOf(CredentialMissing);
   });
+
+  it.each(["__proto__", "constructor", "toString"])('rejects the Object.prototype-inherited provider name "%s" as unrecognized, not as a live reader', async provider => {
+    const primary = fakeStore();
+    const router = new RoutingArtifactBlobStore(primary, { r2: primary, supabase: undefined });
+    await expect(router.get({ provider, bucket: "b", path: OBJECT_PATH, contentType: "application/json", size: 0 })).rejects.toBeInstanceOf(PolicyViolation);
+    expect(primary.get).not.toHaveBeenCalled();
+  });
 });
 
 describe("readLegacySupabaseConfigFromEnv", () => {
