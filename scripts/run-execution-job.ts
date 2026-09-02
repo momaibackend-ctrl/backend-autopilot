@@ -6,8 +6,7 @@ import { z } from 'zod';
 import { parse as parseYaml } from 'yaml';
 import { ArtifactStore } from '../packages/artifact-store/src/index.js';
 import { AuditLog } from '../packages/audit/src/index.js';
-import { R2ArtifactBlobStore, readR2ConfigFromEnv } from '../packages/adapters/r2/src/artifact-storage.js';
-import { SupabaseStorageArtifactBlobStore } from '../packages/adapters/supabase/src/artifact-storage.js';
+import { createArtifactBlobStore } from '../packages/adapters/artifact-storage/src/wiring.js';
 import { LiveGitHubAdapter } from '../packages/adapters/github/src/index.js';
 import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
 import { AutopilotService } from '../packages/core/src/application.js';
@@ -35,8 +34,7 @@ const store=new PostgresStateStore(databaseUrl);const owner=`github-actions:${pr
 const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error('Execution job not found');
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
 const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);
-const r2Config=readR2ConfigFromEnv(name=>process.env[name]);
-const blobs=r2Config?new R2ArtifactBlobStore(r2Config.accountId,r2Config.bucketName,r2Config.accessKeyId,r2Config.secretAccessKey):new SupabaseStorageArtifactBlobStore(required('SUPABASE_URL'),required('SUPABASE_SERVICE_ROLE_KEY'));
+const blobs=createArtifactBlobStore({get:name=>process.env[name],requireCurrentSupabase:()=>({url:required('SUPABASE_URL'),serviceRoleKey:required('SUPABASE_SERVICE_ROLE_KEY')})});
 const artifacts=new ArtifactStore(store,uuidGenerator,systemClock,blobs);const audit=new AuditLog(store,uuidGenerator,systemClock);const service=new AutopilotService({store,execution,tests,git,commands,artifactBlobs:blobs});
 try{
   // Stamp the GitHub run identity onto the job the moment it is actually running. The dispatch

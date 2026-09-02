@@ -33,3 +33,5 @@ import '../../../packages/canonical-repository/src/target-resolution.ts';
 import '../../../packages/canonical-repository/src/service.ts';
 import '../../../packages/adapters/github/src/repository-provider.ts';
 import '../../../packages/adapters/r2/src/artifact-storage.ts';
+import '../../../packages/adapters/supabase/src/artifact-storage.ts';
+import '../../../packages/adapters/artifact-storage/src/router.ts';

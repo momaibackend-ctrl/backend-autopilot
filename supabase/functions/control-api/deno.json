@@ -36,6 +36,9 @@
     "../../../packages/canonical-repository/src/target-resolution.js": "../../../packages/canonical-repository/src/target-resolution.ts",
     "../../../packages/canonical-repository/src/service.js": "../../../packages/canonical-repository/src/service.ts",
     "../../../packages/adapters/github/src/repository-provider.js": "../../../packages/adapters/github/src/repository-provider.ts",
-    "../../../packages/canonical-repository/src/rename.js": "../../../packages/canonical-repository/src/rename.ts"
+    "../../../packages/canonical-repository/src/rename.js": "../../../packages/canonical-repository/src/rename.ts",
+    "../../../packages/adapters/r2/src/artifact-storage.js": "../../../packages/adapters/r2/src/artifact-storage.ts",
+    "../../../packages/adapters/supabase/src/artifact-storage.js": "../../../packages/adapters/supabase/src/artifact-storage.ts",
+    "../../../packages/adapters/artifact-storage/src/router.js": "../../../packages/adapters/artifact-storage/src/router.ts"
   }
 }
