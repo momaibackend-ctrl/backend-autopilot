@@ -17,6 +17,8 @@ Remote state uses project `qtyfdzjzmgxtrarpgcmn`: PostgreSQL stores envelopes an
 
 Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The browser receives only the Supabase URL and publishable key. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
 
+`supabase-next.yml` ("Deploy Supabase Next") is a separate, **manual-only** scaffold for a *future* deploy of the Edge Functions to the next Supabase project ("mamai backend new") with R2 artifact storage. It has no `push` trigger and only runs on an explicit `workflow_dispatch`, gated by a `confirm` input that must equal exactly `DEPLOY_NEXT_SUPABASE` or the job fails immediately. It authenticates with its own `AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN` / `AUTOPILOT_NEXT_SUPABASE_PROJECT_REF` secrets -- never the current project's `AUTOPILOT_SUPABASE_*` secrets -- and sets Edge secrets by name only (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, the four `AUTOPILOT_R2_*`, and the two `AUTOPILOT_LEGACY_SUPABASE_*`) from correspondingly separate `AUTOPILOT_NEXT_*` GitHub secrets. The current live Supabase project, `supabase.yml`, and the four reproducible workflows above are untouched by it.
+
 ## Operator Console
 
 ```bash

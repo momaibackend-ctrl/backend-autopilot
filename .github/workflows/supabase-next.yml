@@ -1,0 +1,68 @@
+name: Deploy Supabase Next
+# Manual-only scaffold for the FUTURE Edge Functions deploy to the next Supabase project
+# ("mamai backend new") with R2 artifact storage. This workflow never runs on push -- only an
+# explicit workflow_dispatch, guarded by a typed confirmation input -- and it never touches the
+# current live Supabase project or its `supabase.yml` deployment workflow. It uses its own,
+# separate `AUTOPILOT_NEXT_*` secrets; the current-project `AUTOPILOT_SUPABASE_*` secrets are
+# never referenced here.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY_NEXT_SUPABASE exactly to confirm this manual deploy to the NEXT Supabase project'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-next-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_PROJECT_REF }}
+      # Edge Function runtime configuration for the next project (see packages/adapters/artifact-storage
+      # and supabase/functions/_shared/edge-runtime.ts): SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY back the
+      # new control-state store; the AUTOPILOT_R2_* four back the new R2ArtifactBlobStore; the
+      # AUTOPILOT_LEGACY_SUPABASE_* pair lets historical externalized artifacts (storage.provider ===
+      # "supabase") keep resolving against the OLD project's Storage after cutover, per
+      # RoutingArtifactBlobStore. Every value below is sourced from its own AUTOPILOT_NEXT_* GitHub
+      # secret and is never logged or printed by this workflow.
+      SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_SERVICE_ROLE_KEY }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+      AUTOPILOT_LEGACY_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_LEGACY_SUPABASE_URL }}
+      AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_NEXT_LEGACY_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Require explicit "DEPLOY_NEXT_SUPABASE" confirmation
+        env:
+          CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM_INPUT" != "DEPLOY_NEXT_SUPABASE" ]; then
+            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly DEPLOY_NEXT_SUPABASE. This manual-only workflow guards the next Supabase project against an accidental trigger." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with: { version: 2.75.0 }
+      - name: Configure Edge server secrets on the next Supabase project (names only; values come from GitHub Actions secrets and are never printed)
+        run: >-
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
+          SUPABASE_URL="$SUPABASE_URL"
+          SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+          AUTOPILOT_R2_ACCOUNT_ID="$AUTOPILOT_R2_ACCOUNT_ID"
+          AUTOPILOT_R2_BUCKET_NAME="$AUTOPILOT_R2_BUCKET_NAME"
+          AUTOPILOT_R2_ACCESS_KEY_ID="$AUTOPILOT_R2_ACCESS_KEY_ID"
+          AUTOPILOT_R2_SECRET_ACCESS_KEY="$AUTOPILOT_R2_SECRET_ACCESS_KEY"
+          AUTOPILOT_LEGACY_SUPABASE_URL="$AUTOPILOT_LEGACY_SUPABASE_URL"
+          AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY="$AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY"
+      - name: Deploy Edge Functions to the next Supabase project
+        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
