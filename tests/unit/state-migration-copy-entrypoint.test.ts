@@ -46,6 +46,8 @@ const { FakeClient, db } = vi.hoisted(() => {
   };
 
   const asArray = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+  const edgesOf = (row: Row): Array<{ type: string; targetTaskId: string }> =>
+    (((row["data"] ?? {}) as Record<string, unknown>)["relationships"] ?? []) as Array<{ type: string; targetTaskId: string }>;
 
   const answer = (text: string, values: unknown[]): unknown[] => {
     const flat = text.replace(/\s+/g, " ").trim();
@@ -97,7 +99,7 @@ const { FakeClient, db } = vi.hoisted(() => {
       const byId = new Map(db.rows("tasks").map(row => [String(row["id"]), row]));
       return db.rows("tasks")
         .filter(row => sources.includes(String(row["id"])))
-        .flatMap(row => ((row["relationships"] ?? []) as Array<{ type: string; targetTaskId: string }>)
+        .flatMap(row => edgesOf(row)
           .filter(edge => targets.includes(edge.targetTaskId))
           .map(edge => ({
             source_task_id: row["id"],
@@ -118,11 +120,10 @@ const { FakeClient, db } = vi.hoisted(() => {
         .slice(0, Number(values[1]))
         .map(row => ({ id: row["id"], external_key: row["external_key"], title: (row["data"] as Record<string, unknown>)?.["title"] ?? null, state: (row["data"] as Record<string, unknown>)?.["state"] ?? null }));
     }
-    if (/EXISTS \(SELECT 1 FROM jsonb_array_elements/.test(flat)) {
-      return db.rows("tasks")
-        .filter(row => !asArray(values[0]).includes(String(row["id"]))
-          && ((row["relationships"] ?? []) as Array<{ targetTaskId: string }>).some(edge => asArray(values[1]).includes(edge.targetTaskId)))
-        .map(row => ({ id: row["id"] }));
+    if (/NOT EXISTS \(SELECT 1 FROM tasks target/.test(flat)) {
+      const present = new Set(db.rows("tasks").map(row => String(row["id"])));
+      return db.rows("tasks").flatMap(row => edgesOf(row).filter(edge => !present.has(edge.targetTaskId))
+        .map(edge => ({ id: row["id"], target_task_id: edge.targetTaskId, relationship_type: edge.type })));
     }
     if (/EXISTS \(SELECT 1 FROM unnest/.test(flat)) {
       const table = /FROM "(\w+)"/.exec(flat)?.[1] ?? "";
@@ -407,17 +408,18 @@ function recursiveFixture(): Tables {
     tasks: [
       ...(base["tasks"] ?? []),
       // The replacement declares what it supersedes (epic-verification.ts), plus one edge that does
-      // NOT point into the excluded set -- the diagnostic must show only the first.
+      // NOT point into the excluded set -- only the first may be normalized away.
       {
         id: DEPENDENT, project_id: PROJECT, external_key: "DEP-1", state: "READY",
-        data: { id: DEPENDENT, state: "READY", title: "first level", description: "MUST NOT LEAK", requirements: ["MUST NOT LEAK"] },
-        relationships: [{ type: "SUPERSEDES", targetTaskId: STALE_TASK }, { type: "RELATED_TO", targetTaskId: LIVE_TASK }],
+        data: {
+          id: DEPENDENT, state: "READY", title: "first level", description: "MUST NOT LEAK", requirements: ["MUST NOT LEAK"], repairAttempts: 0,
+          relationships: [{ type: "SUPERSEDES", targetTaskId: STALE_TASK }, { type: "RELATED_TO", targetTaskId: LIVE_TASK }],
+        },
         created_at: new Date("2026-02-03T00:00:00.000Z"),
       },
       {
         id: SECOND_LEVEL, project_id: PROJECT, external_key: "DEP-2", state: "READY",
-        data: { id: SECOND_LEVEL, state: "READY", title: "second level" },
-        relationships: [{ type: "DEPENDS_ON", targetTaskId: DEPENDENT }],
+        data: { id: SECOND_LEVEL, state: "READY", title: "second level", relationships: [{ type: "DEPENDS_ON", targetTaskId: DEPENDENT }] },
         created_at: new Date("2026-02-04T00:00:00.000Z"),
       },
     ],
@@ -442,51 +444,69 @@ function recursiveFixture(): Tables {
   };
 }
 
-describe("recursive and operation closure", () => {
+describe("final policy: referencing tasks survive with normalized edges", () => {
   let result: RunResult;
   beforeEach(async () => { result = await runCopy({ exclude: [STALE_TASK], tables: recursiveFixture() }); });
 
-  it("completes: the dependents are absorbed rather than blocking", () => {
+  it("completes without blocking", () => {
     expect(result.errors).toEqual([]);
     expect(result.exitCode).toBe(0);
   });
 
-  it("pulls a dependent task into the closure recursively, including the second level", () => {
-    expect(db.insertedIds("tasks")).toEqual([LIVE_TASK]);
-    expect(db.insertedIds("tasks")).not.toContain(DEPENDENT);
-    expect(db.insertedIds("tasks")).not.toContain(SECOND_LEVEL);
+  it("keeps every task that merely REFERENCES an excluded task, at any depth", () => {
+    expect(db.insertedIds("tasks")).toEqual([LIVE_TASK, DEPENDENT, SECOND_LEVEL].sort());
+    expect(db.insertedIds("tasks")).not.toContain(STALE_TASK);
   });
 
-  it("cascades the dependent task's own history out of the copy", () => {
-    expect(db.insertedIds("runs")).toEqual([LIVE_RUN]);
-    expect(db.insertedIds("task_transitions")).toEqual([]);
-    expect(db.insertedIds("artifacts")).not.toContain(DEPENDENT_ARTIFACT);
+  it("keeps the referencing task's own runs, artifacts and transitions", () => {
+    expect(db.insertedIds("runs")).toEqual([LIVE_RUN, DEPENDENT_RUN].sort());
+    expect(db.insertedIds("task_transitions")).toEqual([DEPENDENT_TRANSITION]);
+    expect(db.insertedIds("artifacts")).toContain(DEPENDENT_ARTIFACT);
   });
 
-  it("excludes the admin operation whose operation_id equals an excluded run or job operation", () => {
+  it("drops only the edge naming the excluded task, keeping the others", () => {
+    const relationships = (db.insertedRow("tasks", DEPENDENT)?.["data"] as { relationships: Array<Record<string, string>> }).relationships;
+    expect(relationships).toEqual([{ type: "RELATED_TO", targetTaskId: LIVE_TASK }]);
+  });
+
+  it("changes no other field of the normalized task", () => {
+    const data = db.insertedRow("tasks", DEPENDENT)?.["data"] as Record<string, unknown>;
+    const original = (recursiveFixture()["tasks"] ?? []).find(row => row["id"] === DEPENDENT)?.["data"] as Record<string, unknown>;
+    for (const key of Object.keys(original)) {
+      if (key === "relationships") continue;
+      expect(data[key], `${key} must be untouched`).toEqual(original[key]);
+    }
+    expect(db.insertedRow("tasks", DEPENDENT)?.["external_key"]).toBe("DEP-1");
+    expect(db.insertedRow("tasks", DEPENDENT)?.["state"]).toBeUndefined();
+  });
+
+  it("leaves a task whose edges all survive completely untouched", () => {
+    const data = db.insertedRow("tasks", SECOND_LEVEL)?.["data"] as Record<string, unknown>;
+    expect(data).toEqual((recursiveFixture()["tasks"] ?? []).find(row => row["id"] === SECOND_LEVEL)?.["data"]);
+  });
+
+  it("still excludes the admin operation whose operation_id equals an excluded run or job operation", () => {
     expect(db.insertedIds("admin_operations")).toEqual(["op-unrelated"]);
   });
 
-  it("excludes a historical artifact tied only by an exact scalar deep in its JSON", () => {
-    expect(db.insertedIds("artifacts")).toEqual([LIVE_ARTIFACT]);
+  it("still excludes a historical artifact tied only by an exact scalar deep in its JSON", () => {
     expect(db.insertedIds("artifacts")).not.toContain(HISTORICAL_ARTIFACT);
+    expect(db.insertedIds("artifacts")).toEqual([LIVE_ARTIFACT, DEPENDENT_ARTIFACT].sort());
   });
 
-  it("excludes an audit event tied only by its canonical correlationId", () => {
+  it("still excludes an audit event tied only by its canonical correlationId", () => {
     expect(db.insertedIds("audit_events")).toEqual([LIVE_AUDIT]);
     expect(db.insertedIds("audit_events")).not.toContain(HISTORICAL_AUDIT);
   });
 
-  it("reports root and dependent tasks separately, with safe identity and the operation ids", () => {
+  it("reports the explicit exclusions and the normalized tasks separately", () => {
     const plan = result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.exclusion_plan");
-    expect(plan?.["rootExcludedTasks"]).toEqual([STALE_TASK]);
-    expect(plan?.["dependentExcludedTasks"]).toEqual([
-      { taskId: DEPENDENT, externalKey: "DEP-1", title: "first level", state: "READY" },
-      { taskId: SECOND_LEVEL, externalKey: "DEP-2", title: "second level", state: "READY" },
+    expect(plan?.["excludedTaskIds"]).toEqual([STALE_TASK]);
+    expect(plan?.["tasksWithNormalizedRelationships"]).toEqual([
+      { taskId: DEPENDENT, externalKey: "DEP-1", title: "first level", state: "READY", removedTargetTaskIds: [STALE_TASK] },
     ]);
-    expect(plan?.["excludedOperationIds"]).toEqual(["op-dependent", "op-stale"]);
-    expect(plan?.["excluded"]).toEqual({ tasks: 3, runs: 2, artifacts: 3, executionJobs: 1, taskTransitions: 2, auditEvents: 2, adminOperations: 1 });
-    expect(plan?.["unresolvedDependentTaskIds"]).toEqual([]);
+    expect(plan?.["excludedOperationIds"]).toEqual(["op-stale"]);
+    expect(plan?.["excluded"]).toEqual({ tasks: 1, runs: 1, artifacts: 2, executionJobs: 1, taskTransitions: 1, auditEvents: 2, adminOperations: 1 });
   });
 
   it("is deterministic whatever order the roots are given in", async () => {
@@ -519,22 +539,23 @@ describe("inventory relationship diagnostics", () => {
     plan = (report?.["exclusionPlan"] ?? {}) as Record<string, unknown>;
   });
 
-  it("names the exact edge that pulled each dependent task in", () => {
-    expect(plan["dependentRelationshipEdges"]).toEqual([
+  it("names the exact edge each surviving task loses", () => {
+    expect(plan["removedRelationshipEdges"]).toEqual([
       { sourceTaskId: DEPENDENT, sourceExternalKey: "DEP-1", sourceState: "READY", relationshipType: "SUPERSEDES", targetTaskId: STALE_TASK, targetExternalKey: "SELF-REPAIR-ARGV-META-1", targetState: "IMPLEMENTING" },
-      { sourceTaskId: SECOND_LEVEL, sourceExternalKey: "DEP-2", sourceState: "READY", relationshipType: "DEPENDS_ON", targetTaskId: DEPENDENT, targetExternalKey: "DEP-1", targetState: "READY" },
     ]);
   });
 
-  it("shows only the edges that point into the excluded set", () => {
-    const edges = plan["dependentRelationshipEdges"] as Array<Record<string, unknown>>;
-    // DEP-1 also has RELATED_TO -> LIVE_TASK, which is not what put it in the closure.
+  it("shows only the edges that point at an excluded task", () => {
+    const edges = plan["removedRelationshipEdges"] as Array<Record<string, unknown>>;
+    // DEP-1 also has RELATED_TO -> LIVE_TASK, which survives and must not be reported or removed.
     expect(edges.every(edge => edge["relationshipType"] !== "RELATED_TO")).toBe(true);
     expect(edges.some(edge => edge["targetTaskId"] === LIVE_TASK)).toBe(false);
+    // SECOND_LEVEL points only at DEPENDENT, which survives, so it loses nothing.
+    expect(edges.some(edge => edge["sourceTaskId"] === SECOND_LEVEL)).toBe(false);
   });
 
   it("reports only the canonical relationship fields, never task content", () => {
-    const edges = plan["dependentRelationshipEdges"] as Array<Record<string, unknown>>;
+    const edges = plan["removedRelationshipEdges"] as Array<Record<string, unknown>>;
     for (const edge of edges) {
       expect(Object.keys(edge).sort()).toEqual(["relationshipType", "sourceExternalKey", "sourceState", "sourceTaskId", "targetExternalKey", "targetState", "targetTaskId"]);
     }

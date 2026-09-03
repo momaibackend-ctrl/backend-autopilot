@@ -20,7 +20,7 @@ import {
   insertRowsSql,
   isHistoricalTable,
   markerConflictResolution,
-  MAX_CLOSURE_ITERATIONS,
+  RELATIONSHIP_NORMALIZED_TABLE,
   parseExcludedTaskIds,
   readOnlySnapshotStatement,
   RowHasher,
@@ -28,6 +28,7 @@ import {
   sample,
   selectPageSql,
   selectPageSqlExcluding,
+  stripExcludedRelationships,
   structuredTaskReferences,
   tablesRequiringEmptyTarget,
   targetAdvisoryLockKey,
@@ -82,6 +83,11 @@ if (!mode || !modes.includes(mode)) throw new Error(`--mode is required and must
 // The ids live here, in the migration entrypoint, not in the reusable library: this is one
 // migration's decision, not a general rule. Every value is validated as a UUID before use.
 const excludedTaskIds = parseExcludedTaskIds([...argumentAll('--exclude-task-id'), process.env['AUTOPILOT_MIGRATION_EXCLUDE_TASK_IDS'] ?? '']);
+// Tasks that must survive the migration, asserted by verify. The counts and hashes already prove
+// it, but naming them makes the intent explicit and the failure legible.
+const requiredTaskIds = parseExcludedTaskIds([...argumentAll('--require-task-id'), process.env['AUTOPILOT_MIGRATION_REQUIRE_TASK_IDS'] ?? '']);
+const conflicting = requiredTaskIds.filter(id => excludedTaskIds.includes(id));
+if (conflicting.length) throw new Error(`A task cannot be both excluded and required: ${conflicting.join(', ')}`);
 const sourceUrl = required('SOURCE_DATABASE_URL');
 const targetUrl = required('TARGET_DATABASE_URL');
 // The one check that must precede every connection: a "copy" whose target is its own source would
@@ -146,7 +152,7 @@ async function copy() {
   // half-written either.
   const gate = evaluateTransientTaskGate({ transient: await transientTasks(sourceQuery), excludedTaskIds: resolved.closure.tasks });
   const ambiguous = resolved.ambiguous.filter(entry => entry.count > 0);
-  if (activeExecutionJobs.length || gate.blocked || resolved.unresolvedDependents.length || ambiguous.length) {
+  if (activeExecutionJobs.length || gate.blocked || ambiguous.length) {
     // Collect the diagnostic ids inside the SAME snapshot that decided to block, before the
     // rollback: read afterwards they could describe a different moment than the gate reacted to.
     const activeExecutionJobIds = activeExecutionJobs.length ? await blockingJobIds() : [];
@@ -156,10 +162,7 @@ async function copy() {
       activeExecutionJobIds,
       blockingTransientTasks: gate.blocking,
       excludedTransientTasks: gate.excluded,
-      // Must be empty after the fixed point. If it is not, the closure failed to converge and no
-      // copy may proceed: relationships are never rewritten, so a survivor cannot keep a pointer
-      // to a task the target will not receive.
-      tasksDependingOnExcludedTasks: sample(resolved.unresolvedDependents),
+      tasksWithNormalizedRelationships: resolved.normalizedTasks,
       ambiguousReferences: ambiguous,
       ...(excludedTaskIds.length ? { exclusionPlan: exclusionReport(resolved) } : {}),
     });
@@ -179,7 +182,7 @@ async function copy() {
     const copied: Array<{ table: string; strategy: string; rows: number; excluded: number }> = [];
     for (const entry of controlPlaneMigrationPlan) {
       const excluded = excludedIdsForTable(resolved.closure, entry.table);
-      copied.push({ table: entry.table, strategy: entry.strategy, rows: await copyTable(entry, excluded), excluded: excluded.length });
+      copied.push({ table: entry.table, strategy: entry.strategy, rows: await copyTable(entry, excluded, rowNormalizer(entry, resolved.closure)), excluded: excluded.length });
     }
     await target.query('COMMIT');
     return { mode, copied, excluded: closureCounts(resolved.closure), skipped: authBoundTables.map(table => ({ table, status: authBoundStatus })), blobsMoved: 0 };
@@ -208,7 +211,9 @@ async function verify() {
       if (entry.strategy === 'INSERT') {
         // Row counts and hashes together answer both directions at once: a missing row and an extra
         // target-only row both change them.
-        const left = await hashTable(sourceQuery, entry, excluded);
+        // The source side is normalized exactly as the copy normalized it, so "target equals source
+        // minus the closure" is checked against what the policy actually promises to produce.
+        const left = await hashTable(sourceQuery, entry, excluded, rowNormalizer(entry, resolved.closure));
         const right = await hashTable(targetQuery, entry);
         const absent = excluded.length ? await presentIds(targetQuery, entry, excluded) : [];
         const match = left.rows === right.rows && left.hash === right.hash && absent.length === 0;
@@ -247,9 +252,16 @@ async function verify() {
     // still name an excluded task, run or operation through a structured field.
     const survivingReferences = excludedTaskIds.length ? await structuredReferencesToExcluded(targetQuery, resolved.closure) : [];
     if (survivingReferences.length) mismatched += 1;
+    // Stronger than "no edge to an EXCLUDED task": no edge to any task the target does not hold.
+    const danglingRelationships = await danglingRelationshipTargets(targetQuery);
+    if (danglingRelationships.length) mismatched += 1;
+    // The tasks that must have survived, named explicitly and read back from the target.
+    const requiredTasks = requiredTaskIds.length ? await requiredTaskPresence(targetQuery, requiredTaskIds) : [];
+    if (requiredTasks.some(entry => !entry['present'])) mismatched += 1;
     if (mismatched > 0) process.exitCode = 1;
     return {
-      mode, tables, authBound, dangling, survivingReferences,
+      mode, tables, authBound, dangling, survivingReferences, danglingRelationships, requiredTasks,
+      activeExecutionJobsInSource: await activeJobTally(sourceQuery),
       ...(excludedTaskIds.length ? { exclusionPlan: exclusionReport(resolved) } : {}),
       result: mismatched === 0 ? 'MATCH' : 'MISMATCH',
     };
@@ -294,59 +306,36 @@ interface ResolvedExclusion {
   /** Requested ids that do not exist in the source. Reported, not an error: the denylist stays exact. */
   readonly notFound: readonly string[];
   readonly closure: ExclusionClosure;
-  /** Identity of the tasks the recursion added, so the report shows exactly what the cleanup grew to include. */
-  readonly dependentIdentities: ReadonlyArray<Record<string, unknown>>;
-  /** Surviving tasks still pointing at an excluded task after the fixed point. Must be empty by construction; checked, not assumed. */
-  readonly unresolvedDependents: readonly string[];
+  /** Surviving tasks whose copied row loses one or more relationship edges, with safe identity and the targets removed. */
+  readonly normalizedTasks: ReadonlyArray<Record<string, unknown>>;
   /** Rows that are NOT provably part of the closure but whose JSON mentions an excluded id. Never dropped on that basis; they stop the copy so a human decides. */
   readonly ambiguous: ReadonlyArray<{ table: string; count: number; sample: readonly string[] }>;
-  readonly iterations: number;
   /** Inventory-only diagnostic: which edge pulled each dependent task in. Never read by copy or verify. */
   readonly relationshipEdges: ReadonlyArray<Record<string, unknown>>;
 }
 
 /**
- * Builds the complete closure in three stages, each strictly more cautious than the last.
+ * Builds the closure in two stages, from the explicit denylist and nothing else.
  *
- *   1. Tasks, to a fixed point. A task leaves if it is on the denylist, or if its canonical
- *      `relationships[].targetTaskId` names a task that is already leaving -- repeated until a
- *      round adds nothing, so second- and third-level dependents are included too. Relationships
- *      are never rewritten, which is why the dependent has to go rather than be patched.
- *   2. Everything those tasks own, by declared foreign key: runs, jobs, artifacts, transitions --
+ *   1. Everything those tasks OWN, by declared foreign key: runs, jobs, artifacts, transitions --
  *      plus the operation ids those runs and jobs carry, and the audit and admin rows whose own
  *      canonical operation key equals one of them.
- *   3. Historical rows only: an artifact, audit event or admin operation is excluded when some
+ *   2. Historical rows only: an artifact, audit event or admin operation is excluded when some
  *      leaf value in its JSON *is* an excluded task, run or operation id. A mention buried inside a
  *      longer string is not a reference and never removes anything -- it is reported as ambiguous.
+ *
+ * A task is never added by inference. A surviving task that merely REFERS to an excluded one keeps
+ * everything it owns; only the edge naming the departed task is dropped from the copied row (see
+ * `stripExcludedRelationships`).
  */
 async function resolveExclusion(query: Query, taskIds: readonly string[], options: { relationshipDiagnostics?: boolean } = {}): Promise<ResolvedExclusion> {
-  if (!taskIds.length) return { requested: [], found: [], notFound: [], closure: emptyClosure(), dependentIdentities: [], unresolvedDependents: [], ambiguous: [], iterations: 0, relationshipEdges: [] };
+  if (!taskIds.length) return { requested: [], found: [], notFound: [], closure: emptyClosure(), normalizedTasks: [], ambiguous: [], relationshipEdges: [] };
   const ids = [...taskIds];
   const idColumn = async (text: string, values: unknown[]): Promise<string[]> => (await query<{ id: string }>(text, values)).map(row => row.id);
-  const dependentsOf = (excluded: readonly string[]): Promise<string[]> => idColumn(
-    `SELECT id FROM tasks WHERE id <> ALL($1::uuid[])
-       AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(data->'relationships','[]'::jsonb)) AS relationship
-                   WHERE relationship->>'targetTaskId' = ANY($2::text[]))
-     ORDER BY id`,
-    [[...excluded], [...excluded]],
-  );
 
-  // -- 1. tasks, to a fixed point -------------------------------------------------------------
-  const rootTasks = await idColumn('SELECT id FROM tasks WHERE id = ANY($1::uuid[]) ORDER BY id', [ids]);
-  const dependentTasks: string[] = [];
-  let tasks = [...rootTasks];
-  let iterations = 0;
-  for (;;) {
-    const next = await dependentsOf(tasks);
-    if (!next.length) break;
-    iterations += 1;
-    if (iterations > MAX_CLOSURE_ITERATIONS) throw new MigrationBlocked('Exclusion closure did not reach a fixed point', { iterations, tasks: tasks.length });
-    dependentTasks.push(...next);
-    tasks = [...tasks, ...next].sort();
-  }
-  dependentTasks.sort();
+  const tasks = await idColumn('SELECT id FROM tasks WHERE id = ANY($1::uuid[]) ORDER BY id', [ids]);
 
-  // -- 2. everything those tasks own ----------------------------------------------------------
+  // -- 1. everything those tasks own ----------------------------------------------------------
   const runs = await idColumn('SELECT id FROM runs WHERE task_id = ANY($1::uuid[]) ORDER BY id', [tasks]);
   const executionJobs = await idColumn('SELECT id FROM execution_jobs WHERE task_id = ANY($1::uuid[]) OR run_id = ANY($2::uuid[]) ORDER BY id', [tasks, runs]);
   const taskTransitions = await idColumn('SELECT id FROM task_transitions WHERE task_id = ANY($1::uuid[]) ORDER BY id', [tasks]);
@@ -362,11 +351,13 @@ async function resolveExclusion(query: Query, taskIds: readonly string[], option
   // match on that is a structured reference, not a guess. No prefix or name matching of any kind.
   const adminOperations = new Set((await query<{ operation_id: string }>('SELECT operation_id FROM admin_operations WHERE operation_id = ANY($1::text[]) ORDER BY operation_id', [operationIds])).map(row => row.operation_id));
 
-  // -- 3. historical rows, by exact scalar reference -------------------------------------------
-  const closureSoFar: ExclusionClosure = { tasks, rootTasks, dependentTasks, operationIds, runs, executionJobs, artifacts: [...artifacts], taskTransitions, auditEvents: [...auditEvents], adminOperations: [...adminOperations] };
+  // -- 2. historical rows, by exact scalar reference -------------------------------------------
+  const closureSoFar: ExclusionClosure = { tasks, operationIds, runs, executionJobs, artifacts: [...artifacts], taskTransitions, auditEvents: [...auditEvents], adminOperations: [...adminOperations] };
   const needles = closureNeedles(closureSoFar);
+  const excludedTasks = new Set(tasks);
   const proven: Record<string, Set<string>> = { artifacts, audit_events: auditEvents, admin_operations: adminOperations };
   const ambiguous: Array<{ table: string; count: number; sample: readonly string[] }> = [];
+  const normalizedTasks: Array<{ taskId: string; removedTargets: readonly string[] }> = [];
 
   for (const entry of controlPlaneMigrationPlan) {
     if (!entry.columns.includes('data')) continue;
@@ -374,11 +365,12 @@ async function resolveExclusion(query: Query, taskIds: readonly string[], option
     const table = assertSafeIdentifier(entry.table);
     const alreadyExcluded = [...(proven[entry.table] ?? new Set(excludedIdsForTable(closureSoFar, entry.table)))];
     const historical = isHistoricalTable(entry.table);
+    const normalizable = entry.table === RELATIONSHIP_NORMALIZED_TABLE;
     // The LIKE scan only narrows the candidates; it never decides anything. What decides is the
     // exact scalar walk below -- and for an operational table, nothing decides at all: any mention
     // there stays ambiguous, because a task, run, job or transition never leaves on JSON evidence.
     const candidates = await query<{ id: string; data: unknown }>(
-      `SELECT "${key}" AS id${historical ? ', data' : ''} FROM "${table}"
+      `SELECT "${key}" AS id${historical || normalizable ? ', data' : ''} FROM "${table}"
         WHERE "${key}"::text <> ALL($1::text[])
           AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS needle WHERE data::text LIKE '%' || needle || '%')
         ORDER BY "${key}" LIMIT $3`,
@@ -387,26 +379,33 @@ async function resolveExclusion(query: Query, taskIds: readonly string[], option
     if (candidates.length > CANDIDATE_LIMIT) throw new MigrationBlocked('Too many rows reference an excluded id to classify safely', { table: entry.table, atLeast: candidates.length });
     const unresolved: string[] = [];
     for (const row of candidates) {
-      if (historical && classifyJsonReference(row.data, needles) === 'EXACT_SCALAR') proven[entry.table]?.add(row.id);
-      else unresolved.push(row.id);
+      if (historical && classifyJsonReference(row.data, needles) === 'EXACT_SCALAR') { proven[entry.table]?.add(row.id); continue; }
+      if (normalizable) {
+        // A surviving task that names an excluded task in `relationships` is the expected case, not
+        // an unexplained one: the copy drops that edge and keeps the task. It is only ambiguous if
+        // the envelope STILL refers to an excluded id once those edges are gone.
+        const normalization = stripExcludedRelationships(row.data, excludedTasks);
+        if (normalization.removedTargets.length) normalizedTasks.push({ taskId: row.id, removedTargets: normalization.removedTargets });
+        if (classifyJsonReference(normalization.data, needles) === 'NONE') continue;
+      }
+      unresolved.push(row.id);
     }
     if (unresolved.length) ambiguous.push({ table: entry.table, count: unresolved.length, sample: sample(unresolved) });
   }
 
   const closure: ExclusionClosure = { ...closureSoFar, artifacts: [...artifacts].sort(), auditEvents: [...auditEvents].sort(), adminOperations: [...adminOperations].sort() };
-  const dependentIdentities = dependentTasks.length ? await taskIdentities(query, dependentTasks) : [];
+  const identities = normalizedTasks.length ? await taskIdentities(query, normalizedTasks.map(entry => entry.taskId)) : [];
+  const byId = new Map(identities.map(identity => [identity['taskId'] as string, identity]));
   return {
     requested: taskIds,
-    found: rootTasks,
-    notFound: taskIds.filter(id => !rootTasks.includes(id)),
+    found: tasks,
+    notFound: taskIds.filter(id => !tasks.includes(id)),
     closure,
-    dependentIdentities,
-    // By construction the loop only exits when this is empty; re-reading it turns the invariant
-    // into evidence rather than an assumption.
-    unresolvedDependents: await dependentsOf(tasks),
+    // The surviving tasks whose copied row loses an edge -- reported with safe identity so the
+    // normalization is visible rather than silent.
+    normalizedTasks: normalizedTasks.map(entry => ({ ...(byId.get(entry.taskId) ?? { taskId: entry.taskId }), removedTargetTaskIds: entry.removedTargets })),
     ambiguous,
-    iterations,
-    relationshipEdges: options.relationshipDiagnostics ? await dependentRelationshipEdges(query, dependentTasks, tasks) : [],
+    relationshipEdges: options.relationshipDiagnostics ? await dependentRelationshipEdges(query, normalizedTasks.map(entry => entry.taskId), tasks) : [],
   };
 }
 
@@ -465,11 +464,12 @@ function exclusionReport(resolved: ResolvedExclusion) {
     requestedTaskIds: resolved.requested,
     foundTaskIds: resolved.found,
     notFoundTaskIds: resolved.notFound,
-    rootExcludedTasks: sample(resolved.closure.rootTasks),
-    dependentExcludedTasks: resolved.dependentIdentities,
-    ...(resolved.relationshipEdges.length ? { dependentRelationshipEdges: resolved.relationshipEdges } : {}),
+    excludedTaskIds: resolved.closure.tasks,
+    // Preserved tasks whose copied representation loses an edge to a departed task. They are NOT
+    // excluded: their own runs, artifacts, transitions and audit history all cross.
+    tasksWithNormalizedRelationships: resolved.normalizedTasks,
+    ...(resolved.relationshipEdges.length ? { removedRelationshipEdges: resolved.relationshipEdges } : {}),
     excludedOperationIds: sample(resolved.closure.operationIds),
-    closureIterations: resolved.iterations,
     excluded: closureCounts(resolved.closure),
     excludedIds: {
       tasks: sample(resolved.closure.tasks),
@@ -480,7 +480,6 @@ function exclusionReport(resolved: ResolvedExclusion) {
       auditEvents: sample(resolved.closure.auditEvents),
       adminOperations: sample(resolved.closure.adminOperations),
     },
-    unresolvedDependentTaskIds: sample(resolved.unresolvedDependents),
     ambiguousReferences: resolved.ambiguous,
     structuredReferencesFollowed: structuredTaskReferences,
   };
@@ -584,13 +583,13 @@ async function blockingJobIds(): Promise<string[]> {
   return rows.map(row => row.id);
 }
 
-async function hashTable(query: Query, entry: TablePlan, excluded: readonly string[] = []) {
+async function hashTable(query: Query, entry: TablePlan, excluded: readonly string[] = [], normalize?: (row: unknown[]) => unknown[]) {
   const hasher = new RowHasher();
   for (let offset = 0; ; offset += PAGE) {
     const page = excluded.length
       ? await query<unknown[]>(selectPageSqlExcluding(entry), [PAGE, offset, [...excluded]], 'array')
       : await query<unknown[]>(selectPageSql(entry), [PAGE, offset], 'array');
-    for (const row of page) hasher.add(row);
+    for (const row of page) hasher.add(normalize ? normalize(row) : row);
     if (page.length < PAGE) break;
   }
   return { rows: hasher.count, hash: hasher.digest() };
@@ -639,6 +638,29 @@ async function structuredReferencesToExcluded(query: Query, closure: ExclusionCl
   return found;
 }
 
+/** Every relationship edge in the target that names a task the target does not hold, whatever the reason. */
+async function danglingRelationshipTargets(query: Query): Promise<Array<{ taskId: string; targetTaskId: string; relationshipType: string | null }>> {
+  const rows = await query<{ id: string; target_task_id: string; relationship_type: string | null }>(
+    `SELECT source.id, relationship->>'targetTaskId' AS target_task_id, relationship->>'type' AS relationship_type
+       FROM tasks source
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(source.data->'relationships','[]'::jsonb)) AS relationship
+      WHERE NOT EXISTS (SELECT 1 FROM tasks target WHERE target.id::text = relationship->>'targetTaskId')
+      ORDER BY source.id LIMIT $1`,
+    [IDENTITY_LIMIT],
+  );
+  return rows.map(row => ({ taskId: row.id, targetTaskId: row.target_task_id, relationshipType: row.relationship_type }));
+}
+
+/** Reads back the tasks that had to survive, with the state they arrived in. */
+async function requiredTaskPresence(query: Query, taskIds: readonly string[]): Promise<Array<Record<string, unknown>>> {
+  const rows = await query<{ id: string; external_key: string | null; state: string | null }>(
+    "SELECT id, external_key, data->>'state' AS state FROM tasks WHERE id = ANY($1::uuid[]) ORDER BY id",
+    [[...taskIds]],
+  );
+  const found = new Map(rows.map(row => [row.id, row]));
+  return taskIds.map(id => ({ taskId: id, present: found.has(id), externalKey: found.get(id)?.external_key ?? null, state: found.get(id)?.state ?? null }));
+}
+
 async function danglingReferences(query: Query): Promise<Array<{ reference: string; orphans: number }>> {
   const found: Array<{ reference: string; orphans: number }> = [];
   for (const edge of referenceEdges) {
@@ -669,15 +691,38 @@ async function keyedData(query: Query, entry: TablePlan) {
 // Writes (target only)
 // ---------------------------------------------------------------------------
 
-async function copyTable(entry: TablePlan, excluded: readonly string[] = []): Promise<number> {
+/**
+ * The one transformation this migration performs, and the reason it is a single shared function:
+ * copy applies it on the way in, and verify applies it to the source side before hashing, so the
+ * two can never disagree about what the target is supposed to contain.
+ *
+ * It touches exactly one field of one table -- `tasks.data.relationships` -- and only removes edges
+ * naming a task that is being excluded. Every other row of every other table crosses byte for byte.
+ */
+function rowNormalizer(entry: TablePlan, closure: ExclusionClosure): ((row: unknown[]) => unknown[]) | undefined {
+  if (entry.table !== RELATIONSHIP_NORMALIZED_TABLE || !closure.tasks.length) return undefined;
+  const dataIndex = entry.columns.indexOf('data');
+  if (dataIndex < 0) return undefined;
+  const excluded = new Set(closure.tasks);
+  return row => {
+    const normalized = stripExcludedRelationships(row[dataIndex], excluded);
+    if (!normalized.removedTargets.length) return row;
+    const copy = [...row];
+    copy[dataIndex] = normalized.data;
+    return copy;
+  };
+}
+
+async function copyTable(entry: TablePlan, excluded: readonly string[] = [], normalize?: (row: unknown[]) => unknown[]): Promise<number> {
   const keyIndex = entry.columns.indexOf(entry.primaryKey[0] as string);
   let copied = 0;
   for (let offset = 0; ; offset += PAGE) {
     // The excluded rows are filtered out of the READ, so they are never even fetched, let alone
-    // written. Every other row crosses byte for byte, untransformed.
-    const rows = excluded.length
+    // written. Every other row crosses byte for byte apart from the one normalization above.
+    const page = excluded.length
       ? await sourceQuery<unknown[]>(selectPageSqlExcluding(entry), [PAGE, offset, [...excluded]], 'array')
       : await sourceQuery<unknown[]>(selectPageSql(entry), [PAGE, offset], 'array');
+    const rows = normalize ? page.map(normalize) : page;
     if (entry.strategy === 'MARKER_MERGE') {
       // Split by key: the target's own schema:* provenance is kept, everything else is refreshed
       // from source. Two statements rather than one clever clause, so each behaviour is explicit.

@@ -9,10 +9,12 @@ import {
   emptyClosure,
   evaluateTransientTaskGate,
   excludedIdsForTable,
+  hashRows,
   historicalTables,
   isHistoricalTable,
-  MAX_CLOSURE_ITERATIONS,
   parseExcludedTaskIds,
+  RELATIONSHIP_NORMALIZED_TABLE,
+  stripExcludedRelationships,
   sample,
   SAMPLE_LIMIT,
   selectPageSqlExcluding,
@@ -51,6 +53,12 @@ describe("excluded task id parsing", () => {
 });
 
 describe("closure shape", () => {
+  it("holds exactly the explicit denylist as its task set", () => {
+    // Nothing may ever be added to `tasks` by inference; the entrypoint fills it from the CLI ids.
+    expect(emptyClosure().tasks).toEqual([]);
+    expect(Object.keys(emptyClosure()).sort()).toEqual(["adminOperations", "artifacts", "auditEvents", "executionJobs", "operationIds", "runs", "taskTransitions", "tasks"]);
+  });
+
   it("maps every closure category onto the table it filters", () => {
     const full = closure({ tasks: [A], runs: ["r"], executionJobs: ["j"], artifacts: ["a"], taskTransitions: ["t"], auditEvents: ["e"] });
     expect(excludedIdsForTable(full, "tasks")).toEqual([A]);
@@ -77,7 +85,7 @@ describe("closure shape", () => {
     expect(closureTotal(emptyClosure())).toBe(0);
   });
 
-  it("follows only declared foreign keys, canonical JSON paths and the operation key", () => {
+  it("cascades only through ownership: foreign keys, the canonical audit path and the operation key", () => {
     const references = structuredTaskReferences.map(entry => entry.reference);
     expect(references).toEqual([
       "runs.task_id",
@@ -87,15 +95,21 @@ describe("closure shape", () => {
       "execution_jobs.run_id",
       "task_transitions.task_id",
       "audit_events.data->>'taskId'",
-      "tasks.data->'relationships'[*]->>'targetTaskId'",
       "runs.operation_id",
       "execution_jobs.operation_id",
       "admin_operations.operation_id",
       "audit_events.data->>'correlationId'",
     ]);
     for (const entry of structuredTaskReferences) {
-      expect(["FOREIGN_KEY", "CANONICAL_JSON_PATH", "CANONICAL_JSON_PATH_RECURSIVE", "OPERATION_SOURCE", "CANONICAL_OPERATION_KEY"]).toContain(entry.kind);
+      expect(["FOREIGN_KEY", "CANONICAL_JSON_PATH", "OPERATION_SOURCE", "CANONICAL_OPERATION_KEY"]).toContain(entry.kind);
     }
+  });
+
+  it("never cascades along a relationship edge", () => {
+    // The final policy: a relationship is a reference, not ownership. No relationship type may pull
+    // a task into the closure -- the edge is normalized away instead, and the task survives.
+    expect(structuredTaskReferences.map(entry => entry.reference).join(" ")).not.toContain("relationships");
+    expect(RELATIONSHIP_NORMALIZED_TABLE).toBe("tasks");
   });
 
   it("allows an exact-scalar JSON match only for the historical tables", () => {
@@ -116,10 +130,6 @@ describe("closure shape", () => {
     expect(sample(Array.from({ length: 100 }, (_, index) => `id-${index}`))).toHaveLength(SAMPLE_LIMIT);
   });
 
-  it("bounds the recursion with a circuit breaker rather than trusting it to terminate", () => {
-    expect(MAX_CLOSURE_ITERATIONS).toBeGreaterThan(0);
-    expect(Number.isInteger(MAX_CLOSURE_ITERATIONS)).toBe(true);
-  });
 });
 
 describe("exclusion-aware paged read", () => {
@@ -210,6 +220,62 @@ describe("exact scalar classification", () => {
   });
 });
 
+describe("relationship normalization", () => {
+  const excluded = new Set([A, B]);
+  const envelope = (relationships: unknown) => ({
+    id: SURVIVOR, projectId: "p", externalKey: "CORE-BE-05-FINAL", title: "kept", description: "kept",
+    requirements: ["kept"], state: "READY", repairAttempts: 0, relationships, createdAt: "x", updatedAt: "y",
+  });
+
+  it("removes only the edges naming an excluded task", () => {
+    const result = stripExcludedRelationships(envelope([
+      { type: "SUPERSEDES", targetTaskId: A },
+      { type: "DEPENDS_ON", targetTaskId: SURVIVOR },
+      { type: "RELATED_TO", targetTaskId: B },
+    ]), excluded);
+    expect(result.removedTargets).toEqual([A, B]);
+    expect((result.data as { relationships: unknown[] }).relationships).toEqual([{ type: "DEPENDS_ON", targetTaskId: SURVIVOR }]);
+  });
+
+  it("changes no other field of the task envelope", () => {
+    const original = envelope([{ type: "SUPERSEDES", targetTaskId: A }]);
+    const result = stripExcludedRelationships(original, excluded) as { data: Record<string, unknown> };
+    for (const key of Object.keys(original)) {
+      if (key === "relationships") continue;
+      expect(result.data[key], `${key} must be untouched`).toEqual((original as Record<string, unknown>)[key]);
+    }
+    expect(Object.keys(result.data).sort()).toEqual(Object.keys(original).sort());
+  });
+
+  it("returns the very same object when nothing is removed, so an untouched row hashes identically", () => {
+    const original = envelope([{ type: "DEPENDS_ON", targetTaskId: SURVIVOR }]);
+    const result = stripExcludedRelationships(original, excluded);
+    expect(result.data).toBe(original);
+    expect(result.removedTargets).toEqual([]);
+    expect(hashRows([[original]])).toBe(hashRows([[result.data]]));
+  });
+
+  it("leaves a task with an empty or missing relationship list alone", () => {
+    expect(stripExcludedRelationships(envelope([]), excluded).removedTargets).toEqual([]);
+    const withoutField = { id: SURVIVOR, state: "READY" };
+    expect(stripExcludedRelationships(withoutField, excluded).data).toBe(withoutField);
+    expect(stripExcludedRelationships(null, excluded).data).toBeNull();
+    expect(stripExcludedRelationships(envelope("not-an-array"), excluded).removedTargets).toEqual([]);
+  });
+
+  it("does nothing at all when no task is excluded", () => {
+    const original = envelope([{ type: "SUPERSEDES", targetTaskId: A }]);
+    expect(stripExcludedRelationships(original, new Set()).data).toBe(original);
+  });
+
+  it("ignores malformed edges instead of dropping them", () => {
+    const original = envelope([{ type: "SUPERSEDES" }, "junk", null, { targetTaskId: 42 }]);
+    const result = stripExcludedRelationships(original, excluded);
+    expect(result.removedTargets).toEqual([]);
+    expect(result.data).toBe(original);
+  });
+});
+
 describe("exclusion is never derived from text", () => {
   const script = readFileSync(resolve(__dirname, "../../scripts/migrate-control-plane-state-next.ts"), "utf8");
   // Strictly the resolver: the relationship diagnostic and the identity reader that follow it are
@@ -241,15 +307,22 @@ describe("exclusion is never derived from text", () => {
     expect(copyBody).toContain("MigrationBlocked");
   });
 
-  it("absorbs a dependent task into the closure instead of rewriting its relationship", () => {
-    expect(resolver).toContain("relationship->>'targetTaskId' = ANY($2::text[])");
-    // The recursion runs to a fixed point, and the post-check proves nothing was left pointing at
-    // an excluded task. A relationship is never edited on the way through.
-    expect(resolver).toContain("MAX_CLOSURE_ITERATIONS");
-    expect(resolver).toContain("dependentsOf(tasks)");
-    expect(resolver).not.toMatch(/UPDATE|SET data/);
+  it("never queries tasks by relationship to decide the closure", () => {
+    // The recursive dependent-task exclusion is gone: the resolver's only task query is the exact
+    // denylist lookup. A relationship can no longer pull anything into the closure.
+    expect(resolver).toContain("SELECT id FROM tasks WHERE id = ANY($1::uuid[])");
+    expect(resolver).not.toContain("dependentsOf");
+    expect(resolver).not.toContain("MAX_CLOSURE_ITERATIONS");
+    expect(resolver).not.toMatch(/EXISTS \(SELECT 1 FROM jsonb_array_elements/);
     const copyBody = script.slice(script.indexOf("async function copy()"), script.indexOf("async function verify()"));
-    expect(copyBody).toContain("resolved.unresolvedDependents.length");
+    expect(copyBody).not.toContain("unresolvedDependents");
+  });
+
+  it("normalizes a surviving task's edges instead of excluding it, and does not call that ambiguous", () => {
+    expect(resolver).toContain("stripExcludedRelationships(row.data, excludedTasks)");
+    expect(resolver).toContain("normalizedTasks.push");
+    // Once the departed edges are gone the envelope must be clean; only then is the task fine.
+    expect(resolver).toContain("classifyJsonReference(normalization.data, needles) === 'NONE'");
   });
 
   it("derives operation ids only from the excluded runs and jobs themselves", () => {
@@ -280,8 +353,10 @@ describe("exclusion is never derived from text", () => {
   it("only lets a JSON document decide for a historical table", () => {
     expect(resolver).toContain("isHistoricalTable(entry.table)");
     expect(resolver).toContain("historical && classifyJsonReference(row.data, needles) === 'EXACT_SCALAR'");
-    // An operational table never even fetches `data` for classification.
-    expect(resolver).toContain("${historical ? ', data' : ''}");
+    // An operational table never even fetches `data` -- except `tasks`, which needs it only to
+    // normalize its own relationship edges, never to decide an exclusion.
+    expect(resolver).toContain("${historical || normalizable ? ', data' : ''}");
+    expect(resolver).toContain("entry.table === RELATIONSHIP_NORMALIZED_TABLE");
   });
 });
 
@@ -294,13 +369,26 @@ describe("copy and verify honour the closure", () => {
     expect(copyTable).toContain("excluded.length");
   });
 
-  it("verifies target against source-minus-closure and proves the excluded rows are absent", () => {
+  it("verifies target against source-minus-closure, normalized the same way the copy normalized it", () => {
     const verify = script.slice(script.indexOf("async function verify()"), script.indexOf("// ---------------------------------------------------------------------------\n// Reads"));
-    expect(verify).toContain("hashTable(sourceQuery, entry, excluded)");
+    expect(verify).toContain("hashTable(sourceQuery, entry, excluded, rowNormalizer(entry, resolved.closure))");
     expect(verify).toContain("hashTable(targetQuery, entry)");
     expect(verify).toContain("presentIds(targetQuery, entry, excluded)");
     expect(verify).toContain("absent.length === 0");
     expect(verify).toContain("danglingReferences(targetQuery)");
+    expect(verify).toContain("danglingRelationshipTargets(targetQuery)");
+    expect(verify).toContain("requiredTaskPresence(targetQuery, requiredTaskIds)");
+    expect(verify).toContain("activeJobTally(sourceQuery)");
+  });
+
+  it("uses one shared normalizer, so copy and verify cannot disagree about the target contents", () => {
+    const copyBody = script.slice(script.indexOf("async function copy()"), script.indexOf("async function verify()"));
+    expect(copyBody).toContain("rowNormalizer(entry, resolved.closure)");
+    const normalizer = script.slice(script.indexOf("function rowNormalizer"), script.indexOf("async function copyTable"));
+    // It touches one field of one table and returns the row untouched otherwise.
+    expect(normalizer).toContain("entry.table !== RELATIONSHIP_NORMALIZED_TABLE");
+    expect(normalizer).toContain("if (!normalized.removedTargets.length) return row;");
+    expect(normalizer).toContain("copy[dataIndex] = normalized.data;");
   });
 
   it("checks every declared child-to-parent edge for orphans", () => {

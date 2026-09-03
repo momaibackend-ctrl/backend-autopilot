@@ -25,12 +25,8 @@ export function parseExcludedTaskIds(values: readonly string[]): string[] {
 }
 
 export interface ExclusionClosure {
-  /** Every excluded task: the caller's denylist plus every task that recursively depends on one. */
+  /** Exactly the caller's explicit denylist, intersected with what exists. Nothing is ever added to it by inference. */
   readonly tasks: readonly string[];
-  /** The denylist as given, intersected with what actually exists. */
-  readonly rootTasks: readonly string[];
-  /** Tasks pulled in by `relationships[].targetTaskId`, at any depth. */
-  readonly dependentTasks: readonly string[];
   /** `operation_id` of every excluded run and execution job -- the key that ties an admin operation or audit correlation to this work. */
   readonly operationIds: readonly string[];
   readonly runs: readonly string[];
@@ -41,7 +37,7 @@ export interface ExclusionClosure {
   readonly adminOperations: readonly string[];
 }
 
-export const emptyClosure = (): ExclusionClosure => ({ tasks: [], rootTasks: [], dependentTasks: [], operationIds: [], runs: [], executionJobs: [], artifacts: [], taskTransitions: [], auditEvents: [], adminOperations: [] });
+export const emptyClosure = (): ExclusionClosure => ({ tasks: [], operationIds: [], runs: [], executionJobs: [], artifacts: [], taskTransitions: [], auditEvents: [], adminOperations: [] });
 
 /**
  * The reference graph this closure is allowed to follow, as it exists in the real schema:
@@ -61,12 +57,53 @@ export const structuredTaskReferences = [
   { table: 'execution_jobs', reference: 'execution_jobs.run_id', kind: 'FOREIGN_KEY' },
   { table: 'task_transitions', reference: 'task_transitions.task_id', kind: 'FOREIGN_KEY' },
   { table: 'audit_events', reference: "audit_events.data->>'taskId'", kind: 'CANONICAL_JSON_PATH' },
-  { table: 'tasks', reference: "tasks.data->'relationships'[*]->>'targetTaskId'", kind: 'CANONICAL_JSON_PATH_RECURSIVE' },
   { table: 'runs', reference: 'runs.operation_id', kind: 'OPERATION_SOURCE' },
   { table: 'execution_jobs', reference: 'execution_jobs.operation_id', kind: 'OPERATION_SOURCE' },
   { table: 'admin_operations', reference: 'admin_operations.operation_id', kind: 'CANONICAL_OPERATION_KEY' },
   { table: 'audit_events', reference: "audit_events.data->>'correlationId'", kind: 'CANONICAL_OPERATION_KEY' },
 ] as const;
+
+/**
+ * `tasks.data->'relationships'[*]->>'targetTaskId'` is deliberately NOT in that list.
+ *
+ * A relationship is a reference to another task, never ownership of it, and no relationship type
+ * says otherwise: `DEPENDS_ON` is a readiness precondition (packages/workflow-engine/src/index.ts),
+ * `CONFLICTS_WITH` a mutual exclusion (same file), `SUPERSEDES` is written BY the replacement about
+ * the task it replaced (packages/core/src/epic-verification.ts), and `BLOCKS`, `RELATED_TO` and
+ * `IMPLEMENTS` are read by nothing at all. Cascading exclusion along such an edge would delete the
+ * live successor because the thing it replaced is being dropped -- exactly backwards.
+ *
+ * So a task that merely points at an excluded task survives, with its own runs, artifacts,
+ * transitions and audit trail intact. Only the edge itself cannot come: the task it names will not
+ * exist in the target. That single removal is what `stripExcludedRelationships` does, in the copied
+ * representation only -- the source is never modified.
+ */
+export const RELATIONSHIP_NORMALIZED_TABLE = 'tasks';
+
+export interface RelationshipNormalization {
+  /** The same reference when nothing was removed, so an untouched row hashes identically. */
+  readonly data: unknown;
+  readonly removedTargets: readonly string[];
+}
+
+/**
+ * Drops relationship edges naming a task the target will not receive, and changes nothing else:
+ * every other key of the task envelope, and every surviving edge, is passed through untouched.
+ */
+export function stripExcludedRelationships(data: unknown, excludedTaskIds: ReadonlySet<string>): RelationshipNormalization {
+  if (!excludedTaskIds.size || data === null || typeof data !== 'object' || Array.isArray(data)) return { data, removedTargets: [] };
+  const envelope = data as Record<string, unknown>;
+  const relationships = envelope['relationships'];
+  if (!Array.isArray(relationships)) return { data, removedTargets: [] };
+  const removedTargets: string[] = [];
+  const kept = relationships.filter(edge => {
+    const target = edge !== null && typeof edge === 'object' ? (edge as Record<string, unknown>)['targetTaskId'] : undefined;
+    if (typeof target === 'string' && excludedTaskIds.has(target)) { removedTargets.push(target); return false; }
+    return true;
+  });
+  if (!removedTargets.length) return { data, removedTargets: [] };
+  return { data: { ...envelope, relationships: kept }, removedTargets };
+}
 
 /**
  * Tables whose rows are pure history: they record what happened to work, they are not the work.
@@ -79,9 +116,6 @@ export const structuredTaskReferences = [
  */
 export const historicalTables = ['artifacts', 'audit_events', 'admin_operations'] as const;
 export const isHistoricalTable = (table: string): boolean => (historicalTables as readonly string[]).includes(table);
-
-/** A relationship graph cannot need more rounds than it has tasks; this is the circuit breaker, not the expected path. */
-export const MAX_CLOSURE_ITERATIONS = 100;
 
 export type JsonReferenceClass = 'EXACT_SCALAR' | 'MENTION_ONLY' | 'NONE';
 
