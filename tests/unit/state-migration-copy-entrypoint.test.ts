@@ -74,16 +74,42 @@ const { FakeClient, db } = vi.hoisted(() => {
     if (/^SELECT id FROM execution_jobs WHERE task_id = ANY/.test(flat)) return db.rows("execution_jobs").filter(row => asArray(values[0]).includes(String(row["task_id"])) || asArray(values[1]).includes(String(row["run_id"]))).map(row => ({ id: row["id"] }));
     if (/^SELECT id FROM artifacts WHERE task_id = ANY/.test(flat)) return db.rows("artifacts").filter(row => asArray(values[0]).includes(String(row["task_id"])) || asArray(values[1]).includes(String(row["run_id"]))).map(row => ({ id: row["id"] }));
     if (/^SELECT id FROM task_transitions WHERE task_id = ANY/.test(flat)) return db.rows("task_transitions").filter(row => asArray(values[0]).includes(String(row["task_id"]))).map(row => ({ id: row["id"] }));
-    if (/^SELECT id FROM audit_events WHERE data->>'taskId' = ANY/.test(flat)) return db.rows("audit_events").filter(row => asArray(values[0]).includes(String((row["data"] as Record<string, unknown>)?.["taskId"]))).map(row => ({ id: row["id"] }));
+    if (/^SELECT id FROM audit_events WHERE data->>'taskId' = ANY/.test(flat)) {
+      return db.rows("audit_events")
+        .filter(row => {
+          const data = (row["data"] ?? {}) as Record<string, unknown>;
+          return asArray(values[0]).includes(String(data["taskId"])) || asArray(values[1]).includes(String(data["correlationId"]));
+        })
+        .map(row => ({ id: row["id"] }));
+    }
+    if (/^SELECT DISTINCT operation_id FROM runs WHERE id = ANY/.test(flat)) {
+      return [...new Set(db.rows("runs").filter(row => asArray(values[0]).includes(String(row["id"]))).map(row => String(row["operation_id"])))].map(operation_id => ({ operation_id }));
+    }
+    if (/^SELECT DISTINCT operation_id FROM execution_jobs WHERE id = ANY/.test(flat)) {
+      return [...new Set(db.rows("execution_jobs").filter(row => asArray(values[0]).includes(String(row["id"]))).map(row => String(row["operation_id"])))].map(operation_id => ({ operation_id }));
+    }
+    if (/^SELECT operation_id FROM admin_operations WHERE operation_id = ANY/.test(flat)) {
+      return db.rows("admin_operations").filter(row => asArray(values[0]).includes(String(row["operation_id"]))).map(row => ({ operation_id: row["operation_id"] }));
+    }
+    if (/^SELECT id, external_key, data->>'title' AS title/.test(flat)) {
+      return db.rows("tasks")
+        .filter(row => asArray(values[0]).includes(String(row["id"])))
+        .sort((left, right) => String(left["id"]).localeCompare(String(right["id"])))
+        .slice(0, Number(values[1]))
+        .map(row => ({ id: row["id"], external_key: row["external_key"], title: (row["data"] as Record<string, unknown>)?.["title"] ?? null, state: (row["data"] as Record<string, unknown>)?.["state"] ?? null }));
+    }
     if (/EXISTS \(SELECT 1 FROM jsonb_array_elements/.test(flat)) return db.rows("tasks").filter(row => !asArray(values[0]).includes(String(row["id"])) && (row["relationshipTargets"] as string[] | undefined)?.some(target => asArray(values[1]).includes(target))).map(row => ({ id: row["id"] }));
     if (/EXISTS \(SELECT 1 FROM unnest/.test(flat)) {
       const table = /FROM "(\w+)"/.exec(flat)?.[1] ?? "";
       const excluded = asArray(values[0]);
       const needles = asArray(values[1]);
       const key = table === "admin_operations" ? "operation_id" : table === "system_settings" ? "key" : table === "console_screens" ? "screen_id" : table === "migration_markers" ? "key" : "id";
+      // The real statement also selects `data` for the historical tables, so the exact-scalar walk
+      // has something to classify.
       return db.rows(table)
         .filter(row => !excluded.includes(String(row[key])) && needles.some(needle => JSON.stringify(row["data"] ?? {}).includes(needle)))
-        .map(row => ({ id: row[key] }));
+        .sort((left, right) => String(left[key]).localeCompare(String(right[key])))
+        .map(row => ({ id: row[key], data: row["data"] }));
     }
     if (/^SELECT id, data->>'state' AS state FROM tasks/.test(flat)) {
       const states = asArray(values[0]);
@@ -307,14 +333,24 @@ describe("copy gates", () => {
     expect(db.inserts).toEqual([]);
   });
 
-  it("blocks when a surviving task depends on an excluded one instead of rewriting it", async () => {
+  it("blocks on an operational row that only mentions an excluded id in free text", async () => {
     const tables = fixture();
-    tables["tasks"] = (tables["tasks"] ?? []).map(row => (row["id"] === LIVE_TASK ? { ...row, relationshipTargets: [STALE_TASK] } : row));
+    // A surviving RUN whose data merely contains the id inside a sentence. runs is operational, so
+    // no JSON evidence can remove it -- and an unexplained reference must not be copied blindly.
+    tables["runs"] = [...(tables["runs"] ?? []), { id: "dddddddd-0000-4000-8000-000000000001", project_id: PROJECT, task_id: LIVE_TASK, operation_id: "op-note", data: { note: `rebased away from ${STALE_TASK}` }, created_at: new Date("2026-02-04T00:00:00.000Z") }];
     const result = await runCopy({ exclude: [STALE_TASK], tables });
     expect(result.exitCode).toBe(1);
     expect(db.inserts).toEqual([]);
     const blocked = result.errors.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.blocked");
-    expect(blocked?.["tasksDependingOnExcludedTasks"]).toEqual([LIVE_TASK]);
+    expect(blocked?.["ambiguousReferences"]).toEqual([{ table: "runs", count: 1, sample: ["dddddddd-0000-4000-8000-000000000001"] }]);
+  });
+
+  it("blocks on an operational task that only mentions an excluded id in free text", async () => {
+    const tables = fixture();
+    tables["tasks"] = [...(tables["tasks"] ?? []), { id: "eeeeeeee-0000-4000-8000-000000000001", project_id: PROJECT, external_key: "NOTE", state: "READY", data: { description: `superseded ${STALE_TASK} eventually` }, created_at: new Date("2026-02-05T00:00:00.000Z") }];
+    const result = await runCopy({ exclude: [STALE_TASK], tables });
+    expect(result.exitCode).toBe(1);
+    expect(db.inserts).toEqual([]);
   });
 
   it("blocks on an unresolvable JSON mention rather than dropping or copying it silently", async () => {
@@ -327,5 +363,105 @@ describe("copy gates", () => {
     expect(db.inserts).toEqual([]);
     const blocked = result.errors.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.blocked");
     expect(blocked?.["ambiguousReferences"]).toEqual([{ table: "admin_operations", count: 1, sample: ["op-1"] }]);
+  });
+});
+
+const DEPENDENT = "dddddddd-1111-4000-8000-000000000001";
+const SECOND_LEVEL = "dddddddd-2222-4000-8000-000000000001";
+const DEPENDENT_RUN = "dddddddd-1111-4000-8000-000000000002";
+const DEPENDENT_ARTIFACT = "dddddddd-1111-4000-8000-000000000003";
+const DEPENDENT_TRANSITION = "dddddddd-1111-4000-8000-000000000004";
+const HISTORICAL_ARTIFACT = "dddddddd-3333-4000-8000-000000000001";
+const HISTORICAL_AUDIT = "dddddddd-3333-4000-8000-000000000002";
+
+/** The stale task, a task depending on it, a task depending on THAT, and history hanging off each. */
+function recursiveFixture(): Tables {
+  const base = fixture();
+  return {
+    ...base,
+    tasks: [
+      ...(base["tasks"] ?? []),
+      { id: DEPENDENT, project_id: PROJECT, external_key: "DEP-1", state: "READY", data: { id: DEPENDENT, state: "READY", title: "first level" }, relationshipTargets: [STALE_TASK], created_at: new Date("2026-02-03T00:00:00.000Z") },
+      { id: SECOND_LEVEL, project_id: PROJECT, external_key: "DEP-2", state: "READY", data: { id: SECOND_LEVEL, state: "READY", title: "second level" }, relationshipTargets: [DEPENDENT], created_at: new Date("2026-02-04T00:00:00.000Z") },
+    ],
+    runs: [...(base["runs"] ?? []), { id: DEPENDENT_RUN, project_id: PROJECT, task_id: DEPENDENT, operation_id: "op-dependent", data: { id: DEPENDENT_RUN }, created_at: new Date("2026-02-03T00:00:00.000Z") }],
+    artifacts: [
+      ...(base["artifacts"] ?? []),
+      { id: DEPENDENT_ARTIFACT, project_id: PROJECT, task_id: DEPENDENT, run_id: DEPENDENT_RUN, kind: "CODE_DIFF", status: "AVAILABLE", content_hash: "h3", storage_bucket: "autopilot-artifacts", storage_path: "x", byte_size: "10", data: { id: DEPENDENT_ARTIFACT }, created_at: new Date("2026-02-03T00:00:00.000Z") },
+      // No task_id/run_id at all: only an exact scalar deep in its JSON ties it to the stale run.
+      { id: HISTORICAL_ARTIFACT, project_id: PROJECT, task_id: null, run_id: null, kind: "REBASE_REPORT", status: "AVAILABLE", content_hash: "h4", storage_bucket: "autopilot-artifacts", storage_path: "y", byte_size: "10", data: { report: { sourceRunId: STALE_RUN } }, created_at: new Date("2026-02-03T00:00:00.000Z") },
+    ],
+    task_transitions: [...(base["task_transitions"] ?? []), { id: DEPENDENT_TRANSITION, task_id: DEPENDENT, data: { id: DEPENDENT_TRANSITION }, created_at: new Date("2026-02-03T00:00:00.000Z") }],
+    audit_events: [
+      ...(base["audit_events"] ?? []),
+      // Tied only by correlationId == the stale job's operation id.
+      { id: HISTORICAL_AUDIT, project_id: PROJECT, data: { id: HISTORICAL_AUDIT, correlationId: "op-stale", reason: "job finished" }, created_at: new Date("2026-02-02T00:00:00.000Z") },
+    ],
+    // Exact operation-id match with the stale run/job.
+    admin_operations: [
+      { operation_id: "op-stale", actor: "a", tool: "t", project_id: PROJECT, data: { operationId: "op-stale" }, created_at: new Date("2026-02-02T00:00:00.000Z") },
+      { operation_id: "op-unrelated", actor: "a", tool: "t", project_id: PROJECT, data: { operationId: "op-unrelated" }, created_at: new Date("2026-02-02T00:00:00.000Z") },
+    ],
+  };
+}
+
+describe("recursive and operation closure", () => {
+  let result: RunResult;
+  beforeEach(async () => { result = await runCopy({ exclude: [STALE_TASK], tables: recursiveFixture() }); });
+
+  it("completes: the dependents are absorbed rather than blocking", () => {
+    expect(result.errors).toEqual([]);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("pulls a dependent task into the closure recursively, including the second level", () => {
+    expect(db.insertedIds("tasks")).toEqual([LIVE_TASK]);
+    expect(db.insertedIds("tasks")).not.toContain(DEPENDENT);
+    expect(db.insertedIds("tasks")).not.toContain(SECOND_LEVEL);
+  });
+
+  it("cascades the dependent task's own history out of the copy", () => {
+    expect(db.insertedIds("runs")).toEqual([LIVE_RUN]);
+    expect(db.insertedIds("task_transitions")).toEqual([]);
+    expect(db.insertedIds("artifacts")).not.toContain(DEPENDENT_ARTIFACT);
+  });
+
+  it("excludes the admin operation whose operation_id equals an excluded run or job operation", () => {
+    expect(db.insertedIds("admin_operations")).toEqual(["op-unrelated"]);
+  });
+
+  it("excludes a historical artifact tied only by an exact scalar deep in its JSON", () => {
+    expect(db.insertedIds("artifacts")).toEqual([LIVE_ARTIFACT]);
+    expect(db.insertedIds("artifacts")).not.toContain(HISTORICAL_ARTIFACT);
+  });
+
+  it("excludes an audit event tied only by its canonical correlationId", () => {
+    expect(db.insertedIds("audit_events")).toEqual([LIVE_AUDIT]);
+    expect(db.insertedIds("audit_events")).not.toContain(HISTORICAL_AUDIT);
+  });
+
+  it("reports root and dependent tasks separately, with safe identity and the operation ids", () => {
+    const plan = result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.exclusion_plan");
+    expect(plan?.["rootExcludedTasks"]).toEqual([STALE_TASK]);
+    expect(plan?.["dependentExcludedTasks"]).toEqual([
+      { taskId: DEPENDENT, externalKey: "DEP-1", title: "first level", state: "READY" },
+      { taskId: SECOND_LEVEL, externalKey: "DEP-2", title: "second level", state: "READY" },
+    ]);
+    expect(plan?.["excludedOperationIds"]).toEqual(["op-dependent", "op-stale"]);
+    expect(plan?.["excluded"]).toEqual({ tasks: 3, runs: 2, artifacts: 3, executionJobs: 1, taskTransitions: 2, auditEvents: 2, adminOperations: 1 });
+    expect(plan?.["unresolvedDependentTaskIds"]).toEqual([]);
+  });
+
+  it("is deterministic whatever order the roots are given in", async () => {
+    const first = result.logs.find(line => line.includes("exclusion_plan"));
+    const rerun = await runCopy({ exclude: [STALE_TASK, STALE_TASK], tables: recursiveFixture() });
+    const second = rerun.logs.find(line => line.includes("exclusion_plan"));
+    expect(second).toBe(first);
+  });
+
+  it("keeps every unrelated row and never writes to the source", () => {
+    expect(db.insertedIds("projects")).toEqual([PROJECT]);
+    expect(db.insertedRow("tasks", LIVE_TASK)?.["external_key"]).toBe("CORE-BE-05");
+    for (const statement of db.sourceStatements) expect(statement).not.toMatch(/^(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE)\b/i);
   });
 });

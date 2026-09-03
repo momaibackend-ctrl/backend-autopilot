@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  classifyJsonReference,
   closureCounts,
+  closureNeedles,
   closureTotal,
   emptyClosure,
   evaluateTransientTaskGate,
   excludedIdsForTable,
+  historicalTables,
+  isHistoricalTable,
+  MAX_CLOSURE_ITERATIONS,
   parseExcludedTaskIds,
   sample,
   SAMPLE_LIMIT,
@@ -72,7 +77,7 @@ describe("closure shape", () => {
     expect(closureTotal(emptyClosure())).toBe(0);
   });
 
-  it("follows only declared foreign keys and canonical JSON paths", () => {
+  it("follows only declared foreign keys, canonical JSON paths and the operation key", () => {
     const references = structuredTaskReferences.map(entry => entry.reference);
     expect(references).toEqual([
       "runs.task_id",
@@ -83,12 +88,37 @@ describe("closure shape", () => {
       "task_transitions.task_id",
       "audit_events.data->>'taskId'",
       "tasks.data->'relationships'[*]->>'targetTaskId'",
+      "runs.operation_id",
+      "execution_jobs.operation_id",
+      "admin_operations.operation_id",
+      "audit_events.data->>'correlationId'",
     ]);
-    for (const entry of structuredTaskReferences) expect(["FOREIGN_KEY", "CANONICAL_JSON_PATH", "CANONICAL_JSON_PATH_INBOUND"]).toContain(entry.kind);
+    for (const entry of structuredTaskReferences) {
+      expect(["FOREIGN_KEY", "CANONICAL_JSON_PATH", "CANONICAL_JSON_PATH_RECURSIVE", "OPERATION_SOURCE", "CANONICAL_OPERATION_KEY"]).toContain(entry.kind);
+    }
+  });
+
+  it("allows an exact-scalar JSON match only for the historical tables", () => {
+    expect([...historicalTables]).toEqual(["artifacts", "audit_events", "admin_operations"]);
+    for (const table of ["tasks", "runs", "execution_jobs", "task_transitions", "projects", "resources"]) {
+      expect(isHistoricalTable(table), `${table} must never leave on JSON evidence`).toBe(false);
+    }
+  });
+
+  it("collects the needles a historical row may be matched against", () => {
+    const full = closure({ tasks: [A, B], runs: ["run-1"], operationIds: ["op-1"], artifacts: ["artifact-1"] });
+    // Artifact and job ids are deliberately absent: a row is proved stale by naming the task, the
+    // run or the operation, not by naming another piece of evidence.
+    expect([...closureNeedles(full)].sort()).toEqual([A, B, "op-1", "run-1"].sort());
   });
 
   it("caps reported id samples", () => {
     expect(sample(Array.from({ length: 100 }, (_, index) => `id-${index}`))).toHaveLength(SAMPLE_LIMIT);
+  });
+
+  it("bounds the recursion with a circuit breaker rather than trusting it to terminate", () => {
+    expect(MAX_CLOSURE_ITERATIONS).toBeGreaterThan(0);
+    expect(Number.isInteger(MAX_CLOSURE_ITERATIONS)).toBe(true);
   });
 });
 
@@ -146,9 +176,43 @@ describe("transient task gate", () => {
   });
 });
 
+describe("exact scalar classification", () => {
+  const needles = new Set([A, "op-42"]);
+
+  it("proves a reference when a leaf value IS the id, at any depth", () => {
+    expect(classifyJsonReference({ taskId: A }, needles)).toBe("EXACT_SCALAR");
+    expect(classifyJsonReference({ input: { nested: { taskId: A } } }, needles)).toBe("EXACT_SCALAR");
+    expect(classifyJsonReference({ ids: ["other", A] }, needles)).toBe("EXACT_SCALAR");
+    expect(classifyJsonReference({ result: { operationId: "op-42" } }, needles)).toBe("EXACT_SCALAR");
+    expect(classifyJsonReference([{ correlationId: "op-42" }], needles)).toBe("EXACT_SCALAR");
+  });
+
+  it("refuses to treat a UUID buried in free text as a reference", () => {
+    expect(classifyJsonReference({ reason: `rebased onto ${A} yesterday` }, needles)).toBe("MENTION_ONLY");
+    expect(classifyJsonReference({ diff: `- id: ${A}\n+ id: other` }, needles)).toBe("MENTION_ONLY");
+    expect(classifyJsonReference({ note: `${A} ` }, needles)).toBe("MENTION_ONLY");
+    expect(classifyJsonReference({ note: `see-${A}` }, needles)).toBe("MENTION_ONLY");
+  });
+
+  it("prefers hard evidence when a document has both", () => {
+    expect(classifyJsonReference({ taskId: A, reason: `about ${A}` }, needles)).toBe("EXACT_SCALAR");
+  });
+
+  it("reports nothing when the document does not involve an excluded id", () => {
+    expect(classifyJsonReference({ taskId: SURVIVOR, reason: "unrelated" }, needles)).toBe("NONE");
+    expect(classifyJsonReference({ taskId: A }, new Set())).toBe("NONE");
+    expect(classifyJsonReference(null, needles)).toBe("NONE");
+    expect(classifyJsonReference({ count: 42, ok: true }, needles)).toBe("NONE");
+  });
+
+  it("never matches on a key name, only on a value", () => {
+    expect(classifyJsonReference({ [A]: "value" }, needles)).toBe("NONE");
+  });
+});
+
 describe("exclusion is never derived from text", () => {
   const script = readFileSync(resolve(__dirname, "../../scripts/migrate-control-plane-state-next.ts"), "utf8");
-  const resolver = script.slice(script.indexOf("async function resolveExclusion"), script.indexOf("function exclusionReport"));
+  const resolver = script.slice(script.indexOf("async function resolveExclusion"), script.indexOf("/** Safe identity of the tasks the recursion pulled in"));
 
   it("resolves the closure from foreign keys and the canonical audit path only", () => {
     expect(resolver).toContain("FROM runs WHERE task_id = ANY($1::uuid[])");
@@ -175,10 +239,32 @@ describe("exclusion is never derived from text", () => {
     expect(copyBody).toContain("MigrationBlocked");
   });
 
-  it("blocks rather than rewrites when a surviving task depends on an excluded one", () => {
+  it("absorbs a dependent task into the closure instead of rewriting its relationship", () => {
     expect(resolver).toContain("relationship->>'targetTaskId' = ANY($2::text[])");
+    // The recursion runs to a fixed point, and the post-check proves nothing was left pointing at
+    // an excluded task. A relationship is never edited on the way through.
+    expect(resolver).toContain("MAX_CLOSURE_ITERATIONS");
+    expect(resolver).toContain("dependentsOf(tasks)");
+    expect(resolver).not.toMatch(/UPDATE|SET data/);
     const copyBody = script.slice(script.indexOf("async function copy()"), script.indexOf("async function verify()"));
-    expect(copyBody).toContain("resolved.dependentTasks.length");
+    expect(copyBody).toContain("resolved.unresolvedDependents.length");
+  });
+
+  it("derives operation ids only from the excluded runs and jobs themselves", () => {
+    expect(resolver).toContain("SELECT DISTINCT operation_id FROM runs WHERE id = ANY($1::uuid[])");
+    expect(resolver).toContain("SELECT DISTINCT operation_id FROM execution_jobs WHERE id = ANY($1::uuid[])");
+    expect(resolver).toContain("FROM admin_operations WHERE operation_id = ANY($1::text[])");
+    expect(resolver).toContain("data->>'correlationId' = ANY($2::text[])");
+    // Exact equality only -- no LIKE, prefix or name matching decides an operation.
+    expect(resolver).not.toMatch(/operation_id\s+LIKE/);
+    expect(resolver).not.toMatch(/operation_id.*\|\|\s*'%'/);
+  });
+
+  it("only lets a JSON document decide for a historical table", () => {
+    expect(resolver).toContain("isHistoricalTable(entry.table)");
+    expect(resolver).toContain("historical && classifyJsonReference(row.data, needles) === 'EXACT_SCALAR'");
+    // An operational table never even fetches `data` for classification.
+    expect(resolver).toContain("${historical ? ', data' : ''}");
   });
 });
 

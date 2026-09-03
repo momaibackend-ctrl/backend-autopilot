@@ -25,17 +25,23 @@ export function parseExcludedTaskIds(values: readonly string[]): string[] {
 }
 
 export interface ExclusionClosure {
+  /** Every excluded task: the caller's denylist plus every task that recursively depends on one. */
   readonly tasks: readonly string[];
+  /** The denylist as given, intersected with what actually exists. */
+  readonly rootTasks: readonly string[];
+  /** Tasks pulled in by `relationships[].targetTaskId`, at any depth. */
+  readonly dependentTasks: readonly string[];
+  /** `operation_id` of every excluded run and execution job -- the key that ties an admin operation or audit correlation to this work. */
+  readonly operationIds: readonly string[];
   readonly runs: readonly string[];
   readonly executionJobs: readonly string[];
   readonly artifacts: readonly string[];
   readonly taskTransitions: readonly string[];
   readonly auditEvents: readonly string[];
-  /** Always empty: adminOperationSchema defines no task reference, so no admin row can be *proved* to belong to an excluded task. Reported for completeness. */
   readonly adminOperations: readonly string[];
 }
 
-export const emptyClosure = (): ExclusionClosure => ({ tasks: [], runs: [], executionJobs: [], artifacts: [], taskTransitions: [], auditEvents: [], adminOperations: [] });
+export const emptyClosure = (): ExclusionClosure => ({ tasks: [], rootTasks: [], dependentTasks: [], operationIds: [], runs: [], executionJobs: [], artifacts: [], taskTransitions: [], auditEvents: [], adminOperations: [] });
 
 /**
  * The reference graph this closure is allowed to follow, as it exists in the real schema:
@@ -55,8 +61,62 @@ export const structuredTaskReferences = [
   { table: 'execution_jobs', reference: 'execution_jobs.run_id', kind: 'FOREIGN_KEY' },
   { table: 'task_transitions', reference: 'task_transitions.task_id', kind: 'FOREIGN_KEY' },
   { table: 'audit_events', reference: "audit_events.data->>'taskId'", kind: 'CANONICAL_JSON_PATH' },
-  { table: 'tasks', reference: "tasks.data->'relationships'[*]->>'targetTaskId'", kind: 'CANONICAL_JSON_PATH_INBOUND' },
+  { table: 'tasks', reference: "tasks.data->'relationships'[*]->>'targetTaskId'", kind: 'CANONICAL_JSON_PATH_RECURSIVE' },
+  { table: 'runs', reference: 'runs.operation_id', kind: 'OPERATION_SOURCE' },
+  { table: 'execution_jobs', reference: 'execution_jobs.operation_id', kind: 'OPERATION_SOURCE' },
+  { table: 'admin_operations', reference: 'admin_operations.operation_id', kind: 'CANONICAL_OPERATION_KEY' },
+  { table: 'audit_events', reference: "audit_events.data->>'correlationId'", kind: 'CANONICAL_OPERATION_KEY' },
 ] as const;
+
+/**
+ * Tables whose rows are pure history: they record what happened to work, they are not the work.
+ * Only these may additionally be excluded by an exact scalar match anywhere in their structured
+ * JSON -- and only against an excluded task id, run id or operation id.
+ *
+ * The operational tables are deliberately absent. A task leaves only by the denylist or by the
+ * recursive relationship path; a run, job or transition leaves only by a declared foreign key.
+ * Nothing about them is ever decided by looking inside a JSON document.
+ */
+export const historicalTables = ['artifacts', 'audit_events', 'admin_operations'] as const;
+export const isHistoricalTable = (table: string): boolean => (historicalTables as readonly string[]).includes(table);
+
+/** A relationship graph cannot need more rounds than it has tasks; this is the circuit breaker, not the expected path. */
+export const MAX_CLOSURE_ITERATIONS = 100;
+
+export type JsonReferenceClass = 'EXACT_SCALAR' | 'MENTION_ONLY' | 'NONE';
+
+/**
+ * How a JSON document refers to an excluded id, if at all.
+ *
+ * `EXACT_SCALAR` means some leaf value *is* the id -- `{"taskId":"<uuid>"}`, an element of an id
+ * array, a nested `operationId`. That is a reference, and for a historical row it is proof enough.
+ *
+ * `MENTION_ONLY` means the id appears inside a longer string -- a log line, a diff, a commit
+ * message, a reason. That is text about the id, not a reference to it, and it is never grounds to
+ * drop a row. It stays ambiguous so the copy stops and a human decides.
+ */
+export function classifyJsonReference(value: unknown, needles: ReadonlySet<string>): JsonReferenceClass {
+  if (needles.size === 0) return 'NONE';
+  let mention = false;
+  const visit = (node: unknown): boolean => {
+    if (typeof node === 'string') {
+      if (needles.has(node)) return true;
+      if (!mention) for (const needle of needles) if (node.includes(needle)) { mention = true; break; }
+      return false;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) if (visit(item)) return true;
+      return false;
+    }
+    if (node !== null && typeof node === 'object') {
+      for (const item of Object.values(node as Record<string, unknown>)) if (visit(item)) return true;
+      return false;
+    }
+    return false;
+  };
+  if (visit(value)) return 'EXACT_SCALAR';
+  return mention ? 'MENTION_ONLY' : 'NONE';
+}
 
 const CLOSURE_KEY_BY_TABLE: Readonly<Record<string, keyof ExclusionClosure>> = {
   tasks: 'tasks',
@@ -83,6 +143,9 @@ export const closureCounts = (closure: ExclusionClosure): Record<string, number>
   auditEvents: closure.auditEvents.length,
   adminOperations: closure.adminOperations.length,
 });
+
+/** Every id an excluded row can be referred to by: the needles the historical scan matches against. */
+export const closureNeedles = (closure: ExclusionClosure): Set<string> => new Set([...closure.tasks, ...closure.runs, ...closure.operationIds]);
 
 export const closureTotal = (closure: ExclusionClosure): number => Object.values(closureCounts(closure)).reduce((total, value) => total + value, 0);
 
