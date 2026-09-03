@@ -10,7 +10,6 @@ import {
   conflictBehaviorFor,
   controlPlaneMigrationPlan,
   countSql,
-  evaluateSourceActivity,
   evaluateTargetReadiness,
   hashRows,
   insertRowsSql,
@@ -106,22 +105,6 @@ describe("foreign-key-safe copy order", () => {
 });
 
 describe("source activity gate", () => {
-  it("blocks a copy while execution jobs are in flight", () => {
-    const activity = evaluateSourceActivity({ activeExecutionJobs: [{ key: "RUNNING", count: 2 }], transientTasks: [] });
-    expect(activity.blocked).toBe(true);
-    expect(activity.activeExecutionJobs).toEqual([{ key: "RUNNING", count: 2 }]);
-  });
-
-  it("blocks a copy while a task sits in a transient state", () => {
-    expect(evaluateSourceActivity({ activeExecutionJobs: [], transientTasks: [{ key: "TESTING", count: 1 }] }).blocked).toBe(true);
-  });
-
-  it("allows a copy against a quiet source, ignoring zero tallies", () => {
-    const activity = evaluateSourceActivity({ activeExecutionJobs: [{ key: "QUEUED", count: 0 }], transientTasks: [{ key: "IMPLEMENTING", count: 0 }] });
-    expect(activity.blocked).toBe(false);
-    expect(activity.activeExecutionJobs).toEqual([]);
-  });
-
   it("treats every non-terminal job status and transient task state as blocking", () => {
     expect([...activeExecutionJobStatuses]).toEqual(["QUEUED", "DISPATCHING", "DISPATCHED", "CLAIMED", "RUNNING"]);
     expect([...transientTaskStates]).toEqual(["IMPLEMENTING", "TESTING", "REVIEWING"]);
@@ -224,13 +207,15 @@ describe("source read-only semantics", () => {
     expect(copyTable).toContain("await sourceQuery<unknown[]>(selectPageSql(entry)");
   });
 
-  it("collects the blocking ids inside the snapshot that blocked, before the rollback", () => {
-    const copyMode = readRepoFile("scripts/migrate-control-plane-state-next.ts");
-    const body = copyMode.slice(copyMode.indexOf("async function copy()"), copyMode.indexOf("async function verify()"));
-    expect(body.indexOf("await blockingJobIds()")).toBeGreaterThan(-1);
-    expect(body.indexOf("await blockingTaskIds()")).toBeGreaterThan(-1);
-    expect(body.indexOf("await blockingJobIds()")).toBeLessThan(body.indexOf("await sourceQuery('ROLLBACK')"));
-    expect(body.indexOf("await blockingTaskIds()")).toBeLessThan(body.indexOf("await sourceQuery('ROLLBACK')"));
+  it("collects every gate input and diagnostic inside the snapshot that blocked, before the rollback", () => {
+    const script = readRepoFile("scripts/migrate-control-plane-state-next.ts");
+    const body = script.slice(script.indexOf("async function copy()"), script.indexOf("async function verify()"));
+    const rollback = body.indexOf("await sourceQuery('ROLLBACK')");
+    expect(rollback).toBeGreaterThan(-1);
+    for (const read of ["await activeJobTally(sourceQuery)", "await resolveExclusion(sourceQuery", "await transientTasks(sourceQuery)", "await blockingJobIds()"]) {
+      expect(body.indexOf(read), `${read} must be read before the rollback`).toBeGreaterThan(-1);
+      expect(body.indexOf(read)).toBeLessThan(rollback);
+    }
   });
 });
 

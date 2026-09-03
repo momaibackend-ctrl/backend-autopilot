@@ -77,18 +77,12 @@ export function sameDatabaseEndpoint(source: string, target: string): boolean {
 
 export interface Tally { readonly key: string; readonly count: number }
 
-export interface SourceActivity {
-  readonly blocked: boolean;
-  readonly activeExecutionJobs: readonly Tally[];
-  readonly transientTasks: readonly Tally[];
-}
-
-/** A copy may only run against a quiet source: in-flight jobs and transient task states are both mid-write, and the runner behind them still targets the old database. */
-export function evaluateSourceActivity(input: { activeExecutionJobs: readonly Tally[]; transientTasks: readonly Tally[] }): SourceActivity {
-  const activeExecutionJobs = input.activeExecutionJobs.filter(entry => entry.count > 0);
-  const transientTasks = input.transientTasks.filter(entry => entry.count > 0);
-  return { blocked: activeExecutionJobs.length > 0 || transientTasks.length > 0, activeExecutionJobs, transientTasks };
-}
+// A single "is the source quiet" helper used to live here and decide both questions at once. It is
+// gone deliberately rather than left unused: the two halves no longer share an answer. An in-flight
+// execution job still always blocks a copy, and the entrypoint checks that directly; transient
+// tasks are now judged one at a time by `evaluateTransientTaskGate` in ./exclusion.ts, because a
+// task that is being excluded from the migration cannot arrive half-written in a target it never
+// reaches. Keeping the old combined rule around would leave a second, superseded policy callable.
 
 export interface TargetReadiness {
   readonly ready: boolean;
