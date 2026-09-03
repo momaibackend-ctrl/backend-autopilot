@@ -30,7 +30,7 @@ env:
   # The reviewed migration commit this workflow is allowed to execute. Declared here as well as in
   # the checkout `ref` below on purpose: if the two ever drift apart, the guard step fails the run
   # instead of quietly executing whichever one was edited.
-  MIGRATION_COMMIT: 93834a11822057a5b8744f7ee059b9e306f13ea7
+  MIGRATION_COMMIT: 89755eb6573ae95d0c70dc84a2c93828041acca3
 
 jobs:
   inventory:
@@ -73,7 +73,7 @@ jobs:
       # back to the repository.
       - uses: actions/checkout@v4
         with:
-          ref: 93834a11822057a5b8744f7ee059b9e306f13ea7
+          ref: 89755eb6573ae95d0c70dc84a2c93828041acca3
           persist-credentials: false
       - name: Guard - the checked-out tree is the pinned, reviewed migration commit
         run: |
