@@ -1,21 +1,34 @@
-name: Next state inventory bootstrap
-# Read-only inventory of the current and next control-plane databases, and nothing else.
+name: Next state migration bootstrap
+# The two real steps of the control-plane state migration, and nothing else:
 #
-# The point of this workflow living on its own branch is that the code it runs is NOT taken from
-# whatever the migration branch happens to hold at dispatch time. `actions/checkout` pins one exact,
-# reviewed commit, and a guard re-checks the resulting HEAD before anything runs -- so a later push
-# to autopilot/migrate-next-supabase-r2 cannot change what this workflow executes.
+#   mode: copy    applies the schema to the NEXT database, then transfers the clean state into it.
+#   mode: verify  re-reads both databases and proves the target is source-minus-the-exclusions.
 #
-# It reads two PostgreSQL databases and reports table presence, counts and statuses. It runs no
-# schema migration, no Supabase CLI, no Edge Function deploy, no R2 call and no git write; the
-# inventory mode of the pinned script opens both connections with
+# The diagnostic inventory cycles are finished; that mode is deliberately not reachable from here.
+#
+# What this workflow does NOT do, by construction rather than by convention: no Supabase CLI, no
+# Edge Function deploy, no `supabase secrets set`, no R2 or object-storage call of any kind, no git
+# write (`persist-credentials: false`), and no cutover. It opens two PostgreSQL connections and
+# nothing else.
+#
+# The current database is never written. The pinned script opens it with
 # `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`, so PostgreSQL itself rejects any
-# INSERT/UPDATE/DELETE/DDL on either side.
+# INSERT/UPDATE/DELETE/DDL against it, and `DATABASE_URL` is bound to the NEXT database only, in the
+# one step that runs migrations.
+#
+# The code is pinned to one exact reviewed commit rather than to a branch, and a guard re-checks the
+# checked-out HEAD before anything connects, so a later push to the migration branch cannot change
+# what runs here.
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'copy (schema + one-shot state transfer) | verify (read-only comparison)'
+        required: true
+        type: choice
+        options: [copy, verify]
       confirm:
-        description: 'Type INSPECT_NEXT_STATE exactly to confirm this read-only inventory'
+        description: 'MIGRATE_NEXT_STATE for copy, VERIFY_NEXT_STATE for verify'
         required: true
         type: string
 
@@ -23,37 +36,49 @@ permissions:
   contents: read
 
 concurrency:
-  group: next-state-inventory-bootstrap
+  group: next-state-migration-bootstrap
   cancel-in-progress: false
 
 env:
   # The reviewed migration commit this workflow is allowed to execute. Declared here as well as in
   # the checkout `ref` below on purpose: if the two ever drift apart, the guard step fails the run
   # instead of quietly executing whichever one was edited.
-  MIGRATION_COMMIT: 5975141148d57376b941db99af7c78556db79f07
+  MIGRATION_COMMIT: 0a1a576c5b9751d83705a89b662b0b9815b6eace
 
 jobs:
-  inventory:
+  migrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       SOURCE_DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
       TARGET_DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
-      # The six stale IMPLEMENTING tasks this migration leaves behind, named exactly. They live here
-      # -- in the migration-specific, temporary bootstrap -- and never in the migration library,
-      # which stays a general mechanism. Task UUIDs are identifiers, not secrets.
+      # The stale work this migration leaves behind: six stale IMPLEMENTING remnants plus the
+      # superseded CORE-BE-06, named exactly. They live here -- in the migration-specific, temporary
+      # bootstrap -- and never in the migration library, which stays a general mechanism. Task UUIDs
+      # are identifiers, not secrets.
       #
-      # In inventory mode this list only produces a dry-run report: the closure is resolved from the
-      # source's own foreign keys and canonical JSON paths and printed as counts and ids. Nothing is
-      # excluded, copied, written or deleted anywhere by this run.
-      AUTOPILOT_MIGRATION_EXCLUDE_TASK_IDS: 410f320b-af24-48d2-b29b-b4506293b8ba,20508cde-b1f5-4d52-a932-a37f3e380e1b,341648aa-90e5-4b45-bf3d-46a36a06ee52,b49eee6b-a81f-4d70-8f9c-b9dc37906460,292b7cd3-d63c-488b-a1ea-8dd81625edad,f059b8c3-6113-42a4-9c13-01c198f6db0f
+      # The closure cascades from these seven through ownership only (foreign keys, the canonical
+      # audit taskId, and the operation ids of their runs and jobs). A task that merely REFERENCES
+      # one of them is kept: only the relationship edge naming a departed task is dropped, and only
+      # from the copied row.
+      AUTOPILOT_MIGRATION_EXCLUDE_TASK_IDS: 410f320b-af24-48d2-b29b-b4506293b8ba,20508cde-b1f5-4d52-a932-a37f3e380e1b,341648aa-90e5-4b45-bf3d-46a36a06ee52,b49eee6b-a81f-4d70-8f9c-b9dc37906460,292b7cd3-d63c-488b-a1ea-8dd81625edad,f059b8c3-6113-42a4-9c13-01c198f6db0f,2f595824-97a3-472f-b360-9188b3508aec
+      # The four READY tasks that must survive the migration -- CORE-BE-05-FINAL, CORE-BE-06-FINAL,
+      # CORE-QA-01 and CORE-CONTRACT-01-06. Row counts and hashes already prove the target matches
+      # the source minus the closure; naming these makes the intent explicit and a failure legible.
+      AUTOPILOT_MIGRATION_REQUIRE_TASK_IDS: 35412a72-dd70-4469-a466-04ea0580d667,96ec03ca-7d87-4986-9390-c82cc9ea6e6a,d8acd4e0-ed9d-48e8-a3ee-ccbed32fc7b9,ea29fd37-ff2f-4af0-9ee5-588ea0880deb
     steps:
-      - name: Guard - explicit INSPECT_NEXT_STATE confirmation
+      - name: Guard - per-mode confirmation
         env:
+          MODE_INPUT: ${{ inputs.mode }}
           CONFIRM_INPUT: ${{ inputs.confirm }}
         run: |
-          if [ "$CONFIRM_INPUT" != "INSPECT_NEXT_STATE" ]; then
-            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly INSPECT_NEXT_STATE." >&2
+          case "$MODE_INPUT" in
+            copy)   expected=MIGRATE_NEXT_STATE ;;
+            verify) expected=VERIFY_NEXT_STATE ;;
+            *) echo "::error::Unsupported mode '$MODE_INPUT'." >&2; exit 1 ;;
+          esac
+          if [ "$CONFIRM_INPUT" != "$expected" ]; then
+            echo "::error::Refusing to run mode '$MODE_INPUT': input 'confirm' must be exactly $expected." >&2
             exit 1
           fi
       - name: Preflight - required secrets are configured (names only, never values)
@@ -81,7 +106,7 @@ jobs:
       # back to the repository.
       - uses: actions/checkout@v4
         with:
-          ref: 5975141148d57376b941db99af7c78556db79f07
+          ref: 0a1a576c5b9751d83705a89b662b0b9815b6eace
           persist-credentials: false
       - name: Guard - the checked-out tree is the pinned, reviewed migration commit
         run: |
@@ -99,9 +124,24 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The only command that touches a database. Inventory reads both control planes and reports
-      # table presence, row counts, active job and transient task counts, artifact counts by storage
-      # provider, and the Auth-bound tables as AUTH_BOUND_NOT_PORTABLE. DATABASE_URL is deliberately
-      # not set anywhere in this workflow, so `pnpm db:migrate` could not run even by accident.
-      - name: Read-only inventory of both control planes
-        run: pnpm state:migrate:next -- --mode inventory
+      # Schema first, and only for a copy. DATABASE_URL is bound to the NEXT database here and
+      # nowhere else in this workflow, so the current control plane can never be the target of a
+      # migration: `pnpm db:migrate` has no other connection string to reach for.
+      - name: Apply the control-plane schema to the next Postgres
+        if: ${{ inputs.mode == 'copy' }}
+        env:
+          DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+        run: pnpm db:migrate
+      # One shot, inside a single target transaction that rolls back whole on any error. It refuses
+      # to start unless the source is quiet (no active execution job, no transient task outside the
+      # seven exclusions) and the target's operational tables are still empty.
+      - name: Transfer the control-plane state
+        if: ${{ inputs.mode == 'copy' }}
+        run: pnpm state:migrate:next -- --mode copy
+      # Read-only. Compares the target against the source minus the exclusion closure, normalized
+      # exactly as the copy normalized it, and additionally proves the seven excluded tasks and
+      # their history are absent, the four required READY tasks are present, no relationship points
+      # at a task the target does not hold, and no foreign key dangles.
+      - name: Verify the transferred state
+        if: ${{ inputs.mode == 'verify' }}
+        run: pnpm state:migrate:next -- --mode verify
