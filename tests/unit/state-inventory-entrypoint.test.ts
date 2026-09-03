@@ -12,19 +12,58 @@ import { resolve } from "node:path";
 // no credential: the connection strings are obvious fakes and every statement is answered in
 // memory. Its job is to prove the executable path reaches the query layer at all.
 
-const { FakeClient, seenStatements, plannedTables } = vi.hoisted(() => {
+const { FakeClient, seenStatements, plannedTables, POISON, LONG_TITLE, STUCK_TASKS, ACTIVE_JOBS } = vi.hoisted(() => {
   const plannedTables = [
     "projects", "resources", "project_contexts", "tasks", "runs", "artifacts", "execution_jobs",
     "task_transitions", "audit_events", "admin_operations", "canonical_development_repositories",
     "system_settings", "console_screens", "migration_markers",
     "autopilot_operators", "autopilot_project_memberships",
   ];
-  const seenStatements: Array<{ connection: string; text: string }> = [];
+  const seenStatements: Array<{ connection: string; text: string; values: unknown[] }> = [];
+  // Every row the fake returns also carries fields the projection did not ask for. Postgres would
+  // never send them, but a mapper that spread the row wholesale would leak them -- which is exactly
+  // the failure these tests exist to catch.
+  const POISON = "SENTINEL_MUST_NEVER_BE_LOGGED";
+  const LONG_TITLE = `stuck-task-title-${"x".repeat(400)}`;
+  const STUCK_TASKS = 25;
+  const ACTIVE_JOBS = 2;
+  const poisoned = {
+    data: { description: POISON, requirements: [POISON], context: POISON, payload: { prompt: POISON }, token: POISON },
+    description: POISON,
+    payload: POISON,
+    connectionString: POISON,
+  };
 
   const answer = (text: string): unknown[] => {
     if (/FROM pg_class/.test(text)) return plannedTables.map(relname => ({ relname }));
     if (/count\(\*\)::bigint AS count FROM "/.test(text)) return [{ count: "0" }];
     if (/pg_try_advisory_xact_lock/.test(text)) return [{ locked: true }];
+    if (/count\(\*\)::bigint AS count FROM execution_jobs/.test(text)) return [{ status: "RUNNING", count: String(ACTIVE_JOBS) }];
+    if (/count\(\*\)::bigint AS count FROM tasks/.test(text)) return [{ state: "IMPLEMENTING", count: "6" }];
+    if (/AS provider, count/.test(text)) return [{ provider: "supabase", count: "3" }];
+    if (/^SELECT id, project_id, external_key/.test(text)) {
+      return Array.from({ length: STUCK_TASKS }, (_, index) => ({
+        id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+        project_id: "22222222-2222-4222-8222-222222222222",
+        external_key: `MOMNA-${1000 + index}`,
+        state: "IMPLEMENTING",
+        title: LONG_TITLE,
+        created_at: new Date("2026-08-01T00:00:00.000Z"),
+        updated_at: "2026-08-02T00:00:00.000Z",
+        ...poisoned,
+      }));
+    }
+    if (/^SELECT id, project_id, task_id, status/.test(text)) {
+      return Array.from({ length: ACTIVE_JOBS }, (_, index) => ({
+        id: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+        project_id: "22222222-2222-4222-8222-222222222222",
+        task_id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+        status: "RUNNING",
+        created_at: new Date("2026-08-01T00:00:00.000Z"),
+        updated_at: new Date("2026-08-02T00:00:00.000Z"),
+        ...poisoned,
+      }));
+    }
     return [];
   };
 
@@ -33,13 +72,14 @@ const { FakeClient, seenStatements, plannedTables } = vi.hoisted(() => {
     constructor(config: { connectionString: string }) { this.connection = config.connectionString; }
     async connect(): Promise<void> { /* no socket is ever opened */ }
     async end(): Promise<void> { /* nothing to close */ }
-    async query(config: string | { text: string }, _values?: unknown[]): Promise<{ rows: unknown[] }> {
+    async query(config: string | { text: string; values?: unknown[] }, values?: unknown[]): Promise<{ rows: unknown[] }> {
       const text = typeof config === "string" ? config : config.text;
-      seenStatements.push({ connection: this.connection, text });
+      const bound = (typeof config === "string" ? values : config.values) ?? [];
+      seenStatements.push({ connection: this.connection, text, values: bound });
       return { rows: answer(text) };
     }
   }
-  return { FakeClient, seenStatements, plannedTables };
+  return { FakeClient, seenStatements, plannedTables, POISON, LONG_TITLE, STUCK_TASKS, ACTIVE_JOBS };
 });
 
 vi.mock("pg", () => ({ Client: FakeClient }));
@@ -51,6 +91,15 @@ describe("executable inventory entrypoint", () => {
   const originalArgv = process.argv;
   const logged: string[] = [];
   let failure: unknown;
+
+  const reportOf = (): Record<string, unknown> => {
+    const report = logged
+      .map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; } })
+      .find(value => value?.["event"] === "control_plane_state.inventory");
+    if (!report) throw new Error(`no inventory report was emitted; output was: ${logged.join(" | ")}`);
+    return report;
+  };
+  const sourceSection = (): Record<string, unknown> => reportOf()["source"] as Record<string, unknown>;
 
   beforeAll(async () => {
     process.argv = ["node", "migrate-control-plane-state-next.ts", "--mode", "inventory"];
@@ -116,6 +165,66 @@ describe("executable inventory entrypoint", () => {
     // No connection string may appear anywhere in the emitted report.
     expect(JSON.stringify(report)).not.toContain("source.invalid");
     expect(JSON.stringify(report)).not.toContain("target.invalid");
+  });
+
+  it("names the transient tasks that block a copy, with their state", () => {
+    const identities = sourceSection()["transientTaskIdentities"] as Array<Record<string, unknown>>;
+    expect(identities.length).toBeGreaterThan(0);
+    expect(identities[0]).toEqual({
+      taskId: "11111111-1111-4111-8111-000000000000",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      externalKey: "MOMNA-1000",
+      state: "IMPLEMENTING",
+      title: expect.any(String),
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    });
+    expect(identities.every(entry => entry["state"] === "IMPLEMENTING")).toBe(true);
+    expect((sourceSection()["transientTasks"] as Array<Record<string, unknown>>)).toEqual([{ key: "IMPLEMENTING", count: 6 }]);
+  });
+
+  it("caps the identity lists at twenty rows, in SQL and again on the result", () => {
+    const identities = sourceSection()["transientTaskIdentities"] as unknown[];
+    expect(STUCK_TASKS).toBeGreaterThan(20); // the fake deliberately returns more than the cap
+    expect(identities).toHaveLength(20);
+    const statement = seenStatements.find(entry => /^SELECT id, project_id, external_key/.test(entry.text));
+    expect(statement?.text).toContain("LIMIT $2");
+    expect(statement?.values[1]).toBe(20);
+  });
+
+  it("truncates the untrusted task title", () => {
+    const identities = sourceSection()["transientTaskIdentities"] as Array<Record<string, unknown>>;
+    const title = identities[0]?.["title"] as string;
+    expect(LONG_TITLE.length).toBeGreaterThan(120);
+    expect(title.length).toBeLessThanOrEqual(123);
+    expect(title.endsWith("...")).toBe(true);
+  });
+
+  it("names active execution jobs the same way when there are any", () => {
+    const identities = sourceSection()["activeExecutionJobIdentities"] as Array<Record<string, unknown>>;
+    expect(identities).toHaveLength(ACTIVE_JOBS);
+    expect(identities[0]).toEqual({
+      executionJobId: "33333333-3333-4333-8333-000000000000",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      taskId: "11111111-1111-4111-8111-000000000000",
+      status: "RUNNING",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    });
+  });
+
+  it("never selects or emits task payload, context or any other envelope field", () => {
+    // The projection asks for named scalar paths only; `data` is never selected whole.
+    const statement = seenStatements.find(entry => /^SELECT id, project_id, external_key/.test(entry.text))?.text ?? "";
+    expect(statement).toContain("data->>'state'");
+    expect(statement).toContain("data->>'title'");
+    expect(statement).not.toMatch(/SELECT[^]*?\bdata\b\s*(,|\bFROM\b)/);
+    for (const forbidden of ["description", "requirements", "relationships", "payload", "context"]) {
+      expect(statement, `${forbidden} must not be selected`).not.toContain(forbidden);
+    }
+    // And the mapper copies named fields rather than spreading the row, so the sentinel the fake
+    // attached to every row cannot reach the output.
+    expect(JSON.stringify(logged)).not.toContain(POISON);
   });
 
   it("declares every helper below the top-level await as a hoisted function", () => {

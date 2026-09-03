@@ -42,6 +42,10 @@ import {
 const modes = ['inventory', 'copy', 'verify'] as const;
 type Mode = (typeof modes)[number];
 const PAGE = 500;
+/** How many blocking rows inventory names before it stops. Enforced in SQL and again on the result. */
+const IDENTITY_LIMIT = 20;
+/** A task title is a short human label, but it still originates outside this control plane, so it is capped rather than trusted to be short. */
+const TITLE_LIMIT = 120;
 
 /** Rows are returned directly, so a caller never holds a client and cannot bypass the read guard below. */
 type Query = <Row>(text: string, values?: unknown[], rowMode?: 'array') => Promise<Row[]>;
@@ -179,11 +183,17 @@ async function describe(query: Query, role: 'SOURCE' | 'TARGET') {
   const present = await presentTables(query, [...planned, ...authBoundTables]);
   const tables = planned.map(table => ({ table, present: present.has(table), rows: null as number | null }));
   for (const entry of tables) if (entry.present) entry.rows = await count(query, entry.table);
+  const activeExecutionJobs = present.has('execution_jobs') ? await activeJobTally(query) : [];
+  const transientTasks = present.has('tasks') ? await transientTaskTally(query) : [];
   return {
     role,
     tables,
-    activeExecutionJobs: present.has('execution_jobs') ? await activeJobTally(query) : [],
-    transientTasks: present.has('tasks') ? await transientTaskTally(query) : [],
+    activeExecutionJobs,
+    // Identities are read only when the tally already found something, so a quiet control plane
+    // costs no extra query. They name what is blocking a copy; they never describe its work.
+    activeExecutionJobIdentities: activeExecutionJobs.length ? await activeJobIdentities(query) : [],
+    transientTasks,
+    transientTaskIdentities: transientTasks.length ? await transientTaskIdentities(query) : [],
     artifactsByStorageProvider: present.has('artifacts') ? await providerTally(query) : [],
     authBound: authBoundTables.map(table => ({ table, present: present.has(table), status: 'AUTH_BOUND_NOT_PORTABLE' })),
   };
@@ -215,6 +225,59 @@ async function activeJobTally(query: Query): Promise<Tally[]> {
 async function transientTaskTally(query: Query): Promise<Tally[]> {
   const rows = await query<{ state: string; count: string }>("SELECT data->>'state' AS state, count(*)::bigint AS count FROM tasks WHERE data->>'state' = ANY($1::text[]) GROUP BY 1 ORDER BY 1", [[...transientTaskStates]]);
   return rows.map(row => ({ key: row.state, count: Number(row.count) }));
+}
+
+/**
+ * Names the tasks that are blocking a copy, and nothing more.
+ *
+ * The projection is an explicit allowlist of identifying scalars: three real columns plus three
+ * named scalar paths out of the task envelope. `data` is never selected whole, and `description`,
+ * `requirements` and `relationships` -- the fields that actually carry task content -- are not
+ * selected at all, so no payload, prompt or context can reach the log through here. The title is
+ * a short human label, and it is truncated because it comes from outside this control plane.
+ */
+async function transientTaskIdentities(query: Query): Promise<Array<Record<string, unknown>>> {
+  const rows = await query<{ id: string; project_id: string; external_key: string | null; state: string | null; title: string | null; created_at: Date | string | null; updated_at: string | null }>(
+    `SELECT id, project_id, external_key, data->>'state' AS state, data->>'title' AS title, created_at, data->>'updatedAt' AS updated_at
+     FROM tasks WHERE data->>'state' = ANY($1::text[]) ORDER BY created_at, id LIMIT $2`,
+    [[...transientTaskStates], IDENTITY_LIMIT],
+  );
+  return rows.slice(0, IDENTITY_LIMIT).map(row => ({
+    taskId: row.id,
+    projectId: row.project_id,
+    externalKey: row.external_key,
+    state: row.state,
+    title: truncate(row.title),
+    createdAt: timestamp(row.created_at),
+    updatedAt: row.updated_at,
+  }));
+}
+
+/** The same shape for in-flight jobs. Every field here is a real column; the job's `data` envelope is never read. */
+async function activeJobIdentities(query: Query): Promise<Array<Record<string, unknown>>> {
+  const rows = await query<{ id: string; project_id: string; task_id: string; status: string; created_at: Date | string | null; updated_at: Date | string | null }>(
+    `SELECT id, project_id, task_id, status, created_at, updated_at
+     FROM execution_jobs WHERE status = ANY($1::text[]) ORDER BY created_at, id LIMIT $2`,
+    [[...activeExecutionJobStatuses], IDENTITY_LIMIT],
+  );
+  return rows.slice(0, IDENTITY_LIMIT).map(row => ({
+    executionJobId: row.id,
+    projectId: row.project_id,
+    taskId: row.task_id,
+    status: row.status,
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+  }));
+}
+
+// Function declarations, not const arrows: everything below the module's top-level await runs
+// during it, so a const here would be in the temporal dead zone when inventory calls it.
+function truncate(value: string | null): string | null {
+  if (value === null || value === undefined) return null;
+  return value.length > TITLE_LIMIT ? `${value.slice(0, TITLE_LIMIT)}...` : value;
+}
+function timestamp(value: Date | string | null): string | null {
+  return value instanceof Date ? value.toISOString() : value ?? null;
 }
 
 async function providerTally(query: Query): Promise<Tally[]> {
