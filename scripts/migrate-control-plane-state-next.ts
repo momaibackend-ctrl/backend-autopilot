@@ -197,7 +197,9 @@ async function presentTables(query: Query, tables: readonly string[]) {
   return new Set(rows.map(row => row.relname));
 }
 
-const count = async (query: Query, table: string): Promise<number> => Number((await query<{ count: string }>(countSql(table)))[0]?.count ?? 0);
+async function count(query: Query, table: string): Promise<number> {
+  return Number((await query<{ count: string }>(countSql(table)))[0]?.count ?? 0);
+}
 
 async function tallies(query: Query, tables: readonly string[]): Promise<Tally[]> {
   const result: Tally[] = [];
@@ -221,10 +223,14 @@ async function providerTally(query: Query): Promise<Tally[]> {
 }
 
 /** Identifiers only -- enough for an operator to go and settle the work that is blocking the copy. */
-const blockingJobIds = async (): Promise<string[]> =>
-  (await sourceQuery<{ id: string }>('SELECT id FROM execution_jobs WHERE status = ANY($1::text[]) ORDER BY id LIMIT 20', [[...activeExecutionJobStatuses]])).map(row => row.id);
-const blockingTaskIds = async (): Promise<string[]> =>
-  (await sourceQuery<{ id: string }>("SELECT id FROM tasks WHERE data->>'state' = ANY($1::text[]) ORDER BY id LIMIT 20", [[...transientTaskStates]])).map(row => row.id);
+async function blockingJobIds(): Promise<string[]> {
+  const rows = await sourceQuery<{ id: string }>('SELECT id FROM execution_jobs WHERE status = ANY($1::text[]) ORDER BY id LIMIT 20', [[...activeExecutionJobStatuses]]);
+  return rows.map(row => row.id);
+}
+async function blockingTaskIds(): Promise<string[]> {
+  const rows = await sourceQuery<{ id: string }>("SELECT id FROM tasks WHERE data->>'state' = ANY($1::text[]) ORDER BY id LIMIT 20", [[...transientTaskStates]]);
+  return rows.map(row => row.id);
+}
 
 async function hashTable(query: Query, entry: TablePlan) {
   const hasher = new RowHasher();
@@ -275,9 +281,9 @@ async function copyTable(entry: TablePlan): Promise<number> {
 }
 
 /** Every value crosses as a bound parameter; the statement text comes only from the allowlisted plan. */
-const insertPage = async (entry: TablePlan, rows: unknown[][], conflict: ReturnType<typeof conflictBehaviorFor>): Promise<void> => {
+async function insertPage(entry: TablePlan, rows: unknown[][], conflict: ReturnType<typeof conflictBehaviorFor>): Promise<void> {
   await target.query(insertRowsSql(entry, rows.length, conflict), rows.flat());
-};
+}
 
 // ---------------------------------------------------------------------------
 // Plumbing
