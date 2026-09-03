@@ -30,7 +30,7 @@ env:
   # The reviewed migration commit this workflow is allowed to execute. Declared here as well as in
   # the checkout `ref` below on purpose: if the two ever drift apart, the guard step fails the run
   # instead of quietly executing whichever one was edited.
-  MIGRATION_COMMIT: b0081c65a665b129a6ed02a0c233ab4a3711288c
+  MIGRATION_COMMIT: 851b35249c2abdaff2b292dfd4c9449520a87439
 
 jobs:
   inventory:
@@ -39,6 +39,14 @@ jobs:
     env:
       SOURCE_DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
       TARGET_DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      # The six stale IMPLEMENTING tasks this migration leaves behind, named exactly. They live here
+      # -- in the migration-specific, temporary bootstrap -- and never in the migration library,
+      # which stays a general mechanism. Task UUIDs are identifiers, not secrets.
+      #
+      # In inventory mode this list only produces a dry-run report: the closure is resolved from the
+      # source's own foreign keys and canonical JSON paths and printed as counts and ids. Nothing is
+      # excluded, copied, written or deleted anywhere by this run.
+      AUTOPILOT_MIGRATION_EXCLUDE_TASK_IDS: 410f320b-af24-48d2-b29b-b4506293b8ba,20508cde-b1f5-4d52-a932-a37f3e380e1b,341648aa-90e5-4b45-bf3d-46a36a06ee52,b49eee6b-a81f-4d70-8f9c-b9dc37906460,292b7cd3-d63c-488b-a1ea-8dd81625edad,f059b8c3-6113-42a4-9c13-01c198f6db0f
     steps:
       - name: Guard - explicit INSPECT_NEXT_STATE confirmation
         env:
@@ -73,7 +81,7 @@ jobs:
       # back to the repository.
       - uses: actions/checkout@v4
         with:
-          ref: b0081c65a665b129a6ed02a0c233ab4a3711288c
+          ref: 851b35249c2abdaff2b292dfd4c9449520a87439
           persist-credentials: false
       - name: Guard - the checked-out tree is the pinned, reviewed migration commit
         run: |
