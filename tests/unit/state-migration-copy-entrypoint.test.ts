@@ -91,6 +91,26 @@ const { FakeClient, db } = vi.hoisted(() => {
     if (/^SELECT operation_id FROM admin_operations WHERE operation_id = ANY/.test(flat)) {
       return db.rows("admin_operations").filter(row => asArray(values[0]).includes(String(row["operation_id"]))).map(row => ({ operation_id: row["operation_id"] }));
     }
+    if (/^SELECT source.id AS source_task_id/.test(flat)) {
+      const sources = asArray(values[0]);
+      const targets = asArray(values[1]);
+      const byId = new Map(db.rows("tasks").map(row => [String(row["id"]), row]));
+      return db.rows("tasks")
+        .filter(row => sources.includes(String(row["id"])))
+        .flatMap(row => ((row["relationships"] ?? []) as Array<{ type: string; targetTaskId: string }>)
+          .filter(edge => targets.includes(edge.targetTaskId))
+          .map(edge => ({
+            source_task_id: row["id"],
+            source_external_key: row["external_key"],
+            source_state: (row["data"] as Record<string, unknown>)?.["state"] ?? null,
+            relationship_type: edge.type,
+            target_task_id: edge.targetTaskId,
+            target_external_key: byId.get(edge.targetTaskId)?.["external_key"] ?? null,
+            target_state: (byId.get(edge.targetTaskId)?.["data"] as Record<string, unknown> | undefined)?.["state"] ?? null,
+          })))
+        .sort((left, right) => `${left.source_task_id}${left.relationship_type}`.localeCompare(`${right.source_task_id}${right.relationship_type}`))
+        .slice(0, Number(values[2]));
+    }
     if (/^SELECT id, external_key, data->>'title' AS title/.test(flat)) {
       return db.rows("tasks")
         .filter(row => asArray(values[0]).includes(String(row["id"])))
@@ -98,7 +118,12 @@ const { FakeClient, db } = vi.hoisted(() => {
         .slice(0, Number(values[1]))
         .map(row => ({ id: row["id"], external_key: row["external_key"], title: (row["data"] as Record<string, unknown>)?.["title"] ?? null, state: (row["data"] as Record<string, unknown>)?.["state"] ?? null }));
     }
-    if (/EXISTS \(SELECT 1 FROM jsonb_array_elements/.test(flat)) return db.rows("tasks").filter(row => !asArray(values[0]).includes(String(row["id"])) && (row["relationshipTargets"] as string[] | undefined)?.some(target => asArray(values[1]).includes(target))).map(row => ({ id: row["id"] }));
+    if (/EXISTS \(SELECT 1 FROM jsonb_array_elements/.test(flat)) {
+      return db.rows("tasks")
+        .filter(row => !asArray(values[0]).includes(String(row["id"]))
+          && ((row["relationships"] ?? []) as Array<{ targetTaskId: string }>).some(edge => asArray(values[1]).includes(edge.targetTaskId)))
+        .map(row => ({ id: row["id"] }));
+    }
     if (/EXISTS \(SELECT 1 FROM unnest/.test(flat)) {
       const table = /FROM "(\w+)"/.exec(flat)?.[1] ?? "";
       const excluded = asArray(values[0]);
@@ -199,9 +224,9 @@ function fixture(extra: { seventhTransientTask?: boolean } = {}): Tables {
 
 interface RunResult { logs: string[]; errors: string[]; failure: unknown; exitCode: number }
 
-async function runCopy(options: { exclude: string[]; tables: Record<string, Array<Record<string, unknown>>> }): Promise<RunResult> {
+async function runCopy(options: { exclude: string[]; tables: Record<string, Array<Record<string, unknown>>>; mode?: "copy" | "inventory" }): Promise<RunResult> {
   db.reset(options.tables, SOURCE);
-  process.argv = ["node", "migrate-control-plane-state-next.ts", "--mode", "copy", ...options.exclude.flatMap(id => ["--exclude-task-id", id])];
+  process.argv = ["node", "migrate-control-plane-state-next.ts", "--mode", options.mode ?? "copy", ...options.exclude.flatMap(id => ["--exclude-task-id", id])];
   process.env["SOURCE_DATABASE_URL"] = SOURCE;
   process.env["TARGET_DATABASE_URL"] = TARGET;
   process.exitCode = 0;
@@ -381,8 +406,20 @@ function recursiveFixture(): Tables {
     ...base,
     tasks: [
       ...(base["tasks"] ?? []),
-      { id: DEPENDENT, project_id: PROJECT, external_key: "DEP-1", state: "READY", data: { id: DEPENDENT, state: "READY", title: "first level" }, relationshipTargets: [STALE_TASK], created_at: new Date("2026-02-03T00:00:00.000Z") },
-      { id: SECOND_LEVEL, project_id: PROJECT, external_key: "DEP-2", state: "READY", data: { id: SECOND_LEVEL, state: "READY", title: "second level" }, relationshipTargets: [DEPENDENT], created_at: new Date("2026-02-04T00:00:00.000Z") },
+      // The replacement declares what it supersedes (epic-verification.ts), plus one edge that does
+      // NOT point into the excluded set -- the diagnostic must show only the first.
+      {
+        id: DEPENDENT, project_id: PROJECT, external_key: "DEP-1", state: "READY",
+        data: { id: DEPENDENT, state: "READY", title: "first level", description: "MUST NOT LEAK", requirements: ["MUST NOT LEAK"] },
+        relationships: [{ type: "SUPERSEDES", targetTaskId: STALE_TASK }, { type: "RELATED_TO", targetTaskId: LIVE_TASK }],
+        created_at: new Date("2026-02-03T00:00:00.000Z"),
+      },
+      {
+        id: SECOND_LEVEL, project_id: PROJECT, external_key: "DEP-2", state: "READY",
+        data: { id: SECOND_LEVEL, state: "READY", title: "second level" },
+        relationships: [{ type: "DEPENDS_ON", targetTaskId: DEPENDENT }],
+        created_at: new Date("2026-02-04T00:00:00.000Z"),
+      },
     ],
     runs: [...(base["runs"] ?? []), { id: DEPENDENT_RUN, project_id: PROJECT, task_id: DEPENDENT, operation_id: "op-dependent", data: { id: DEPENDENT_RUN }, created_at: new Date("2026-02-03T00:00:00.000Z") }],
     artifacts: [
@@ -463,5 +500,52 @@ describe("recursive and operation closure", () => {
     expect(db.insertedIds("projects")).toEqual([PROJECT]);
     expect(db.insertedRow("tasks", LIVE_TASK)?.["external_key"]).toBe("CORE-BE-05");
     for (const statement of db.sourceStatements) expect(statement).not.toMatch(/^(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE)\b/i);
+  });
+
+  it("computes no relationship diagnostics during a copy", () => {
+    const plan = result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.exclusion_plan");
+    expect(plan?.["dependentRelationshipEdges"]).toBeUndefined();
+    expect(db.sourceStatements.some(statement => statement.includes("source_task_id"))).toBe(false);
+  });
+});
+
+describe("inventory relationship diagnostics", () => {
+  let plan: Record<string, unknown>;
+  let result: RunResult;
+
+  beforeEach(async () => {
+    result = await runCopy({ mode: "inventory", exclude: [STALE_TASK], tables: recursiveFixture() });
+    const report = result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.inventory");
+    plan = (report?.["exclusionPlan"] ?? {}) as Record<string, unknown>;
+  });
+
+  it("names the exact edge that pulled each dependent task in", () => {
+    expect(plan["dependentRelationshipEdges"]).toEqual([
+      { sourceTaskId: DEPENDENT, sourceExternalKey: "DEP-1", sourceState: "READY", relationshipType: "SUPERSEDES", targetTaskId: STALE_TASK, targetExternalKey: "SELF-REPAIR-ARGV-META-1", targetState: "IMPLEMENTING" },
+      { sourceTaskId: SECOND_LEVEL, sourceExternalKey: "DEP-2", sourceState: "READY", relationshipType: "DEPENDS_ON", targetTaskId: DEPENDENT, targetExternalKey: "DEP-1", targetState: "READY" },
+    ]);
+  });
+
+  it("shows only the edges that point into the excluded set", () => {
+    const edges = plan["dependentRelationshipEdges"] as Array<Record<string, unknown>>;
+    // DEP-1 also has RELATED_TO -> LIVE_TASK, which is not what put it in the closure.
+    expect(edges.every(edge => edge["relationshipType"] !== "RELATED_TO")).toBe(true);
+    expect(edges.some(edge => edge["targetTaskId"] === LIVE_TASK)).toBe(false);
+  });
+
+  it("reports only the canonical relationship fields, never task content", () => {
+    const edges = plan["dependentRelationshipEdges"] as Array<Record<string, unknown>>;
+    for (const edge of edges) {
+      expect(Object.keys(edge).sort()).toEqual(["relationshipType", "sourceExternalKey", "sourceState", "sourceTaskId", "targetExternalKey", "targetState", "targetTaskId"]);
+    }
+    expect(JSON.stringify(result.logs)).not.toContain("MUST NOT LEAK");
+  });
+
+  it("changes nothing: an inventory writes no row anywhere", () => {
+    expect(db.inserts).toEqual([]);
+    expect(result.exitCode).toBe(0);
+    for (const statement of [...db.sourceStatements, ...db.targetStatements]) {
+      expect(statement).not.toMatch(/^(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|COMMIT)\b/i);
+    }
   });
 });

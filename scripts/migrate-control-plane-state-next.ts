@@ -67,6 +67,8 @@ const IDENTITY_LIMIT = 20;
 const TITLE_LIMIT = 120;
 /** How many referencing rows the closure will classify in memory before it refuses and asks for a human. */
 const CANDIDATE_LIMIT = 5000;
+/** Relationship edges reported per diagnostic run. Generous enough to show every edge of a handful of tasks. */
+const EDGE_LIMIT = 100;
 
 /** Rows are returned directly, so a caller never holds a client and cannot bypass the read guard below. */
 type Query = <Row>(text: string, values?: unknown[], rowMode?: 'array') => Promise<Row[]>;
@@ -113,7 +115,9 @@ async function inventory() {
   try {
     // Resolving the closure here makes inventory the dry run for a copy: it reads the source only,
     // writes nothing anywhere, and prints exactly what a copy would leave behind.
-    const resolved = await resolveExclusion(sourceQuery, excludedTaskIds);
+    // Relationship diagnostics are asked for here and nowhere else: they exist to explain a closure
+    // to a human, not to decide anything, so copy and verify never compute them.
+    const resolved = await resolveExclusion(sourceQuery, excludedTaskIds, { relationshipDiagnostics: true });
     return {
       mode,
       source: await describe(sourceQuery, 'SOURCE'),
@@ -297,6 +301,8 @@ interface ResolvedExclusion {
   /** Rows that are NOT provably part of the closure but whose JSON mentions an excluded id. Never dropped on that basis; they stop the copy so a human decides. */
   readonly ambiguous: ReadonlyArray<{ table: string; count: number; sample: readonly string[] }>;
   readonly iterations: number;
+  /** Inventory-only diagnostic: which edge pulled each dependent task in. Never read by copy or verify. */
+  readonly relationshipEdges: ReadonlyArray<Record<string, unknown>>;
 }
 
 /**
@@ -313,8 +319,8 @@ interface ResolvedExclusion {
  *      leaf value in its JSON *is* an excluded task, run or operation id. A mention buried inside a
  *      longer string is not a reference and never removes anything -- it is reported as ambiguous.
  */
-async function resolveExclusion(query: Query, taskIds: readonly string[]): Promise<ResolvedExclusion> {
-  if (!taskIds.length) return { requested: [], found: [], notFound: [], closure: emptyClosure(), dependentIdentities: [], unresolvedDependents: [], ambiguous: [], iterations: 0 };
+async function resolveExclusion(query: Query, taskIds: readonly string[], options: { relationshipDiagnostics?: boolean } = {}): Promise<ResolvedExclusion> {
+  if (!taskIds.length) return { requested: [], found: [], notFound: [], closure: emptyClosure(), dependentIdentities: [], unresolvedDependents: [], ambiguous: [], iterations: 0, relationshipEdges: [] };
   const ids = [...taskIds];
   const idColumn = async (text: string, values: unknown[]): Promise<string[]> => (await query<{ id: string }>(text, values)).map(row => row.id);
   const dependentsOf = (excluded: readonly string[]): Promise<string[]> => idColumn(
@@ -400,7 +406,48 @@ async function resolveExclusion(query: Query, taskIds: readonly string[]): Promi
     unresolvedDependents: await dependentsOf(tasks),
     ambiguous,
     iterations,
+    relationshipEdges: options.relationshipDiagnostics ? await dependentRelationshipEdges(query, dependentTasks, tasks) : [],
   };
+}
+
+/**
+ * Which relationship edge actually pulled each dependent task into the closure.
+ *
+ * Diagnostic only, and inventory-only: it changes no policy and excludes nothing. The projection is
+ * the canonical relationship contract and nothing else -- `taskRelationshipSchema` defines exactly
+ * two fields, `type` and `targetTaskId` (packages/schemas/src/index.ts) -- plus the identity columns
+ * of both ends. Task `data` is never selected, so no description, requirement, prompt or payload
+ * can reach the report. Only edges pointing INTO the excluded set are returned: an unrelated edge
+ * of the same task is not what put it here and is not shown.
+ */
+async function dependentRelationshipEdges(query: Query, dependents: readonly string[], excludedTasks: readonly string[]): Promise<Array<Record<string, unknown>>> {
+  if (!dependents.length) return [];
+  const rows = await query<{ source_task_id: string; source_external_key: string | null; source_state: string | null; relationship_type: string | null; target_task_id: string; target_external_key: string | null; target_state: string | null }>(
+    `SELECT source.id AS source_task_id,
+            source.external_key AS source_external_key,
+            source.data->>'state' AS source_state,
+            relationship->>'type' AS relationship_type,
+            relationship->>'targetTaskId' AS target_task_id,
+            target.external_key AS target_external_key,
+            target.data->>'state' AS target_state
+       FROM tasks source
+       CROSS JOIN LATERAL jsonb_array_elements(COALESCE(source.data->'relationships','[]'::jsonb)) AS relationship
+       LEFT JOIN tasks target ON target.id::text = relationship->>'targetTaskId'
+      WHERE source.id = ANY($1::uuid[])
+        AND relationship->>'targetTaskId' = ANY($2::text[])
+      ORDER BY source.id, relationship->>'type', relationship->>'targetTaskId'
+      LIMIT $3`,
+    [[...dependents], [...excludedTasks], EDGE_LIMIT],
+  );
+  return rows.map(row => ({
+    sourceTaskId: row.source_task_id,
+    sourceExternalKey: row.source_external_key,
+    sourceState: row.source_state,
+    relationshipType: row.relationship_type,
+    targetTaskId: row.target_task_id,
+    targetExternalKey: row.target_external_key,
+    targetState: row.target_state,
+  }));
 }
 
 /** Safe identity of the tasks the recursion pulled in -- the same allowlisted scalars inventory already reports. */
@@ -420,6 +467,7 @@ function exclusionReport(resolved: ResolvedExclusion) {
     notFoundTaskIds: resolved.notFound,
     rootExcludedTasks: sample(resolved.closure.rootTasks),
     dependentExcludedTasks: resolved.dependentIdentities,
+    ...(resolved.relationshipEdges.length ? { dependentRelationshipEdges: resolved.relationshipEdges } : {}),
     excludedOperationIds: sample(resolved.closure.operationIds),
     closureIterations: resolved.iterations,
     excluded: closureCounts(resolved.closure),

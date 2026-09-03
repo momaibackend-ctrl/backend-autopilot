@@ -212,7 +212,9 @@ describe("exact scalar classification", () => {
 
 describe("exclusion is never derived from text", () => {
   const script = readFileSync(resolve(__dirname, "../../scripts/migrate-control-plane-state-next.ts"), "utf8");
-  const resolver = script.slice(script.indexOf("async function resolveExclusion"), script.indexOf("/** Safe identity of the tasks the recursion pulled in"));
+  // Strictly the resolver: the relationship diagnostic and the identity reader that follow it are
+  // reporting code, and they may read identity columns the closure itself must never consult.
+  const resolver = script.slice(script.indexOf("async function resolveExclusion"), script.indexOf("/**\n * Which relationship edge actually pulled"));
 
   it("resolves the closure from foreign keys and the canonical audit path only", () => {
     expect(resolver).toContain("FROM runs WHERE task_id = ANY($1::uuid[])");
@@ -258,6 +260,21 @@ describe("exclusion is never derived from text", () => {
     // Exact equality only -- no LIKE, prefix or name matching decides an operation.
     expect(resolver).not.toMatch(/operation_id\s+LIKE/);
     expect(resolver).not.toMatch(/operation_id.*\|\|\s*'%'/);
+  });
+
+  it("keeps the relationship diagnostic out of the closure decision entirely", () => {
+    // It reads identity columns, so it must be reporting-only: computed for inventory, never fed
+    // back into the closure, and never consulted by copy or verify.
+    const diagnostic = script.slice(script.indexOf("async function dependentRelationshipEdges"), script.indexOf("/** Safe identity of the tasks the recursion pulled in"));
+    expect(diagnostic).toContain("external_key");
+    expect(diagnostic).toMatch(/^\s*SELECT|SELECT source\.id/m);
+    expect(diagnostic).not.toMatch(/closure|proven|ambiguous\.push/);
+    expect(script).toContain("options.relationshipDiagnostics ? await dependentRelationshipEdges");
+    expect(script).toContain("{ relationshipDiagnostics: true }");
+    const copyBody = script.slice(script.indexOf("async function copy()"), script.indexOf("async function verify()"));
+    const verifyBody = script.slice(script.indexOf("async function verify()"), script.indexOf("// Reads -- every one of them takes a Query"));
+    expect(copyBody).not.toContain("relationshipDiagnostics");
+    expect(verifyBody).not.toContain("relationshipDiagnostics");
   });
 
   it("only lets a JSON document decide for a historical table", () => {
