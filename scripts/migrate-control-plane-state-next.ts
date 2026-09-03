@@ -603,15 +603,23 @@ async function presentIds(query: Query, entry: TablePlan, ids: readonly string[]
   return rows.map(row => row.id);
 }
 
-/** Every declared child -> parent edge among the copied operational tables, checked for orphans. */
-const referenceEdges = [
-  { child: 'runs', column: 'task_id', parent: 'tasks' },
-  { child: 'artifacts', column: 'task_id', parent: 'tasks' },
-  { child: 'artifacts', column: 'run_id', parent: 'runs' },
-  { child: 'execution_jobs', column: 'task_id', parent: 'tasks' },
-  { child: 'execution_jobs', column: 'run_id', parent: 'runs' },
-  { child: 'task_transitions', column: 'task_id', parent: 'tasks' },
-] as const;
+/**
+ * Every declared child -> parent edge among the copied operational tables, checked for orphans.
+ *
+ * A hoisted function, not a `const`: everything below this module's top-level await is evaluated
+ * *during* that await, so a `const` here would still be in its temporal dead zone when verify --
+ * which runs inside the await -- reaches `danglingReferences`.
+ */
+function referenceEdges() {
+  return [
+    { child: 'runs', column: 'task_id', parent: 'tasks' },
+    { child: 'artifacts', column: 'task_id', parent: 'tasks' },
+    { child: 'artifacts', column: 'run_id', parent: 'runs' },
+    { child: 'execution_jobs', column: 'task_id', parent: 'tasks' },
+    { child: 'execution_jobs', column: 'run_id', parent: 'runs' },
+    { child: 'task_transitions', column: 'task_id', parent: 'tasks' },
+  ] as const;
+}
 
 /**
  * Every structured way a surviving row could still point at something excluded, checked against the
@@ -663,7 +671,7 @@ async function requiredTaskPresence(query: Query, taskIds: readonly string[]): P
 
 async function danglingReferences(query: Query): Promise<Array<{ reference: string; orphans: number }>> {
   const found: Array<{ reference: string; orphans: number }> = [];
-  for (const edge of referenceEdges) {
+  for (const edge of referenceEdges()) {
     const child = assertSafeIdentifier(edge.child), column = assertSafeIdentifier(edge.column), parent = assertSafeIdentifier(edge.parent);
     const rows = await query<{ count: string }>(
       `SELECT count(*)::bigint AS count FROM "${child}" c LEFT JOIN "${parent}" p ON p.id = c."${column}" WHERE c."${column}" IS NOT NULL AND p.id IS NULL`,

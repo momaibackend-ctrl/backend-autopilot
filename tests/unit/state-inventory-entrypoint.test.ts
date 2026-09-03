@@ -227,17 +227,17 @@ describe("executable inventory entrypoint", () => {
     expect(JSON.stringify(logged)).not.toContain(POISON);
   });
 
-  it("declares every helper below the top-level await as a hoisted function", () => {
-    // The smoke run above only walks the inventory path, so the copy/verify-only helpers
-    // (blockingJobIds, blockingTaskIds, insertPage) would not be caught by it. Everything after the
-    // module's top-level await runs *during* that await, so a `const` function expression there is
-    // in the temporal dead zone by construction, whatever calls it.
+  it("declares nothing below the top-level await as a const, let or var", () => {
+    // Everything after the module's top-level await is evaluated *during* that await, so ANY
+    // top-level binding there is in its temporal dead zone when inventory/copy/verify calls it --
+    // whatever its shape. An earlier version of this test only looked for arrow-function consts,
+    // which is how `const referenceEdges = [...]` reached a real verify run and threw.
     const script = readFileSync(resolve(__dirname, "../../scripts/migrate-control-plane-state-next.ts"), "utf8").split(/\r?\n/);
     const topLevelAwait = script.findIndex(line => /^await source\.connect\(\)/.test(line));
     expect(topLevelAwait).toBeGreaterThan(-1);
     const deadZone = script
       .map((line, index) => ({ line: index + 1, text: line }))
-      .filter(entry => entry.line > topLevelAwait + 1 && /^const\s+\w+\s*[:=].*=>/.test(entry.text));
+      .filter(entry => entry.line > topLevelAwait + 1 && /^(const|let|var)\s+\w+/.test(entry.text));
     expect(deadZone.map(entry => `${entry.line}: ${entry.text.trim()}`)).toEqual([]);
   });
 });

@@ -21,14 +21,17 @@ const { FakeClient, db } = vi.hoisted(() => {
   interface Row { [column: string]: unknown }
   const db = {
     tables: {} as Record<string, Row[]>,
+    /** The target is a separate database: verify has to compare two different stores, not one. */
+    targetTables: {} as Record<string, Row[]>,
+    connection: "",
     inserts: [] as Array<{ table: string; columns: string[]; rows: unknown[][] }>,
     sourceStatements: [] as string[],
     targetStatements: [] as string[],
     sourceUrl: "",
-    reset(tables: Record<string, Row[]>, sourceUrl: string) {
-      this.tables = tables; this.inserts = []; this.sourceStatements = []; this.targetStatements = []; this.sourceUrl = sourceUrl;
+    reset(tables: Record<string, Row[]>, sourceUrl: string, targetTables: Record<string, Row[]> = {}) {
+      this.tables = tables; this.targetTables = targetTables; this.inserts = []; this.sourceStatements = []; this.targetStatements = []; this.sourceUrl = sourceUrl; this.connection = sourceUrl;
     },
-    rows(table: string): Row[] { return this.tables[table] ?? []; },
+    rows(table: string): Row[] { return (this.connection === this.sourceUrl ? this.tables : this.targetTables)[table] ?? []; },
     insertedIds(table: string): string[] {
       return this.inserts.filter(entry => entry.table === table).flatMap(entry => {
         const index = entry.columns.indexOf(entry.columns.includes("operation_id") && table === "admin_operations" ? "operation_id" : "id");
@@ -120,6 +123,31 @@ const { FakeClient, db } = vi.hoisted(() => {
         .slice(0, Number(values[1]))
         .map(row => ({ id: row["id"], external_key: row["external_key"], title: (row["data"] as Record<string, unknown>)?.["title"] ?? null, state: (row["data"] as Record<string, unknown>)?.["state"] ?? null }));
     }
+    // Verify-only reads.
+    if (/^SELECT count\(\*\)::bigint AS count FROM "\w+" c LEFT JOIN/.test(flat)) {
+      const edge = /FROM "(\w+)" c LEFT JOIN "(\w+)" p ON p\.id = c\."(\w+)"/.exec(flat);
+      const [, child, parent, column] = edge as RegExpExecArray;
+      const parents = new Set(db.rows(parent as string).map(row => String(row["id"])));
+      const orphans = db.rows(child as string).filter(row => row[column as string] && !parents.has(String(row[column as string])));
+      return [{ count: String(orphans.length) }];
+    }
+    if (/^SELECT count\(\*\)::bigint AS count FROM (runs|artifacts|execution_jobs|task_transitions|audit_events|admin_operations|tasks) WHERE/.test(flat) || /^SELECT count\(\*\)::bigint AS count FROM tasks WHERE EXISTS/.test(flat)) {
+      const table = /FROM (\w+) WHERE/.exec(flat)?.[1] as string;
+      const wanted = asArray(values[0]);
+      const matches = db.rows(table).filter(row => {
+        if (/EXISTS \(SELECT 1 FROM jsonb_array_elements/.test(flat)) return edgesOf(row).some(edge => wanted.includes(edge.targetTaskId));
+        const column = /WHERE (?:data->>'(\w+)'|(\w+)(?:::text)?) = ANY/.exec(flat);
+        const jsonKey = column?.[1];
+        const plain = column?.[2];
+        const value = jsonKey ? ((row["data"] ?? {}) as Record<string, unknown>)[jsonKey] : row[plain as string];
+        return value !== null && value !== undefined && wanted.includes(String(value));
+      });
+      return [{ count: String(matches.length) }];
+    }
+    if (/^SELECT id, external_key, data->>'state' AS state FROM tasks WHERE id = ANY/.test(flat)) {
+      return db.rows("tasks").filter(row => asArray(values[0]).includes(String(row["id"])))
+        .map(row => ({ id: row["id"], external_key: row["external_key"], state: ((row["data"] ?? {}) as Record<string, unknown>)["state"] ?? null }));
+    }
     if (/NOT EXISTS \(SELECT 1 FROM tasks target/.test(flat)) {
       const present = new Set(db.rows("tasks").map(row => String(row["id"])));
       return db.rows("tasks").flatMap(row => edgesOf(row).filter(edge => !present.has(edge.targetTaskId))
@@ -168,6 +196,8 @@ const { FakeClient, db } = vi.hoisted(() => {
     async query(config: string | { text: string; values?: unknown[] }, values?: unknown[]): Promise<{ rows: unknown[] }> {
       const text = typeof config === "string" ? config : config.text;
       const bound = ((typeof config === "string" ? values : config.values) ?? []) as unknown[];
+      // Which store `answer` reads from: source and target are genuinely different databases.
+      db.connection = this.connection;
       (this.connection === db.sourceUrl ? db.sourceStatements : db.targetStatements).push(text.replace(/\s+/g, " ").trim());
       const insert = /^INSERT INTO "(\w+)" \((.+?)\) VALUES/.exec(text.replace(/\s+/g, " ").trim());
       if (insert) {
@@ -225,9 +255,13 @@ function fixture(extra: { seventhTransientTask?: boolean } = {}): Tables {
 
 interface RunResult { logs: string[]; errors: string[]; failure: unknown; exitCode: number }
 
-async function runCopy(options: { exclude: string[]; tables: Record<string, Array<Record<string, unknown>>>; mode?: "copy" | "inventory" }): Promise<RunResult> {
-  db.reset(options.tables, SOURCE);
-  process.argv = ["node", "migrate-control-plane-state-next.ts", "--mode", options.mode ?? "copy", ...options.exclude.flatMap(id => ["--exclude-task-id", id])];
+async function runCopy(options: { exclude: string[]; tables: Record<string, Array<Record<string, unknown>>>; mode?: "copy" | "inventory" | "verify"; targetTables?: Record<string, Array<Record<string, unknown>>>; require?: string[] }): Promise<RunResult> {
+  db.reset(options.tables, SOURCE, options.targetTables ?? {});
+  process.argv = [
+    "node", "migrate-control-plane-state-next.ts", "--mode", options.mode ?? "copy",
+    ...options.exclude.flatMap(id => ["--exclude-task-id", id]),
+    ...(options.require ?? []).flatMap(id => ["--require-task-id", id]),
+  ];
   process.env["SOURCE_DATABASE_URL"] = SOURCE;
   process.env["TARGET_DATABASE_URL"] = TARGET;
   process.exitCode = 0;
@@ -526,6 +560,107 @@ describe("final policy: referencing tasks survive with normalized edges", () => 
     const plan = result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.exclusion_plan");
     expect(plan?.["dependentRelationshipEdges"]).toBeUndefined();
     expect(db.sourceStatements.some(statement => statement.includes("source_task_id"))).toBe(false);
+  });
+});
+
+/**
+ * The state a correct copy leaves behind, derived by hand from the source rather than from the copy
+ * implementation: source minus the closure, with the one departed relationship edge removed.
+ */
+function migratedTargetTables(): Tables {
+  const source = recursiveFixture();
+  const excludedTasks = new Set([STALE_TASK]);
+  const excludedRuns = new Set([STALE_RUN]);
+  const keep = (rows: Array<Record<string, unknown>> | undefined, ids: Set<string>, key = "id") => (rows ?? []).filter(row => !ids.has(String(row[key])));
+  return {
+    projects: source["projects"] ?? [],
+    resources: [], project_contexts: [], system_settings: [], console_screens: [], migration_markers: [], canonical_development_repositories: [],
+    tasks: keep(source["tasks"], excludedTasks).map(row => {
+      const data = row["data"] as Record<string, unknown>;
+      const edges = (data["relationships"] ?? []) as Array<{ targetTaskId: string }>;
+      const kept = edges.filter(edge => !excludedTasks.has(edge.targetTaskId));
+      return kept.length === edges.length ? row : { ...row, data: { ...data, relationships: kept } };
+    }),
+    runs: keep(source["runs"], excludedRuns),
+    artifacts: keep(source["artifacts"], new Set([STALE_ARTIFACT, HISTORICAL_ARTIFACT])),
+    execution_jobs: keep(source["execution_jobs"], new Set([STALE_JOB])),
+    task_transitions: keep(source["task_transitions"], new Set([STALE_TRANSITION])),
+    audit_events: keep(source["audit_events"], new Set([STALE_AUDIT, HISTORICAL_AUDIT])),
+    admin_operations: keep(source["admin_operations"], new Set(["op-stale"]), "operation_id"),
+  };
+}
+
+describe("verify against a migrated target", () => {
+  let result: RunResult;
+  let report: Record<string, unknown>;
+
+  beforeEach(async () => {
+    result = await runCopy({
+      mode: "verify",
+      exclude: [STALE_TASK],
+      require: [LIVE_TASK, DEPENDENT, SECOND_LEVEL],
+      tables: recursiveFixture(),
+      targetTables: migratedTargetTables(),
+    });
+    report = (result.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.verify") ?? {}) as Record<string, unknown>;
+  });
+
+  it("runs to completion with no ReferenceError from an uninitialised binding", () => {
+    // The regression: `const referenceEdges` sat below the module's top-level await, so verify threw
+    // "Cannot access 'referenceEdges' before initialization" the moment it reached danglingReferences.
+    if (result.failure instanceof ReferenceError) throw new Error(`verify hit a temporal-dead-zone error: ${result.failure.message}`);
+    expect(result.failure).toBeUndefined();
+    expect(result.errors).toEqual([]);
+  });
+
+  it("reaches danglingReferences and actually checks every declared edge", () => {
+    const joins = db.targetStatements.filter(statement => /LEFT JOIN "\w+" p ON p\.id = c\./.test(statement));
+    expect(joins).toHaveLength(6);
+    for (const edge of ['FROM "runs" c LEFT JOIN "tasks" p', 'FROM "artifacts" c LEFT JOIN "tasks" p', 'FROM "artifacts" c LEFT JOIN "runs" p', 'FROM "execution_jobs" c LEFT JOIN "tasks" p', 'FROM "execution_jobs" c LEFT JOIN "runs" p', 'FROM "task_transitions" c LEFT JOIN "tasks" p']) {
+      expect(joins.some(statement => statement.includes(edge)), `${edge} must be checked`).toBe(true);
+    }
+    expect(report["dangling"]).toEqual([]);
+  });
+
+  it("reports MATCH for a correctly migrated target", () => {
+    expect(report["result"]).toBe("MATCH");
+    expect(result.exitCode).toBe(0);
+    expect(report["survivingReferences"]).toEqual([]);
+    expect(report["danglingRelationships"]).toEqual([]);
+    expect(report["activeExecutionJobsInSource"]).toEqual([]);
+  });
+
+  it("confirms the required tasks are present with their state", () => {
+    expect(report["requiredTasks"]).toEqual([
+      { taskId: LIVE_TASK, present: true, externalKey: "CORE-BE-05", state: "READY" },
+      { taskId: DEPENDENT, present: true, externalKey: "DEP-1", state: "READY" },
+      { taskId: SECOND_LEVEL, present: true, externalKey: "DEP-2", state: "READY" },
+    ]);
+  });
+
+  it("fails when a required task is missing from the target", async () => {
+    const target = migratedTargetTables();
+    target["tasks"] = (target["tasks"] ?? []).filter(row => row["id"] !== DEPENDENT);
+    const missing = await runCopy({ mode: "verify", exclude: [STALE_TASK], require: [DEPENDENT], tables: recursiveFixture(), targetTables: target });
+    expect(missing.exitCode).toBe(1);
+    const failed = missing.logs.map(line => JSON.parse(line) as Record<string, unknown>).find(entry => entry["event"] === "control_plane_state.verify");
+    expect(failed?.["result"]).toBe("MISMATCH");
+    expect((failed?.["requiredTasks"] as Array<Record<string, unknown>>)[0]?.["present"]).toBe(false);
+  });
+
+  it("writes nothing to either database and copies nothing", () => {
+    expect(db.inserts).toEqual([]);
+    for (const statement of [...db.sourceStatements, ...db.targetStatements]) {
+      expect(statement).not.toMatch(/^(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE|COMMIT)\b/i);
+    }
+    expect(db.targetStatements.some(statement => statement === "BEGIN")).toBe(false);
+    expect(db.targetStatements.some(statement => /pg_try_advisory_xact_lock/.test(statement))).toBe(false);
+  });
+
+  it("keeps the source read-only, opened with the repeatable-read snapshot", () => {
+    expect(db.sourceStatements[0]).toBe("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    expect(db.sourceStatements).toContain("ROLLBACK");
+    for (const statement of db.sourceStatements) expect(statement).toMatch(/^(SELECT|BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY|ROLLBACK)/i);
   });
 });
 

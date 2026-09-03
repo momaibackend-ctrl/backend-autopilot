@@ -392,7 +392,7 @@ describe("copy and verify honour the closure", () => {
   });
 
   it("checks every declared child-to-parent edge for orphans", () => {
-    const edges = script.slice(script.indexOf("const referenceEdges"), script.indexOf("async function danglingReferences"));
+    const edges = script.slice(script.indexOf("function referenceEdges()"), script.indexOf("async function danglingReferences"));
     for (const edge of ["runs', column: 'task_id", "artifacts', column: 'task_id", "artifacts', column: 'run_id", "execution_jobs', column: 'task_id", "execution_jobs', column: 'run_id", "task_transitions', column: 'task_id"]) {
       expect(edges).toContain(edge);
     }
