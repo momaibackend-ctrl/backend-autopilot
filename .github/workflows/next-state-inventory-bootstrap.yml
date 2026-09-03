@@ -1,0 +1,99 @@
+name: Next state inventory bootstrap
+# Read-only inventory of the current and next control-plane databases, and nothing else.
+#
+# The point of this workflow living on its own branch is that the code it runs is NOT taken from
+# whatever the migration branch happens to hold at dispatch time. `actions/checkout` pins one exact,
+# reviewed commit, and a guard re-checks the resulting HEAD before anything runs -- so a later push
+# to autopilot/migrate-next-supabase-r2 cannot change what this workflow executes.
+#
+# It reads two PostgreSQL databases and reports table presence, counts and statuses. It runs no
+# schema migration, no Supabase CLI, no Edge Function deploy, no R2 call and no git write; the
+# inventory mode of the pinned script opens both connections with
+# `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`, so PostgreSQL itself rejects any
+# INSERT/UPDATE/DELETE/DDL on either side.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type INSPECT_NEXT_STATE exactly to confirm this read-only inventory'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-state-inventory-bootstrap
+  cancel-in-progress: false
+
+env:
+  # The reviewed migration commit this workflow is allowed to execute. Declared here as well as in
+  # the checkout `ref` below on purpose: if the two ever drift apart, the guard step fails the run
+  # instead of quietly executing whichever one was edited.
+  MIGRATION_COMMIT: 93834a11822057a5b8744f7ee059b9e306f13ea7
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
+      TARGET_DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+    steps:
+      - name: Guard - explicit INSPECT_NEXT_STATE confirmation
+        env:
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM_INPUT" != "INSPECT_NEXT_STATE" ]; then
+            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly INSPECT_NEXT_STATE." >&2
+            exit 1
+          fi
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "SOURCE_DATABASE_URL:AUTOPILOT_CONTROL_DATABASE_URL" \
+            "TARGET_DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to open a database connection: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      # A pinned SHA, never a branch name: the workspace is exactly the reviewed migration commit.
+      # persist-credentials:false leaves no git credential behind, so nothing in this job can write
+      # back to the repository.
+      - uses: actions/checkout@v4
+        with:
+          ref: 93834a11822057a5b8744f7ee059b9e306f13ea7
+          persist-credentials: false
+      - name: Guard - the checked-out tree is the pinned, reviewed migration commit
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if ! test "$actual" = "$MIGRATION_COMMIT"; then
+            echo "::error::Refusing to run: expected the pinned migration commit $MIGRATION_COMMIT but the workspace is at $actual." >&2
+            exit 1
+          fi
+          echo "pinned migration commit verified: $MIGRATION_COMMIT"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The only command that touches a database. Inventory reads both control planes and reports
+      # table presence, row counts, active job and transient task counts, artifact counts by storage
+      # provider, and the Auth-bound tables as AUTH_BOUND_NOT_PORTABLE. DATABASE_URL is deliberately
+      # not set anywhere in this workflow, so `pnpm db:migrate` could not run even by accident.
+      - name: Read-only inventory of both control planes
+        run: pnpm state:migrate:next -- --mode inventory
