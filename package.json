@@ -27,6 +27,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "state:migrate:remote": "tsx scripts/migrate-file-state.ts",
     "state:migrate:next": "tsx scripts/migrate-control-plane-state-next.ts",
+    "blobs:migrate:r2": "tsx scripts/migrate-artifact-blobs-r2.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
