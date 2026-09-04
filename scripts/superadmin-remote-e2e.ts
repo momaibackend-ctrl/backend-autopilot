@@ -2,7 +2,12 @@ import "dotenv/config";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const endpoint=process.env["AUTOPILOT_REMOTE_MCP_URL"]??"https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp";
+// The endpoint is required rather than defaulted. This previously fell back to a hardcoded project
+// URL, which is how a retired project ref outlives a cutover: the script keeps running green
+// against whatever was baked in, or -- once that project is suspended -- fails with a transport
+// error that says nothing about the real cause. Set AUTOPILOT_REMOTE_MCP_URL (the canonical deploy
+// derives the same value from AUTOPILOT_NEXT_SUPABASE_URL).
+const endpoint=requiredEndpoint();
 const token=required("AUTOPILOT_SUPERADMIN_MCP_TOKEN");
 const githubToken=required("AUTOPILOT_GITHUB_TOKEN");
 const projectId=process.env["AUTOPILOT_REMOTE_E2E_PROJECT_ID"]??"ac6d68be-272c-4bca-aab1-cd1a442cf960";
@@ -93,3 +98,9 @@ function required(name:string){const value=process.env[name];if(!value)throw new
 type Envelope<T>={value:T;idempotentReplay:boolean};
 type Screen={screenId:string;navigationLabel:string;title:string;description:string;enabled:boolean;navigationOrder:number;blocks:unknown[]};
 type McpResponse<T>={result?:{isError?:boolean;structuredContent?:{result:T};content?:Array<{text?:string}>};error?:{message?:string}};
+
+function requiredEndpoint():string{
+  const value=process.env['AUTOPILOT_REMOTE_MCP_URL'];
+  if(!value)throw new Error('AUTOPILOT_REMOTE_MCP_URL is required (e.g. https://<project-ref>.supabase.co/functions/v1/mcp)');
+  return value;
+}

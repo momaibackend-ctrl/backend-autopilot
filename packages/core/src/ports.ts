@@ -21,18 +21,44 @@ export interface CanonicalPromotionRequest {
   displacedAt:string;
 }
 
+/**
+ * An artifact stripped of its `content`. The console overview needs per-task artifact COUNTS and
+ * nothing else about most artifacts, but an artifact's content is inline in the same row up to the
+ * 64 KB externalization threshold -- so asking for artifacts in order to count them transfers the
+ * project's entire recorded output. Stores back this with a projection that never reads the
+ * content at all.
+ */
+export interface ArtifactDigest {
+  id:string;
+  projectId:string;
+  taskId?:string|undefined;
+  runId?:string|undefined;
+  kind?:string|undefined;
+  createdAt:string;
+}
+
 export interface StateStore {
   createProject(project:Project):Promise<Project>; updateProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
   createResource(resource:Resource):Promise<Resource>; updateResource(resource:Resource):Promise<Resource>; getResource(id:string):Promise<Resource|undefined>; findResource(projectId:string,externalReference:string):Promise<Resource|undefined>; listResources(projectId:string):Promise<Resource[]>;
   saveContext(context:ProjectContext):Promise<ProjectContext>; updateContext(context:ProjectContext):Promise<ProjectContext>; getContext(projectId:string,id:string):Promise<ProjectContext|undefined>; getLatestContext(projectId:string):Promise<ProjectContext|undefined>; listContexts(projectId:string):Promise<ProjectContext[]>;
   createTask(task:Task):Promise<Task>; updateTask(task:Task):Promise<Task>; getTask(projectId:string,taskId:string):Promise<Task|undefined>; listTasks(projectId:string):Promise<Task[]>;
   saveArtifact(artifact:Artifact):Promise<Artifact>; updateArtifact(artifact:Artifact):Promise<Artifact>; getArtifact(projectId:string,id:string):Promise<Artifact|undefined>; listArtifacts(projectId:string,taskId?:string):Promise<Artifact[]>;
+  /**
+   * Bounded reads for views that summarise a project rather than export it. `listArtifacts` and
+   * `listAudit` are unbounded and carry every artifact's inline content and every audit event's
+   * full input/result payload; a view that polls must never use them. See `overview` in
+   * supabase/functions/control-api/index.ts for what this replaced and why.
+   */
+  listArtifactDigests(projectId:string):Promise<ArtifactDigest[]>;
+  latestArtifactOfKind(projectId:string,kind:string):Promise<Artifact|undefined>;
   saveRun(run:Run):Promise<Run>; updateRun(run:Run):Promise<Run>; getRun(projectId:string,id:string):Promise<Run|undefined>; findRunByOperation(projectId:string,operationId:string):Promise<Run|undefined>; listRuns(projectId:string,taskId?:string):Promise<Run[]>;
   createExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; updateExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; getExecutionJob(projectId:string,id:string):Promise<ExecutionJob|undefined>; getExecutionJobById(id:string):Promise<ExecutionJob|undefined>; findExecutionJobByOperation(projectId:string,operationId:string):Promise<ExecutionJob|undefined>; listExecutionJobs(projectId:string,taskId?:string):Promise<ExecutionJob[]>;
   claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string):Promise<ExecutionJob|undefined>;
   transitionTask(task:Task,transition:Transition):Promise<Task>;
   appendTransition(transition:Transition):Promise<void>; listTransitions(taskId:string):Promise<Transition[]>;
   appendAudit(event:AuditEvent):Promise<void>; getAudit(projectId:string,id:string):Promise<AuditEvent|undefined>; listAudit(projectId:string):Promise<AuditEvent[]>;
+  /** The `limit` newest audit events for a project, newest first. */
+  listRecentAudit(projectId:string,limit:number):Promise<AuditEvent[]>;
   upsertSystemSetting(value:SystemSetting):Promise<SystemSetting>; getSystemSetting(key:string):Promise<SystemSetting|undefined>; listSystemSettings():Promise<SystemSetting[]>; deleteSystemSetting(key:string):Promise<void>;
   upsertConsoleScreen(value:ConsoleScreen):Promise<ConsoleScreen>; getConsoleScreen(screenId:string):Promise<ConsoleScreen|undefined>; listConsoleScreens():Promise<ConsoleScreen[]>; deleteConsoleScreen(screenId:string):Promise<void>;
   upsertOperator(value:Operator):Promise<Operator>; getOperator(userId:string):Promise<Operator|undefined>; listOperators():Promise<Operator[]>; deleteOperator(userId:string):Promise<void>;

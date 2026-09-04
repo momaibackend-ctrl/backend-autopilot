@@ -1,8 +1,20 @@
 name: Deploy Operator Console to GitHub Pages
+# The operator console is a Next.js static export. Every NEXT_PUBLIC_* value is INLINED into the
+# JavaScript bundle at build time -- the published site has no runtime configuration at all. So a
+# Supabase project cutover is only real for the console once this workflow has rebuilt and
+# redeployed it; changing a secret alone changes nothing that is already on Pages.
+#
+# For that reason nothing here is hardcoded any more. The project URL is derived from the single
+# canonical secret AUTOPILOT_NEXT_SUPABASE_URL -- the same one `supabase.yml` derives the deploy
+# project ref from and `autopilot-reconcile.yml` builds its endpoint from -- so the console, the
+# control plane and reconciliation cannot drift onto different projects.
 on:
   push:
-    branches: [autopilot/v0.5-superadmin-mcp, main]
-    paths: ["apps/operator-console/**", "pnpm-lock.yaml", ".github/workflows/pages.yml"]
+    branches: [main]
+    paths:
+      - "apps/operator-console/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -19,10 +31,37 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXT_PUBLIC_GITHUB_PAGES_BASE_PATH: /backend-autopilot
-      NEXT_PUBLIC_SUPABASE_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_PUBLISHABLE_KEY }}
-      NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL: https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/control-api
+      AUTOPILOT_NEXT_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_PUBLISHABLE_KEY }}
     steps:
+      # Runs before checkout: a misconfiguration costs nothing and publishes nothing. A blank
+      # NEXT_PUBLIC_SUPABASE_URL would otherwise build and deploy perfectly happily, producing a
+      # console whose `supabase` client is `undefined` and whose every screen fails to sign in --
+      # a far more confusing outcome than a red workflow.
+      - name: Derive the console's Supabase configuration from the canonical secret
+        # Fully anchored, whole-URL match, identical to the one supabase.yml uses. Matching only a
+        # leading label would accept https://<20-char-ref>.evil.com, and an unanchored match would
+        # accept a trailing subdomain, path, query or fragment -- including the /rest/v1/ form,
+        # which supabase-js must never be given as its base URL (it appends /rest/v1 itself).
+        # Neither the secret nor the derived URL is ever printed; only the shape verdict is.
+        run: |
+          if [ -z "$AUTOPILOT_NEXT_SUPABASE_URL" ]; then
+            echo "::error::Required GitHub secret is not configured: AUTOPILOT_NEXT_SUPABASE_URL" >&2
+            exit 1
+          fi
+          if [ -z "$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "::error::Required GitHub secret is not configured: AUTOPILOT_NEXT_SUPABASE_PUBLISHABLE_KEY" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$AUTOPILOT_NEXT_SUPABASE_URL" | grep -Eq '^https://[a-z0-9]{20}\.supabase\.co/?$'; then
+            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL is not a Supabase project base URL. Expected exactly https://<20-char-lowercase-ref>.supabase.co (one optional trailing slash) -- not a /rest/v1/ or other sub-path form. The secret value is not printed." >&2
+            exit 1
+          fi
+          base="${AUTOPILOT_NEXT_SUPABASE_URL%/}"
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=$base"
+            echo "NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL=$base/functions/v1/control-api"
+          } >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with: { version: 10.32.1 }
@@ -30,6 +69,35 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:console
+      # The whole point of this workflow is which project the bundle talks to, and that is decided
+      # by string inlining that no type checker or test can see. Asserting it on the built output
+      # is the only check that actually proves the cutover landed -- and it is what stops a future
+      # edit from silently reintroducing a stale project ref.
+      - name: Assert the built bundle targets the configured project and no other
+        run: |
+          expected_ref="${NEXT_PUBLIC_SUPABASE_URL#https://}"
+          expected_ref="${expected_ref%%.*}"
+          found=$(grep -rhoE '[a-z0-9]{20}\.supabase\.co' apps/operator-console/.next-static | sort -u || true)
+          if [ -z "$found" ]; then
+            echo "::error::The built console contains no Supabase project URL at all. NEXT_PUBLIC_SUPABASE_URL did not reach the build." >&2
+            exit 1
+          fi
+          unexpected=$(printf '%s\n' "$found" | grep -v "^${expected_ref}\.supabase\.co$" || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::The built console references a Supabase project other than the configured one: $unexpected" >&2
+            exit 1
+          fi
+          echo "Built console targets exactly one Supabase project: $found"
+      - name: Assert the OAuth consent route is present in the artifact
+        # ChatGPT's authorization redirect lands here. It is a static export route, so if the page
+        # ever stops being emitted the connector breaks at consent time with a 404 that looks like
+        # a Supabase problem rather than a build problem.
+        run: |
+          if [ ! -f apps/operator-console/.next-static/oauth-consent/index.html ]; then
+            echo "::error::apps/operator-console/.next-static/oauth-consent/index.html is missing; the OAuth consent route would 404 on Pages." >&2
+            exit 1
+          fi
+          echo "OAuth consent route present"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/operator-console/.next-static

@@ -21,6 +21,7 @@
     "superadmin:kotlin:remote:e2e": "tsx scripts/superadmin-kotlin-remote-e2e.ts",
     "oauth:consent:e2e": "tsx scripts/oauth-consent-e2e.ts",
     "mcp:health-check": "tsx scripts/mcp-health-check.ts",
+    "oauth:configure": "tsx scripts/configure-oauth-server.ts",
     "resource:register-self": "tsx scripts/register-self-resource.ts",
     "mcp": "tsx apps/mcp-server/src/main.ts",
     "autopilot": "tsx apps/cli/src/main.ts",

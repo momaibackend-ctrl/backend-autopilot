@@ -1,5 +1,5 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
-import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 // Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
@@ -31,6 +31,18 @@ export class PostgrestStateStore implements StateStore {
   async updateArtifact(v:Artifact){await this.patch('artifacts',`id=eq.${v.id}&project_id=eq.${v.projectId}`,{status:v.status,data:v});return v;}
   getArtifact(projectId:string,id:string){return this.one<Artifact>('artifacts',`id=eq.${id}&project_id=eq.${projectId}`);}
   listArtifacts(projectId:string,taskId?:string){return this.many<Artifact>('artifacts',`project_id=eq.${projectId}${taskId?`&task_id=eq.${taskId}`:''}&order=created_at.asc`);}
+  // `select=` names the identity columns explicitly and omits `data`, so PostgREST never
+  // serialises the artifacts' inline content. This is the difference between a response that
+  // grows with a project's entire recorded output and one that grows with its artifact COUNT --
+  // the reason the previous console overview, polled every few seconds per open tab, was the
+  // dominant consumer of the project's egress allowance.
+  async listArtifactDigests(projectId:string):Promise<ArtifactDigest[]>{
+    const rows=await this.page<{id:string;project_id:string;task_id:string|null;run_id:string|null;kind:string|null;created_at:string}>('artifacts','id,project_id,task_id,run_id,kind,created_at',`project_id=eq.${projectId}&order=created_at.asc`);
+    return rows.map(r=>({id:r.id,projectId:r.project_id,...(r.task_id?{taskId:r.task_id}:{}),...(r.run_id?{runId:r.run_id}:{}),...(r.kind?{kind:r.kind}:{}),createdAt:r.created_at}));
+  }
+  async latestArtifactOfKind(projectId:string,kind:string){
+    return this.one<Artifact>('artifacts',`project_id=eq.${projectId}&kind=eq.${encodeURIComponent(kind)}&order=created_at.desc`);
+  }
   async saveRun(v:Run){const existing=await this.findRunByOperation(v.projectId,v.operationId);if(existing)return existing;return this.insert<Run>('runs',{id:v.id,project_id:v.projectId,task_id:v.taskId,operation_id:v.operationId,data:v,created_at:v.startedAt});}
   async updateRun(v:Run){await this.patch('runs',`id=eq.${v.id}&project_id=eq.${v.projectId}`,{data:v});return v;}
   getRun(projectId:string,id:string){return this.one<Run>('runs',`id=eq.${id}&project_id=eq.${projectId}`);}
@@ -49,6 +61,11 @@ export class PostgrestStateStore implements StateStore {
   async appendAudit(v:AuditEvent){await this.insert<AuditEvent>('audit_events',{id:v.id,project_id:v.projectId,data:v,created_at:v.timestamp});}
   getAudit(projectId:string,id:string){return this.one<AuditEvent>('audit_events',`id=eq.${id}&project_id=eq.${projectId}`);}
   listAudit(projectId:string){return this.many<AuditEvent>('audit_events',`project_id=eq.${projectId}&order=created_at.asc`);}
+  // Bounded by `limit`, so this is a single small request rather than a paged walk of the whole
+  // audit trail -- audit payloads carry each event's full input and result.
+  async listRecentAudit(projectId:string,limit:number){
+    return (await this.request<{data:AuditEvent}[]>('GET',`/rest/v1/audit_events?select=data&project_id=eq.${projectId}&order=created_at.desc&limit=${Math.max(1,Math.trunc(limit))}`)).map(row=>row.data);
+  }
   upsertSystemSetting(v:SystemSetting){return this.upsertData<SystemSetting>('system_settings','key',v.key,{key:v.key,data:v,updated_at:v.updatedAt});}
   getSystemSetting(key:string){return this.one<SystemSetting>('system_settings',`key=eq.${encodeURIComponent(key)}`);}
   listSystemSettings(){return this.many<SystemSetting>('system_settings','order=key.asc');}
@@ -93,6 +110,19 @@ export class PostgrestStateStore implements StateStore {
   // decisions -- dependency evidence, READY gates, the delivery view -- so a silent truncation is
   // not slow data, it is wrong data: an active project's newest artifacts simply vanish while the
   // caller sees a plausible-looking array. Paging explicitly is the only way to get the real set.
+  // Column-projected sibling of `many`: same explicit paging (and the same reason for it -- a
+  // silently truncated PostgREST page is wrong data, not slow data), but the caller chooses which
+  // columns cross the wire instead of always taking the whole `data` document.
+  private async page<T>(table:string,select:string,query:string){
+    const values:T[]=[];
+    for(let offset=0;;offset+=manyPageSize){
+      const rows=await this.request<T[]>('GET',`/rest/v1/${table}?select=${select}&${query}`,undefined,{range:`${offset}-${offset+manyPageSize-1}`,'range-unit':'items'});
+      if(!rows?.length)break;
+      values.push(...rows);
+      if(rows.length<manyPageSize)break;
+    }
+    return values;
+  }
   private async many<T>(table:string,query:string){
     const values:T[]=[];
     for(let offset=0;;offset+=manyPageSize){

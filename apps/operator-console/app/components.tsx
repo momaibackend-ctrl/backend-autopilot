@@ -117,6 +117,45 @@ type ScreenBlock=
   | {id:string;type:"JSON";title:string;value:unknown};
 type ScreenConfig={screenId:string;title:string;description:string;enabled:boolean;blocks:ScreenBlock[]};
 const api = "/v1/console";
+const pollIntervalMs = 5_000;
+/**
+ * Polls `load` on an interval, but only while the tab is actually being looked at.
+ *
+ * The console is a static export with no server session: a tab left open keeps polling for as long
+ * as the browser is running. At a five-second interval that is ~17k requests per day per tab
+ * whether or not anyone is watching, and a single forgotten background tab quietly out-consumes
+ * every real operator session combined. Suspending on `visibilitychange` and reloading once on
+ * return keeps a visible tab exactly as live as before while a hidden one costs nothing.
+ */
+function useVisiblePolling(load: () => void | Promise<void>) {
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stop = () => {
+      if (timer !== undefined) clearInterval(timer);
+      timer = undefined;
+    };
+    const start = () => {
+      stop();
+      timer = setInterval(() => void load(), pollIntervalMs);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        stop();
+        return;
+      }
+      // Refresh immediately on return: whatever is on screen is as stale as the tab was hidden.
+      void load();
+      start();
+    };
+    void load();
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [load]);
+}
 function usePolling<T>(path: string) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState("");
@@ -139,11 +178,7 @@ function usePolling<T>(path: string) {
       setError(value instanceof Error ? value.message : "Console unavailable");
     }
   }, [path]);
-  useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 5_000);
-    return () => clearInterval(timer);
-  }, [load]);
+  useVisiblePolling(load);
   return { data, error, reload: load };
 }
 export function ConsoleSection({ section }: { section: string }) {
@@ -216,7 +251,12 @@ function HelpRail({ title, blocks }: { title: string; blocks: ScreenBlock[] }) {
     </aside>
   );
 }
-function useOptionalScreen(screenId:string){const [value,setValue]=useState<ScreenConfig>();useEffect(()=>{let active=true;const load=()=>authorizedFetch(`${api}/screens/${screenId}`,{cache:"no-store"}).then(async response=>{if(response.ok&&active)setValue(await response.json() as ScreenConfig);}).catch(()=>undefined);void load();const timer=setInterval(()=>void load(),5_000);return()=>{active=false;clearInterval(timer);};},[screenId]);return value;}
+function useOptionalScreen(screenId:string){
+  const [value,setValue]=useState<ScreenConfig>();
+  const load=useCallback(()=>authorizedFetch(`${api}/screens/${screenId}`,{cache:"no-store"}).then(async response=>{if(response.ok)setValue(await response.json() as ScreenConfig);}).catch(()=>undefined),[screenId]);
+  useVisiblePolling(load);
+  return value;
+}
 function Dashboard({ data }: { data: Overview }) {
   const providerCount = new Set(
     data.projects.flatMap((project) =>
@@ -555,11 +595,7 @@ function Validation({ projects }: { projects: ProjectCard[] }) {
     });
     if (response.ok) setHistory((await response.json()) as Artifact[]);
   }, [projectId]);
-  useEffect(() => {
-    void loadHistory();
-    const timer = setInterval(() => void loadHistory(), 5_000);
-    return () => clearInterval(timer);
-  }, [loadHistory]);
+  useVisiblePolling(loadHistory);
   async function run() {
     if (!projectId || !taskId) return;
     setPending(true);

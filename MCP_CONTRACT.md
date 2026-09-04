@@ -3,7 +3,7 @@
 The deployed endpoint is authenticated stateless Streamable HTTP:
 
 ```text
-POST https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+POST https://shzdgtatfonznkprnxrz.supabase.co/functions/v1/mcp
 Authorization: Bearer <token>
 Accept: application/json, text/event-stream
 ```
@@ -14,14 +14,17 @@ Accept: application/json, text/event-stream
 
 A bearer token that does not match either static token is tried as a Supabase Auth access token (a normal session, or one issued by Supabase's OAuth 2.1 Authorization Server — both validate identically). The token is verified through the same operator/role check `control-api` already uses (`authenticatedOperator`): identity, active status, and allowlist are all re-checked, and only a resolved `SUPERADMIN` operator is granted an MCP principal — a successful OAuth sign-in that resolves to a non-superadmin operator is rejected with 401, never silently downgraded. OAuth scopes requested by the client are informational only; they are not a security boundary, and are never the sole gate for superadmin access.
 
-Discovery/token endpoints (Supabase Auth, unchanged by this project):
+Discovery/token endpoints (Supabase Auth, unchanged by this project). The GoTrue settings these
+depend on -- OAuth server enabled, dynamic registration allowed, and the consent path that resolves
+onto the Pages console -- are not deployable from `supabase/config.toml`; they are asserted after
+every deploy by `scripts/configure-oauth-server.ts`:
 
 ```text
-Protected resource metadata:   https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource
-Authorization Server metadata: https://qtyfdzjzmgxtrarpgcmn.supabase.co/.well-known/oauth-authorization-server/auth/v1
-Authorization endpoint:        https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/authorize
-Token endpoint:                https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/token
-Dynamic client registration:   https://qtyfdzjzmgxtrarpgcmn.supabase.co/auth/v1/oauth/clients/register
+Protected resource metadata:   https://shzdgtatfonznkprnxrz.supabase.co/functions/v1/mcp/.well-known/oauth-protected-resource
+Authorization Server metadata: https://shzdgtatfonznkprnxrz.supabase.co/auth/v1/.well-known/oauth-authorization-server
+Authorization endpoint:        https://shzdgtatfonznkprnxrz.supabase.co/auth/v1/oauth/authorize
+Token endpoint:                https://shzdgtatfonznkprnxrz.supabase.co/auth/v1/oauth/token
+Dynamic client registration:   https://shzdgtatfonznkprnxrz.supabase.co/auth/v1/oauth/clients/register
 ```
 
 PKCE (S256) is mandatory. A 401 from the MCP endpoint carries `WWW-Authenticate: Bearer resource_metadata="<protected resource metadata URL>"` per RFC 9728, and the MCP endpoint itself serves that metadata (unauthenticated `GET`) at the sub-path above — required because ChatGPT's connector performs automatic discovery against the MCP server's own 401 challenge rather than accepting manually-entered authorization/token URLs. Dynamic client registration (RFC 7591) is enabled, since ChatGPT self-registers via DCR rather than using a pre-registered client (Supabase does not support the newer Client ID Metadata Documents mechanism ChatGPT prefers). Self-registration alone grants no access — every resulting token still requires a signed-in SUPERADMIN operator to approve on the consent screen, and the MCP server independently re-verifies the SUPERADMIN role before any tool call succeeds. The authorization consent screen is served by the Operator Console (`apps/operator-console/app/oauth-consent`), gated by the existing magic-link operator sign-in — it never has access to the static superadmin token.

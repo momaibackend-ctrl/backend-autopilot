@@ -1,6 +1,11 @@
 import 'dotenv/config';
 
-const endpoint=process.env['AUTOPILOT_REMOTE_MCP_URL']??'https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp';
+// The endpoint is required rather than defaulted. This previously fell back to a hardcoded project
+// URL, which is how a retired project ref outlives a cutover: the script keeps running green
+// against whatever was baked in, or -- once that project is suspended -- fails with a transport
+// error that says nothing about the real cause. Set AUTOPILOT_REMOTE_MCP_URL (the canonical deploy
+// derives the same value from AUTOPILOT_NEXT_SUPABASE_URL).
+const endpoint=requiredEndpoint();
 const token=required('AUTOPILOT_MCP_TOKEN');
 const githubToken=required('AUTOPILOT_GITHUB_TOKEN');
 const projectId=process.env['AUTOPILOT_REMOTE_E2E_PROJECT_ID']??'ac6d68be-272c-4bca-aab1-cd1a442cf960';
@@ -38,3 +43,9 @@ async function waitForJob(jobId:string){for(let attempt=0;attempt<90;attempt++){
 async function githubFile(path:string,ref:string){const response=await fetch(`https://api.github.com/repos/${targetRepository}/contents/${path}?ref=${encodeURIComponent(ref)}`,{headers:{accept:'application/vnd.github.raw+json',authorization:`Bearer ${githubToken}`,'user-agent':'backend-autopilot-remote-e2e','x-github-api-version':'2022-11-28'}});if(!response.ok)throw new Error(`Unable to read sandbox fixture ${path} (${response.status})`);return response.text();}
 async function call<T=unknown>(name:string,args:Record<string,unknown>):Promise<T>{const response=await fetch(endpoint,{method:'POST',headers:{authorization:`Bearer ${token}`,accept:'application/json, text/event-stream','content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:crypto.randomUUID(),method:'tools/call',params:{name,arguments:args}})});const raw=await response.text();if(!response.ok)throw new Error(`Remote MCP ${name} failed (${response.status})`);const data=raw.split(/\r?\n/).filter(line=>line.startsWith('data:')).map(line=>JSON.parse(line.slice(5).trim()) as {result?:{isError?:boolean;structuredContent?:{result:T};content?:Array<{text?:string}>};error?:{message?:string}}).at(-1)??JSON.parse(raw) as {result?:{isError?:boolean;structuredContent?:{result:T};content?:Array<{text?:string}>};error?:{message?:string}};if(data.error)throw new Error(data.error.message??`Remote MCP ${name} returned an error`);if(data.result?.isError)throw new Error(data.result.content?.map(value=>value.text).join('\n')??`Remote MCP ${name} tool failed`);const structured=data.result?.structuredContent?.result;if(structured!==undefined)return structured;const text=data.result?.content?.[0]?.text;if(!text)throw new Error(`Remote MCP ${name} returned no result`);return JSON.parse(text) as T;}
 function required(name:string){const value=process.env[name];if(!value)throw new Error(`${name} is required`);return value;}
+
+function requiredEndpoint():string{
+  const value=process.env['AUTOPILOT_REMOTE_MCP_URL'];
+  if(!value)throw new Error('AUTOPILOT_REMOTE_MCP_URL is required (e.g. https://<project-ref>.supabase.co/functions/v1/mcp)');
+  return value;
+}

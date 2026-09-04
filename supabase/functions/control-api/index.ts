@@ -129,7 +129,54 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='api-request'&&request.method==='POST')return json(await apiRequest(runtime,parts[3],await body()),200,cors);
   throw new NotFound('Edge Control API route not found');}
 
-async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awaited<ReturnType<typeof authenticatedOperator>>){const allProjects=await runtime.service.projectList();let projects=allProjects;if(viewer.role!=='SUPERADMIN'){const memberships=await fetch(`${runtime.url}/rest/v1/autopilot_project_memberships?select=project_id&user_id=eq.${encodeURIComponent(viewer.id)}`,{headers:{apikey:runtime.serviceKey,authorization:`Bearer ${runtime.serviceKey}`}}).then(value=>value.json()) as {project_id:string}[];const allowed=new Set(memberships.map(value=>value.project_id));projects=allProjects.filter(project=>allowed.has(project.id));}const cards=await Promise.all(projects.map(async project=>{const snapshot=await runtime.service.projectSnapshot(project.id);const repository=snapshot.resources.find(value=>value.type==='GITHUB_REPOSITORY');const database=snapshot.resources.find(value=>value.type==='DATABASE');const events=snapshot.audit.slice(-5).reverse();return {id:project.id,name:project.name,environment:project.environment,autonomyMode:project.autonomyMode,status:project.status,repository:repository?.externalReference,databaseProvider:database?.provider,databaseProject:database?.externalReference,taskSource:project.sourceType,createdAt:project.createdAt,lastActivity:events[0]?.timestamp,tasks:snapshot.tasks.map(task=>({...task,artifactCount:snapshot.artifacts.filter(value=>value.taskId===task.id).length,branch:snapshot.runs.filter(value=>value.taskId===task.id).at(-1)?.branch,commitSha:snapshot.runs.filter(value=>value.taskId===task.id).at(-1)?.commitSha})),runs:snapshot.runs,latestCi:snapshot.artifacts.filter(value=>value.kind==='CI_REPORT').at(-1)?.content,warningCount:snapshot.tasks.filter(value=>['BLOCKED','FAILED'].includes(value.state)).length,recentEvents:events};}));const tasks=cards.flatMap(value=>value.tasks),runs=cards.flatMap(value=>value.runs),events=cards.flatMap(value=>value.recentEvents).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).slice(0,12);return {generatedAt:new Date().toISOString(),summary:{projects:cards.length,activeTasks:tasks.filter(value=>!['READY','FAILED','BLOCKED'].includes(value.state)).length,blocked:tasks.filter(value=>value.state==='BLOCKED').length,failed:tasks.filter(value=>value.state==='FAILED').length,ready:tasks.filter(value=>value.state==='READY').length,runningRuns:runs.filter(value=>value.status==='RUNNING').length,warnings:cards.reduce((sum,value)=>sum+value.warningCount,0)},projects:cards,events};}
+// The console dashboard polls this endpoint continuously from every open tab, so its cost is
+// multiplied by tab-seconds, not by operator actions. It used to build each card from
+// `projectSnapshot`, which lists every artifact WITH its inline content and the project's entire
+// audit trail -- then used only per-task artifact counts, the newest CI report, and the last five
+// events. That discarded almost everything it transferred, on a loop, and was the dominant
+// consumer of the Supabase egress allowance that the old project ultimately exceeded.
+//
+// The reads below are each bounded by what the card actually renders: identity-only artifact
+// digests for the counts, one artifact for the CI badge, five audit events for the activity feed.
+// A project's recorded output can now grow without changing this response's size.
+async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awaited<ReturnType<typeof authenticatedOperator>>){
+  const allProjects=await runtime.service.projectList();
+  let projects=allProjects;
+  if(viewer.role!=='SUPERADMIN'){
+    const memberships=await fetch(`${runtime.url}/rest/v1/autopilot_project_memberships?select=project_id&user_id=eq.${encodeURIComponent(viewer.id)}`,{headers:{apikey:runtime.serviceKey,authorization:`Bearer ${runtime.serviceKey}`}}).then(value=>value.json()) as {project_id:string}[];
+    const allowed=new Set(memberships.map(value=>value.project_id));
+    projects=allProjects.filter(project=>allowed.has(project.id));
+  }
+  const cards=await Promise.all(projects.map(async project=>{
+    const [resources,tasks,runs,digests,latestCiArtifact,events]=await Promise.all([
+      runtime.store.listResources(project.id),
+      runtime.store.listTasks(project.id),
+      runtime.store.listRuns(project.id),
+      runtime.store.listArtifactDigests(project.id),
+      runtime.store.latestArtifactOfKind(project.id,'CI_REPORT'),
+      // Already newest-first from the store, which is the order the feed renders in.
+      runtime.store.listRecentAudit(project.id,5),
+    ]);
+    const repository=resources.find(value=>value.type==='GITHUB_REPOSITORY');
+    const database=resources.find(value=>value.type==='DATABASE');
+    // An externalized CI report has no inline content to show; the card renders the badge from
+    // whatever is present, exactly as it did when the artifact arrived via the snapshot.
+    const latestCi=latestCiArtifact?.content;
+    return {
+      id:project.id,name:project.name,environment:project.environment,autonomyMode:project.autonomyMode,status:project.status,
+      repository:repository?.externalReference,databaseProvider:database?.provider,databaseProject:database?.externalReference,
+      taskSource:project.sourceType,createdAt:project.createdAt,lastActivity:events[0]?.timestamp,
+      tasks:tasks.map(task=>({...task,artifactCount:digests.filter(value=>value.taskId===task.id).length,branch:runs.filter(value=>value.taskId===task.id).at(-1)?.branch,commitSha:runs.filter(value=>value.taskId===task.id).at(-1)?.commitSha})),
+      runs,
+      latestCi,
+      warningCount:tasks.filter(value=>['BLOCKED','FAILED'].includes(value.state)).length,
+      recentEvents:events,
+    };
+  }));
+  const tasks=cards.flatMap(value=>value.tasks),runs=cards.flatMap(value=>value.runs);
+  const events=cards.flatMap(value=>value.recentEvents).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).slice(0,12);
+  return {generatedAt:new Date().toISOString(),summary:{projects:cards.length,activeTasks:tasks.filter(value=>!['READY','FAILED','BLOCKED'].includes(value.state)).length,blocked:tasks.filter(value=>value.state==='BLOCKED').length,failed:tasks.filter(value=>value.state==='FAILED').length,ready:tasks.filter(value=>value.state==='READY').length,runningRuns:runs.filter(value=>value.status==='RUNNING').length,warnings:cards.reduce((sum,value)=>sum+value.warningCount,0)},projects:cards,events};
+}
 
 // Maps an authenticated console operator onto the principal SuperadminService expects. Role is
 // carried through unchanged, so the service's own SUPERADMIN gate still decides what is allowed.

@@ -1,8 +1,8 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { Conflict } from '../../core/src/errors.js';
-import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
@@ -32,6 +32,17 @@ export class PostgresStateStore implements StateStore {
   async updateArtifact(v:Artifact){await this.db.update(s.artifacts).set({status:v.status,data:v}).where(and(eq(s.artifacts.id,v.id),eq(s.artifacts.projectId,v.projectId)));return v;}
   async getArtifact(projectId:string,id:string){return data<Artifact>((await this.db.select().from(s.artifacts).where(and(eq(s.artifacts.id,id),eq(s.artifacts.projectId,projectId))).limit(1))[0]);}
   async listArtifacts(projectId:string,taskId?:string){const rows=taskId?await this.db.select().from(s.artifacts).where(and(eq(s.artifacts.projectId,projectId),eq(s.artifacts.taskId,taskId))):await this.db.select().from(s.artifacts).where(eq(s.artifacts.projectId,projectId));return rows.map(r=>r.data as Artifact);}
+  // Selects the indexed identity columns only. `data` -- which holds the artifact's inline content
+  // up to the externalization threshold -- is never read, so this stays flat in cost as a
+  // project's recorded output grows.
+  async listArtifactDigests(projectId:string):Promise<ArtifactDigest[]>{
+    const rows=await this.db.select({id:s.artifacts.id,projectId:s.artifacts.projectId,taskId:s.artifacts.taskId,runId:s.artifacts.runId,kind:s.artifacts.kind,createdAt:s.artifacts.createdAt}).from(s.artifacts).where(eq(s.artifacts.projectId,projectId)).orderBy(s.artifacts.createdAt);
+    return rows.map(r=>({id:r.id,projectId:r.projectId,...(r.taskId?{taskId:r.taskId}:{}),...(r.runId?{runId:r.runId}:{}),...(r.kind?{kind:r.kind}:{}),createdAt:r.createdAt.toISOString()}));
+  }
+  async latestArtifactOfKind(projectId:string,kind:string){
+    const rows=await this.db.select({data:s.artifacts.data}).from(s.artifacts).where(and(eq(s.artifacts.projectId,projectId),eq(s.artifacts.kind,kind))).orderBy(desc(s.artifacts.createdAt)).limit(1);
+    return rows[0]?.data as Artifact|undefined;
+  }
   async saveRun(v:Run){await this.db.insert(s.runs).values({id:v.id,projectId:v.projectId,taskId:v.taskId,operationId:v.operationId,data:v,createdAt:new Date(v.startedAt)}).onConflictDoNothing();return (await this.findRunByOperation(v.projectId,v.operationId))??v;}
   async updateRun(v:Run){await this.db.update(s.runs).set({data:v}).where(and(eq(s.runs.id,v.id),eq(s.runs.projectId,v.projectId)));return v;}
   async getRun(projectId:string,id:string){return data<Run>((await this.db.select().from(s.runs).where(and(eq(s.runs.id,id),eq(s.runs.projectId,projectId))).limit(1))[0]);}
@@ -50,6 +61,7 @@ export class PostgresStateStore implements StateStore {
   async appendAudit(v:AuditEvent){await this.db.insert(s.auditEvents).values({id:v.id,projectId:v.projectId,data:v,createdAt:new Date(v.timestamp)});}
   async getAudit(projectId:string,id:string){return data<AuditEvent>((await this.db.select().from(s.auditEvents).where(and(eq(s.auditEvents.id,id),eq(s.auditEvents.projectId,projectId))).limit(1))[0]);}
   async listAudit(projectId:string){return (await this.db.select().from(s.auditEvents).where(eq(s.auditEvents.projectId,projectId)).orderBy(s.auditEvents.createdAt)).map(r=>r.data as AuditEvent);}
+  async listRecentAudit(projectId:string,limit:number){return (await this.db.select({data:s.auditEvents.data}).from(s.auditEvents).where(eq(s.auditEvents.projectId,projectId)).orderBy(desc(s.auditEvents.createdAt)).limit(limit)).map(r=>r.data as AuditEvent);}
   async upsertSystemSetting(v:SystemSetting){await this.pool.query('insert into system_settings(key,data,updated_at) values($1,$2,$3) on conflict(key) do update set data=excluded.data,updated_at=excluded.updated_at',[v.key,v,v.updatedAt]);return v;}
   async getSystemSetting(key:string){const r=await this.pool.query<{data:SystemSetting}>('select data from system_settings where key=$1 limit 1',[key]);return r.rows[0]?.data;}
   async listSystemSettings(){return (await this.pool.query<{data:SystemSetting}>('select data from system_settings order by key')).rows.map(v=>v.data);}
