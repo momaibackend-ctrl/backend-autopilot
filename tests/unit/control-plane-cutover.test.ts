@@ -335,3 +335,20 @@ describe("product isolation: the cutover surface stays generic", () => {
     expect(runner).not.toContain("new SupabaseStorageArtifactBlobStore(");
   });
 });
+
+// The workflows moved to the next project, but the local developer entry points did not: the seed
+// fixture kept naming the retired Supabase project and a repository that has since been deleted.
+// Nothing failed, because a stale identifier here only surfaces as an opaque 401 or an E2E console
+// showing resources that no longer exist. These assertions make that stale-by-omission case loud.
+describe("local developer entry points name the live control plane, not the retired one", () => {
+  const seed = readFileSync(join(root, "scripts/seed-console-e2e.ts"), "utf8");
+
+  it("seeds no retired Supabase project reference", () => {
+    expect(seed).not.toContain(OLD_SUPABASE_PROJECT_REF);
+  });
+
+  it("seeds only repositories that still exist", () => {
+    // `momnabackend` was a separate repository from `momna-backend` and has been deleted.
+    expect(seed).not.toMatch(/momaibackend-ctrl\/momnabackend\b/);
+  });
+});
