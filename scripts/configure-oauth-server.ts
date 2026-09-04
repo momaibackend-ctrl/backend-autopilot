@@ -46,20 +46,47 @@ const desired = {
 const endpoint = `https://api.supabase.com/v1/projects/${projectRef}/config/auth`;
 const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
 
-const patch = await fetch(endpoint, { method: 'PATCH', headers, body: JSON.stringify(desired) });
-if (!patch.ok) throw new Error(`Auth config PATCH failed (${patch.status}): ${(await patch.text()).slice(0, 300)}`);
+// Read first, write only on drift. The deploy runs on every control-plane deploy, and the
+// deploy's own access token is scoped to what deploying needs -- it can push Edge Functions but
+// is not privileged for the Management API's auth-config endpoint. Blind-PATCHing therefore
+// failed a deploy whose configuration was already correct. Asserting first means the common case
+// (nothing changed) needs no privilege at all, while a real drift still stops the deploy.
+const before = await read();
+const drift = Object.entries(desired).filter(([key, value]) => before[key] !== value);
 
-// Re-read rather than trusting the PATCH response: a field the API silently ignores would
-// otherwise look applied, which is the failure mode this whole script exists to catch.
-const verify = await fetch(endpoint, { headers });
-if (!verify.ok) throw new Error(`Auth config re-read failed (${verify.status}): ${(await verify.text()).slice(0, 300)}`);
-const live = await verify.json() as Record<string, unknown>;
+if (!drift.length) {
+  console.log(JSON.stringify({ level: 'info', event: 'oauth_server.already_configured', projectRef, asserted: Object.keys(desired) }));
+} else {
+  const patch = await fetch(endpoint, { method: 'PATCH', headers, body: JSON.stringify(desired) });
+  if (!patch.ok) {
+    const detail = (await patch.text()).slice(0, 300);
+    if (patch.status === 401 || patch.status === 403)
+      throw new Error(
+        `The OAuth server configuration has drifted and this token is not privileged to correct it (${patch.status}). ` +
+        `Apply these fields to project ${projectRef} with an account-level Supabase access token -- ` +
+        `\`SUPABASE_PROJECT_ID=${projectRef} SUPABASE_ACCESS_TOKEN=<privileged token> pnpm oauth:configure\` -- ` +
+        `or set them in the Dashboard: ${drift.map(([key, value]) => `${key} -> ${JSON.stringify(value)}`).join('; ')}. Provider detail: ${detail}`,
+      );
+    throw new Error(`Auth config PATCH failed (${patch.status}): ${detail}`);
+  }
+  // Re-read rather than trusting the PATCH response: a field the API silently ignores would
+  // otherwise look applied, which is the failure mode this whole script exists to catch.
+  const after = await read();
+  const remaining = Object.entries(desired).filter(([key, value]) => after[key] !== value);
+  if (remaining.length)
+    throw new Error(`Auth config did not take for: ${remaining.map(([key, value]) => `${key} (wanted ${JSON.stringify(value)}, got ${JSON.stringify(after[key])})`).join('; ')}`);
+  console.log(JSON.stringify({ level: 'info', event: 'oauth_server.configured', projectRef, corrected: drift.map(([key]) => key) }));
+}
 
-const drift = Object.entries(desired).filter(([key, value]) => live[key] !== value);
-if (drift.length)
-  throw new Error(`Auth config did not take for: ${drift.map(([key, value]) => `${key} (wanted ${JSON.stringify(value)}, got ${JSON.stringify(live[key])})`).join('; ')}`);
-
-console.log(JSON.stringify({ level: 'info', event: 'oauth_server.configured', projectRef, applied: desired }));
+async function read(): Promise<Record<string, unknown>> {
+  const response = await fetch(endpoint, { headers });
+  if (!response.ok)
+    throw new Error(
+      `Could not read the auth configuration of project ${projectRef} (${response.status}): ${(await response.text()).slice(0, 300)}. ` +
+      `The OAuth server settings the ChatGPT connector depends on cannot be verified, so this deploy is not considered healthy.`,
+    );
+  return await response.json() as Record<string, unknown>;
+}
 
 function required(name: string): string {
   const value = process.env[name];
