@@ -115,8 +115,6 @@ describe("canonical Supabase deploy targets only the next project", () => {
       'AUTOPILOT_CONTROL_REF="main"',
       'AUTOPILOT_EXECUTION_WORKFLOW="autopilot-execution.yml"',
       `AUTOPILOT_SYSTEM_PROJECT_ID="${SYSTEM_PROJECT_ID}"`,
-      'AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"',
-      'AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"',
       `AUTOPILOT_OPERATOR_PROJECT_IDS="${SYSTEM_PROJECT_ID}"`,
       `AUTOPILOT_MCP_PROJECT_IDS="${SYSTEM_PROJECT_ID}"`,
       'AUTOPILOT_CONSOLE_ORIGINS="https://momaibackend-ctrl.github.io"',
@@ -125,6 +123,10 @@ describe("canonical Supabase deploy targets only the next project", () => {
       'AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"',
     ])
       expect(source).toContain(expected);
+    // The two email allowlists are asserted separately, by membership rather than by exact string:
+    // they legitimately gained a second identity when the ChatGPT connector's OAuth account was
+    // admitted, and pinning them verbatim here would turn every future access change into an
+    // unrelated-looking failure in a test about carrying configuration across the cutover.
   });
 
   it("deploys and health-checks all three Edge Functions' shared runtime, then records a NEXT-lineage rollback point", () => {
@@ -232,6 +234,39 @@ describe("the operator console on GitHub Pages is built against the next project
   it("deploys from main only -- no retired release branch keeps a stale build alive", () => {
     expect(source).toContain("branches: [main]");
     expect(source).not.toContain("autopilot/v0.5-superadmin-mcp");
+  });
+});
+
+describe("both operator identities the deployment actually uses are admitted", () => {
+  // The allowlists are the only thing that admits an identity. autopilot_operators does not
+  // survive a Supabase cutover -- its rows are keyed by auth.users.id and a new project mints new
+  // ids -- so the Edge function self-enrols an allowlisted email on first sign-in and rejects
+  // everything else. Dropping an entry here does not fail any build; it fails a human at a login
+  // screen, and ChatGPT's connector with a bare 401.
+  const source = executable(workflow("supabase.yml"));
+  const operators = /AUTOPILOT_OPERATOR_EMAILS="([^"]*)"/.exec(source)?.[1]?.split(",") ?? [];
+  const superadmins = /AUTOPILOT_SUPERADMIN_EMAILS="([^"]*)"/.exec(source)?.[1]?.split(",") ?? [];
+  // The account the infrastructure belongs to, and the Google identity the ChatGPT connector
+  // completes its OAuth authorization as.
+  const required = ["momaibackend@gmail.com", "annetdenr@gmail.com"];
+
+  it("parses both allowlists out of the deploy, so a renamed variable cannot pass vacuously", () => {
+    expect(operators.length).toBeGreaterThan(0);
+    expect(superadmins.length).toBeGreaterThan(0);
+  });
+
+  it("admits every identity the deployment is actually operated from", () => {
+    for (const email of required) expect(operators).toContain(email);
+  });
+
+  it("grants SUPERADMIN to both, which the connector's OAuth path requires", () => {
+    // authenticateOauthSuperadmin returns undefined -- a 401 -- for a resolved operator whose role
+    // is not SUPERADMIN, so an OPERATOR-only entry admits the console but not a single tool call.
+    for (const email of required) expect(superadmins).toContain(email);
+  });
+
+  it("keeps every superadmin an operator too, since the operator gate is checked first", () => {
+    for (const email of superadmins) expect(operators).toContain(email);
   });
 });
 

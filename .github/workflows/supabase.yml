@@ -125,8 +125,22 @@ jobs:
           AUTOPILOT_CONTROL_REF="main"
           AUTOPILOT_EXECUTION_WORKFLOW="autopilot-execution.yml"
           AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
-          AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
-          AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"
+          # Two accounts, deliberately. The infrastructure -- GitHub, Supabase, Cloudflare -- belongs
+          # to momaibackend@gmail.com, and that is the account the console is normally operated
+          # from. The ChatGPT connector, however, completes its OAuth authorization as
+          # annetdenr@gmail.com, because that is the Google identity signed in to ChatGPT. Both
+          # must therefore be SUPERADMIN: the MCP function's OAuth path resolves the bearer token
+          # to an operator row and returns 401 unauthorized for anything that is not SUPERADMIN
+          # (authenticateOauthSuperadmin), so an OPERATOR-only entry would let that account open
+          # the console but leave every connector tool call rejected.
+          #
+          # These lists are the ONLY thing that admits an identity: neither project's
+          # autopilot_operators table survives a Supabase cutover, since its rows are keyed by
+          # auth.users.id and a new project mints new ids. The Edge function self-enrols an
+          # allowlisted email on its first sign-in, which is why the new project came up with an
+          # empty operators table and rejected both the console and the connector.
+          AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com,annetdenr@gmail.com"
+          AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com,annetdenr@gmail.com"
           AUTOPILOT_OPERATOR_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_MCP_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_CONSOLE_ORIGINS="https://momaibackend-ctrl.github.io"
