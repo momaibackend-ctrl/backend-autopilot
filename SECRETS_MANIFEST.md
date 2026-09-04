@@ -25,3 +25,24 @@ The project-scoped `SECRETS_MANIFEST` artifact contains the same references and 
 | `AUTOPILOT_RECONCILE_TOKEN` | Supabase Edge and reconciliation workflow only | scheduled recovery endpoint | rotate both endpoints |
 
 Local copies use the gitignored `.env` under their `AUTOPILOT_CONTROL_*` names. Deployed copies are server-side only. Workflow inputs contain only a job UUID, never any value above.
+
+`AUTOPILOT_CONTROL_DATABASE_URL`, `AUTOPILOT_SUPABASE_URL` and `AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY` are **retired** as of the control-plane cutover: no workflow references them any more. They are kept in the table above only as a record of what the pre-cutover deployment used, and can be deleted from repository settings once the historical artifact blobs have been copied into R2.
+
+## Next control-plane references (post-cutover canonical deployment)
+
+This manifest records which references the canonical workflows *require*; it cannot observe whether a given GitHub secret currently exists. Each workflow reports that itself, in a preflight step that prints missing secret **names** only and refuses to contact any provider until they are all present.
+
+Only the five `AUTOPILOT_NEXT_*` references below are new. The runtime reuses the existing `AUTOPILOT_GITHUB_TOKEN`, `AUTOPILOT_MCP_TOKEN`, `AUTOPILOT_SUPERADMIN_MCP_TOKEN` and `AUTOPILOT_RECONCILE_TOKEN` unchanged.
+
+| Reference | Provider/storage | Scope | Lifecycle |
+|---|---|---|---|
+| `AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN` | GitHub Actions secret | `supabase` CLI auth for the next project only | revoke through official Supabase account settings |
+| `AUTOPILOT_NEXT_SUPABASE_URL` | GitHub Actions secret | next project's API URL; `supabase.yml` derives and validates the 20-character project ref from its host, and `autopilot-reconcile.yml` builds `/functions/v1/reconcile` from it, so no separate project-ref or control-API-URL secret exists | replaced only if the next project itself changes |
+| `AUTOPILOT_NEXT_DATABASE_URL` | GitHub Actions secret | next control-plane PostgreSQL: `pnpm db:migrate` in the deploy, and `DATABASE_URL` for `autopilot-execution.yml` and `autopilot-epic-verification.yml` | rotate in the next Supabase project |
+| `AUTOPILOT_NEXT_R2_ACCOUNT_ID` / `AUTOPILOT_NEXT_R2_BUCKET_NAME` / `AUTOPILOT_NEXT_R2_ACCESS_KEY_ID` / `AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY` | GitHub Actions secrets; set as the next project's Edge secrets `AUTOPILOT_R2_*`, and passed directly to the execution and epic-verification runners | `R2ArtifactBlobStore` on both the Edge and runner sides | rotate in Cloudflare R2 |
+
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are **not** in this table and must never be set through `supabase secrets set`: Supabase reserves the `SUPABASE_` prefix and injects both into every hosted Edge Function automatically, scoped to the project the function runs in. `createEdgeRuntime` reads them with `Deno.env.get` and therefore picks up the next project's own pair once deployed there.
+
+`AUTOPILOT_LEGACY_SUPABASE_URL` / `AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY` are supported by `readLegacySupabaseConfigFromEnv` but are **deliberately not configured by any workflow** for the first cutover. The previous Supabase project is suspended, so requiring them would make a dead provider a boot dependency of the new control plane. Every new externalized artifact is written to R2; reads of pre-cutover `storage.provider = "supabase"` references fail closed with a typed `CredentialMissing` until those historical blobs are separately copied into R2. That is a known, bounded limitation, not a fallback to the old project.
+
+The canonical deploy is `workflow_dispatch`-only and requires its `confirm` input to equal exactly `DEPLOY_NEXT_SUPABASE`. Its rollback point is the `mcp-next-last-good` tag, scoped to the next project's own deployment lineage; the pre-cutover `mcp-last-good` tag is never redeployed into it. No value from any table above is ever printed by any workflow.

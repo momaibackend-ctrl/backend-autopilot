@@ -1,4 +1,8 @@
 name: Backend Autopilot reconciliation
+# Bound to the NEXT control plane. The endpoint is built from AUTOPILOT_NEXT_SUPABASE_URL rather
+# than from the old AUTOPILOT_CONTROL_API_URL secret, so reconciliation follows the cutover
+# automatically and there is no second, independently drifting record of where the control plane
+# lives. The reconcile token itself is unchanged.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -14,10 +18,21 @@ jobs:
     steps:
       - name: Reconcile terminated execution jobs
         env:
-          CONTROL_URL: ${{ secrets.AUTOPILOT_CONTROL_API_URL }}
+          NEXT_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
           RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
         run: |
-          RECONCILE_URL="${CONTROL_URL%/control-api}/reconcile"
+          if [ -z "$NEXT_SUPABASE_URL" ]; then
+            echo "::error::Required GitHub secret is not configured: AUTOPILOT_NEXT_SUPABASE_URL" >&2
+            exit 1
+          fi
+          # Same strict, fully anchored validation the canonical deploy uses to derive the project
+          # ref, so a malformed or hostile value can never redirect the reconcile token elsewhere.
+          # The secret value is never printed.
+          if ! printf '%s' "$NEXT_SUPABASE_URL" | grep -Eq '^https://[a-z0-9]{20}\.supabase\.co/?$'; then
+            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL is not a Supabase project URL. Expected exactly https://<20-char-lowercase-ref>.supabase.co (one optional trailing slash)." >&2
+            exit 1
+          fi
+          RECONCILE_URL="${NEXT_SUPABASE_URL%/}/functions/v1/reconcile"
           curl --fail-with-body --silent --show-error \
             -X POST "$RECONCILE_URL" \
             -H "Authorization: Bearer $RECONCILE_TOKEN"
