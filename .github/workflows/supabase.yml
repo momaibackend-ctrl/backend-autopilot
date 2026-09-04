@@ -139,6 +139,14 @@ jobs:
           AUTOPILOT_R2_ACCESS_KEY_ID="$AUTOPILOT_R2_ACCESS_KEY_ID"
           AUTOPILOT_R2_SECRET_ACCESS_KEY="$AUTOPILOT_R2_SECRET_ACCESS_KEY"
       - run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Assert the GoTrue OAuth 2.1 server configuration this connector depends on
+        # supabase/config.toml documents these settings but CANNOT deploy them: `supabase config
+        # push` diffs the entire remote [auth] block against that file, so pushing it would reset
+        # every production setting the file does not declare. Unenforced documentation is how the
+        # new project came up with dynamic client registration disabled (ChatGPT's connector then
+        # fails registration with a 403 and never reaches consent) and an authorization path that
+        # resolved to a 404 on Pages. This step PATCHes only the named fields and re-reads them.
+        run: pnpm oauth:configure
       - name: Health-check the new deployment (tools/list + system_health)
         id: health
         run: pnpm mcp:health-check

@@ -13,7 +13,7 @@ The canonical source is the public sandbox repository `momaibackend-ctrl/backend
 - `autopilot-execution.yml` claims one durable job, clones only its registered repository, installs dependencies, changes a deterministic task branch, tests, reviews, pushes and records evidence.
 - `autopilot-reconcile.yml` periodically repairs terminal workflow states that could not write their callback.
 
-Remote state uses project `qtyfdzjzmgxtrarpgcmn`: PostgreSQL stores envelopes and relational ownership metadata; the private `autopilot-artifacts` Storage bucket stores large blobs. Jobs have operation-id idempotency, per-task distributed claim/lease, exact branch/SHA recovery and bounded repair attempts. No persistent workspace volume or always-on application process exists.
+Remote state uses project `shzdgtatfonznkprnxrz`: PostgreSQL stores envelopes and relational ownership metadata; the private `autopilot-artifacts` Storage bucket stores large blobs. Jobs have operation-id idempotency, per-task distributed claim/lease, exact branch/SHA recovery and bounded repair attempts. No persistent workspace volume or always-on application process exists.
 
 Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The browser receives only the Supabase URL and publishable key. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
 
@@ -93,7 +93,7 @@ Passwords are never accepted as persistent inputs. Generated secrets are replace
 Production MCP is an authenticated, stateless Streamable HTTP endpoint:
 
 ```text
-https://qtyfdzjzmgxtrarpgcmn.supabase.co/functions/v1/mcp
+https://shzdgtatfonznkprnxrz.supabase.co/functions/v1/mcp
 Authorization: Bearer <AUTOPILOT_SUPERADMIN_MCP_TOKEN>
 ```
 
@@ -132,6 +132,6 @@ pnpm check
 
 External live database tests run when `AUTOPILOT_LIVE_DATABASE_URL` is explicitly supplied. GitHub/Supabase live bootstrap is never triggered by the ordinary test suite.
 
-The local E2E creates an isolated Git repository, intentionally fails security tests, commits a repair on the same task branch, reruns six suites, performs IndependentReview, and proves the formal `READY` gates. The completed live proof additionally used repository `momaibackend-ctrl/momnabackend`, Supabase project `qtyfdzjzmgxtrarpgcmn`, exact commit `6314f9b903cff61887b08f89c2d7754f60204f57`, GitHub Actions run `32264809746`, and pull request [#1](https://github.com/momaibackend-ctrl/momnabackend/pull/1).
+The local E2E creates an isolated Git repository, intentionally fails security tests, commits a repair on the same task branch, reruns six suites, performs IndependentReview, and proves the formal `READY` gates. The completed live proof additionally used repository `momaibackend-ctrl/momnabackend`, Supabase project `qtyfdzjzmgxtrarpgcmn` (the pre-cutover control plane, now retired), exact commit `6314f9b903cff61887b08f89c2d7754f60204f57`, GitHub Actions run `32264809746`, and pull request [#1](https://github.com/momaibackend-ctrl/momnabackend/pull/1).
 
 See [OPERATOR_CONSOLE.md](OPERATOR_CONSOLE.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md), [THREAT_MODEL.md](THREAT_MODEL.md), [RUNBOOK.md](RUNBOOK.md), and [SETUP_REQUIRED.md](SETUP_REQUIRED.md).

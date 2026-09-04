@@ -1,5 +1,5 @@
 import { Conflict } from '../../core/src/errors.js';
-import type { CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
@@ -31,6 +31,11 @@ export class MemoryStateStore implements StateStore {
   async updateArtifact(v:Artifact){this.artifacts.set(v.id,structuredClone(v));return structuredClone(v);}
   async getArtifact(projectId:string,id:string){const v=this.artifacts.get(id);return v?.projectId===projectId?structuredClone(v):undefined;}
   async listArtifacts(projectId:string,taskId?:string){return clones([...this.artifacts.values()].filter(a=>a.projectId===projectId&&(!taskId||a.taskId===taskId)));}
+  // In memory the whole artifact is already in hand, so the digest is a projection rather than a
+  // cheaper query -- the point here is only that this store satisfies the same contract the
+  // PostgreSQL stores implement as a genuine column projection.
+  async listArtifactDigests(projectId:string):Promise<ArtifactDigest[]>{return [...this.artifacts.values()].filter(a=>a.projectId===projectId).map(digestOf);}
+  async latestArtifactOfKind(projectId:string,kind:string){return clone([...this.artifacts.values()].filter(a=>a.projectId===projectId&&a.kind===kind).sort(byCreatedAt).at(-1));}
   async saveRun(v:Run){const duplicate=await this.findRunByOperation(v.projectId,v.operationId);if(duplicate)return duplicate;this.runs.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateRun(v:Run){this.runs.set(v.id,structuredClone(v));return structuredClone(v);}
   async getRun(projectId:string,id:string){const v=this.runs.get(id);return v?.projectId===projectId?structuredClone(v):undefined;}
@@ -46,6 +51,7 @@ export class MemoryStateStore implements StateStore {
   async transitionTask(task:Task,transition:Transition){this.tasks.set(task.id,structuredClone(task));this.transitions.push(structuredClone(transition));return structuredClone(task);}
   async appendTransition(v:Transition){this.transitions.push(structuredClone(v));} async listTransitions(taskId:string){return clones(this.transitions.filter(t=>t.taskId===taskId));}
   async appendAudit(v:AuditEvent){this.audit.push(structuredClone(v));} async listAudit(projectId:string){return clones(this.audit.filter(a=>a.projectId===projectId));}
+  async listRecentAudit(projectId:string,limit:number){return clones(this.audit.filter(a=>a.projectId===projectId).slice(-limit).reverse());}
   async getAudit(projectId:string,id:string){return clone(this.audit.find(a=>a.projectId===projectId&&a.id===id));}
   async upsertSystemSetting(v:SystemSetting){this.settings.set(v.key,structuredClone(v));return structuredClone(v);} async getSystemSetting(key:string){return clone(this.settings.get(key));} async listSystemSettings(){return clones([...this.settings.values()]);} async deleteSystemSetting(key:string){this.settings.delete(key);}
   async upsertConsoleScreen(v:ConsoleScreen){this.screens.set(v.screenId,structuredClone(v));return structuredClone(v);} async getConsoleScreen(id:string){return clone(this.screens.get(id));} async listConsoleScreens(){return clones([...this.screens.values()]);} async deleteConsoleScreen(id:string){this.screens.delete(id);}
@@ -84,3 +90,8 @@ export class MemoryStateStore implements StateStore {
 }
 function clone<T>(v:T|undefined):T|undefined{return v===undefined?undefined:structuredClone(v);}
 function clones<T>(v:T[]):T[]{return structuredClone(v);}
+
+function digestOf(artifact:Artifact):ArtifactDigest{
+  return {id:artifact.id,projectId:artifact.projectId,...(artifact.taskId?{taskId:artifact.taskId}:{}),...(artifact.runId?{runId:artifact.runId}:{}),...(artifact.kind?{kind:artifact.kind}:{}),createdAt:artifact.createdAt};
+}
+function byCreatedAt(a:{createdAt:string},b:{createdAt:string}){return a.createdAt.localeCompare(b.createdAt);}

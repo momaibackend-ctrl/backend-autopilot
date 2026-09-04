@@ -175,6 +175,107 @@ describe("epic verification is bound to the next control plane too", () => {
   });
 });
 
+describe("the operator console on GitHub Pages is built against the next project", () => {
+  // This is the workflow that actually decides which Supabase project the PUBLIC site talks to.
+  // Next inlines every NEXT_PUBLIC_* value into the exported JavaScript at build time, so the
+  // deployed bundle has no runtime configuration to correct: whatever this file passes to
+  // `pnpm build:console` is what momaibackend-ctrl.github.io/backend-autopilot/ will contact until
+  // the next deploy. Before the cutover it carried the old project's URL as a literal, which is
+  // precisely why updating the secrets left the live console still calling the suspended project.
+  const raw = workflow("pages.yml");
+  const source = executable(raw);
+
+  it("hardcodes no Supabase project URL at all, and no retired project ref anywhere", () => {
+    expect(source).not.toMatch(/[a-z0-9]{20}\.supabase\.co/);
+    expect(raw).not.toContain(OLD_SUPABASE_PROJECT_REF);
+  });
+
+  it("derives the console's Supabase URL and control-api URL from the one canonical secret", () => {
+    // The same secret supabase.yml derives the deploy ref from and autopilot-reconcile.yml builds
+    // its endpoint from, so console, control plane and reconciliation cannot land on different
+    // projects.
+    expect(source).toContain("secrets.AUTOPILOT_NEXT_SUPABASE_URL");
+    expect(source).toContain("NEXT_PUBLIC_SUPABASE_URL=$base");
+    expect(source).toContain("NEXT_PUBLIC_AUTOPILOT_CONTROL_API_URL=$base/functions/v1/control-api");
+  });
+
+  it("takes the publishable key from the next project's secret, not the retired one", () => {
+    expect(source).toContain("secrets.AUTOPILOT_NEXT_SUPABASE_PUBLISHABLE_KEY");
+    expect(source).not.toContain("secrets.AUTOPILOT_SUPABASE_PUBLISHABLE_KEY");
+  });
+
+  it("validates the URL with the same fully anchored pattern the deploy and reconcile use", () => {
+    // Unanchored, this would accept the /rest/v1/ form -- which supabase-js must never be given as
+    // a base URL, since it appends /rest/v1 itself -- as well as https://<ref>.supabase.co.evil.com.
+    expect(source).toContain(String.raw`'^https://[a-z0-9]{20}\.supabase\.co/?$'`);
+  });
+
+  it("fails the build rather than publishing a console with no or foreign Supabase configuration", () => {
+    // A blank NEXT_PUBLIC_SUPABASE_URL builds and deploys perfectly happily and produces a console
+    // that cannot sign anyone in, which is far harder to diagnose than a red workflow.
+    expect(source).toContain("AUTOPILOT_NEXT_SUPABASE_URL is not a Supabase project base URL");
+    expect(source).toContain("references a Supabase project other than the configured one");
+  });
+
+  it("asserts on the BUILT artifact, the only place the inlined project ref can be observed", () => {
+    expect(source).toMatch(/grep -rhoE '\[a-z0-9\]\{20\}\\.supabase\\.co' apps\/operator-console\/\.next-static/);
+  });
+
+  it("keeps the OAuth consent route that the authorization redirect lands on", () => {
+    expect(source).toContain("apps/operator-console/.next-static/oauth-consent/index.html");
+  });
+
+  it("still publishes under the repository base path, so the public URL is unchanged", () => {
+    expect(source).toContain("NEXT_PUBLIC_GITHUB_PAGES_BASE_PATH: /backend-autopilot");
+  });
+
+  it("deploys from main only -- no retired release branch keeps a stale build alive", () => {
+    expect(source).toContain("branches: [main]");
+    expect(source).not.toContain("autopilot/v0.5-superadmin-mcp");
+  });
+});
+
+describe("the polled console views read bounded data, not whole project histories", () => {
+  // The old Supabase project exceeded a 5 GB egress allowance by roughly eightfold. The cause was
+  // not any single large transfer: the console dashboard polls /v1/console/overview from every open
+  // tab, and that endpoint built each card from `projectSnapshot` -- every artifact WITH its inline
+  // content, plus the project's entire audit trail -- to render artifact counts, one CI badge and
+  // five recent events. Cost scaled with recorded history multiplied by tab-seconds. The new
+  // project has the same allowance, so these are the assertions that keep it from repeating.
+  const controlApi = readFileSync(join(root, "supabase/functions/control-api/index.ts"), "utf8");
+  const overview = controlApi.slice(controlApi.indexOf("async function overview("), controlApi.indexOf("function consolePrincipal("));
+  const console_ = readFileSync(join(root, "apps/operator-console/app/components.tsx"), "utf8");
+
+  it("reads the overview function, so a rename cannot make this vacuously pass", () => {
+    expect(overview.length).toBeGreaterThan(0);
+    expect(overview).toContain("async function overview(");
+  });
+
+  it("no longer builds the polled overview from a full project snapshot", () => {
+    expect(overview).not.toContain("projectSnapshot");
+  });
+
+  it("takes artifact counts from content-free digests and the CI badge from one artifact", () => {
+    expect(overview).toContain("listArtifactDigests");
+    expect(overview).toContain("latestArtifactOfKind");
+    expect(overview).not.toContain("listArtifacts(");
+  });
+
+  it("takes the activity feed from a bounded audit read", () => {
+    expect(overview).toContain("listRecentAudit");
+    expect(overview).not.toContain("listAudit(");
+  });
+
+  it("suspends console polling while the tab is hidden", () => {
+    // A tab left open polls for as long as the browser runs, watched or not; at a five-second
+    // interval one forgotten background tab outweighs every real operator session.
+    expect(console_).toContain("visibilitychange");
+    expect(console_).toContain("document.hidden");
+    // Every polled view goes through the one helper, so none can reintroduce a bare interval.
+    expect(console_).not.toMatch(/setInterval\([^)]*5_000\)/);
+  });
+});
+
 describe("product isolation: the cutover surface stays generic", () => {
   // Backend Autopilot is a generic control plane, and it is never the backend of a connected
   // product (AGENTS.md, "Product boundary"). A connected product may exist only as project,
@@ -195,6 +296,7 @@ describe("product isolation: the cutover surface stays generic", () => {
     ".github/workflows/supabase.yml",
     ".github/workflows/autopilot-reconcile.yml",
     ".github/workflows/autopilot-epic-verification.yml",
+    ".github/workflows/pages.yml",
     "packages/adapters/r2/src/artifact-storage.ts",
     "packages/adapters/artifact-storage/src/router.ts",
     "packages/adapters/artifact-storage/src/wiring.ts",

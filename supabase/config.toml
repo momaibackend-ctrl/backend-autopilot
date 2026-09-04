@@ -7,6 +7,14 @@ project_id = "backend-autopilot"
 # (site_url, redirect allowlist, MFA, email confirmation, storage limits, etc.) to CLI defaults.
 # Change auth/storage config via the Supabase Management API (PATCH one field at a time) or the
 # Dashboard, then mirror the change here for documentation.
+#
+# The [auth.oauth_server] block below is the exception: it is ENFORCED, by
+# scripts/configure-oauth-server.ts, which the canonical Supabase deploy runs after every
+# `functions deploy`. That script PATCHes only these named fields and then re-reads them, so it
+# cannot reset anything this file does not declare. It exists because the values here were once
+# documentation alone, and the next Supabase project was provisioned with dynamic client
+# registration off and an authorization path that resolved to a 404 -- while this file said
+# otherwise. Change a value here and in that script together; the script is what actually ships.
 
 [auth.oauth_server]
 enabled = true
@@ -14,6 +22,7 @@ enabled = true
 # hosted project concatenates this path onto site_url literally (verified empirically), so a
 # dot-segment is required to land on .../backend-autopilot/oauth-consent/ once the browser
 # normalizes the resulting URL. The value must also start with "/" (server-side validation).
+# The Management API calls this same field oauth_server_authorization_path.
 authorization_url_path = "/../oauth-consent/"
 # Enabled so ChatGPT's custom connector (which self-registers via Dynamic Client Registration,
 # RFC 7591, since Supabase does not support the newer CIMD mechanism it prefers) can connect
