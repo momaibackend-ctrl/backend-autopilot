@@ -39,7 +39,7 @@ const resources: Array<Omit<Resource, "resourceId" | "createdAt">> = [
   {
     type: "GITHUB_REPOSITORY",
     provider: "github",
-    externalReference: "momaibackend-ctrl/momnabackend",
+    externalReference: "momaibackend-ctrl/momna-backend",
     projectId,
     environment: "SANDBOX",
     permissions: ["READ", "WRITE"],
@@ -49,7 +49,7 @@ const resources: Array<Omit<Resource, "resourceId" | "createdAt">> = [
   {
     type: "SUPABASE_PROJECT",
     provider: "supabase",
-    externalReference: "qtyfdzjzmgxtrarpgcmn",
+    externalReference: "shzdgtatfonznkprnxrz",
     projectId,
     environment: "SANDBOX",
     permissions: ["READ", "WRITE", "MIGRATE"],
@@ -59,7 +59,7 @@ const resources: Array<Omit<Resource, "resourceId" | "createdAt">> = [
   {
     type: "DATABASE",
     provider: "supabase",
-    externalReference: "supabase:qtyfdzjzmgxtrarpgcmn:postgres",
+    externalReference: "supabase:shzdgtatfonznkprnxrz:postgres",
     projectId,
     environment: "SANDBOX",
     permissions: ["READ", "MIGRATE"],
@@ -92,7 +92,7 @@ const task: Task = {
 };
 await store.createTask(task);
 const branch = "autopilot/LIVE-1-live-notes-crud-rest-api",
-  commitSha = "6314f9b903cff61887b08f89c2d7754f60204f57";
+  commitSha = "2c09c4e682d5be6ef675363e090e6c3cf79d2928";
 for (let index = 0; index < 3; index++) {
   const run: Run = {
     id: crypto.randomUUID(),
@@ -235,14 +235,14 @@ const values: Array<[ArtifactKind, unknown]> = [
     "CI_REPORT",
     {
       provider: "github",
-      repository: "momaibackend-ctrl/momnabackend",
+      repository: "momaibackend-ctrl/momna-backend",
       expectedSha: commitSha,
       ci: {
         success: true,
         status: "completed",
         conclusion: "success",
         headSha: commitSha,
-        url: "https://github.com/momaibackend-ctrl/momnabackend/actions/runs/32264809746",
+        url: "https://github.com/momaibackend-ctrl/momna-backend/actions/runs/33508697329",
       },
     },
   ],
@@ -277,7 +277,7 @@ const values: Array<[ArtifactKind, unknown]> = [
     "PULL_REQUEST_REPORT",
     {
       pullRequest: {
-        url: "https://github.com/momaibackend-ctrl/momnabackend/pull/1",
+        url: "https://github.com/momaibackend-ctrl/momna-backend/pull/58",
       },
     },
   ],

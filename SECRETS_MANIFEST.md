@@ -5,11 +5,24 @@ Values are intentionally omitted. The live sandbox uses only these references:
 | Reference | Provider/storage | Scope | Lifecycle |
 |---|---|---|---|
 | `AUTOPILOT_LIVE_SANDBOX_SUPABASE_ACCESS_TOKEN` | local gitignored `.env` | dedicated sandbox Supabase account | revoke through official Supabase account settings |
-| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DB_PASSWORD` | local gitignored `.env` | database project `qtyfdzjzmgxtrarpgcmn` | rotate through the registered Supabase project operation |
-| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DATABASE_URL` | local gitignored `.env` | database project `qtyfdzjzmgxtrarpgcmn` | regenerate after password rotation |
-| `AUTOPILOT_LIVE_DATABASE_URL` | GitHub Actions secret in `momaibackend-ctrl/momnabackend` | live E2E workflow only | replace or delete through repository settings/semantic adapter |
+| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DB_PASSWORD` | local gitignored `.env` | database project `qtyfdzjzmgxtrarpgcmn`; **retired** — still the pre-cutover project, because a Supabase database password cannot be read back through the Management API | rotate through the registered Supabase project operation |
+| `AUTOPILOT_BACKEND_AUTOPILOT_LIVE_SANDBOX_DATABASE_URL` | local gitignored `.env` | database project `qtyfdzjzmgxtrarpgcmn`; **retired** with the pair above. Local `pnpm db:migrate` would target the retired project; the canonical migration path is the deploy workflow's `AUTOPILOT_NEXT_DATABASE_URL` | regenerate after password rotation, against `shzdgtatfonznkprnxrz` |
+| `AUTOPILOT_LIVE_DATABASE_URL` | GitHub Actions secret in `momaibackend-ctrl/momnabackend` | live E2E workflow only; **gone** — that repository has been deleted, so this secret no longer exists anywhere | nothing to revoke; the record is kept only to explain the historical E2E evidence |
 
 The project-scoped `SECRETS_MANIFEST` artifact contains the same references and lifecycle metadata. Neither manifest contains credential values.
+
+## Local control-plane references
+
+The scripts that run from a developer machine rather than from Actions — `pnpm oauth:consent:e2e`, `pnpm pages:e2e`, `pnpm resource:register-self`, `pnpm live:sandbox` — read these from the gitignored `.env`. They are the local counterpart of the `AUTOPILOT_NEXT_*` Actions secrets and, since the cutover, resolve to `shzdgtatfonznkprnxrz`.
+
+| Reference | Provider/storage | Scope | Lifecycle |
+|---|---|---|---|
+| `AUTOPILOT_CONTROL_SUPABASE_URL` | local gitignored `.env` | next project's API base URL; the local equivalent of `AUTOPILOT_NEXT_SUPABASE_URL` | replaced only if the control-plane project itself changes |
+| `AUTOPILOT_SUPABASE_SANDBOX_PROJECT_REF` | local gitignored `.env` | the 20-character ref of the same project, asserted by `scripts/live-sandbox.ts` and `scripts/pages-e2e.ts` | must stay consistent with the URL above |
+| `AUTOPILOT_CONTROL_SUPABASE_SERVICE_ROLE_KEY` | local gitignored `.env` | privileged local reads/writes against the control plane | rotate in the control-plane Supabase project |
+| `AUTOPILOT_CONTROL_SUPABASE_PUBLISHABLE_KEY` | local gitignored `.env` | browser Auth bootstrap in the local console E2E; not privileged | rotate in the control-plane Supabase project |
+
+All four must name the *same* project. A URL from one project paired with a key from another fails as an opaque `401`, which is exactly how the pre-cutover values went unnoticed after the console and workflows had already moved on.
 
 ## Remote control-plane references
 
