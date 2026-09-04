@@ -46,12 +46,37 @@ const desired = {
 const endpoint = `https://api.supabase.com/v1/projects/${projectRef}/config/auth`;
 const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
 
+/**
+ * The Management API refused this token for the auth-config endpoint. That is not a drift finding
+ * and not a deploy fault: the control-plane deploy token is deliberately scoped to deploying, and
+ * the auth-config endpoint requires an account-level token. Distinguishing it lets the caller
+ * report "not verified" honestly instead of either failing a healthy deploy or, worse, printing
+ * a reassuring green line it has no evidence for.
+ */
+class NotAuthorized extends Error {
+  constructor(readonly status: number) { super(`Management API returned ${status} for the auth configuration endpoint`); }
+}
+
 // Read first, write only on drift. The deploy runs on every control-plane deploy, and the
 // deploy's own access token is scoped to what deploying needs -- it can push Edge Functions but
 // is not privileged for the Management API's auth-config endpoint. Blind-PATCHing therefore
 // failed a deploy whose configuration was already correct. Asserting first means the common case
 // (nothing changed) needs no privilege at all, while a real drift still stops the deploy.
-const before = await read();
+let before: Record<string, unknown>;
+try {
+  before = await read();
+} catch (error) {
+  if (!(error instanceof NotAuthorized)) throw error;
+  // Fail loudly but do not block: the Edge Functions this deploy just shipped are unaffected by
+  // the OAuth server configuration, and refusing to finish a working deploy over a check that
+  // could not run helps nobody. What must never happen is claiming the configuration is correct
+  // without having looked -- which is why this prints a GitHub Actions warning naming the exact
+  // command to run, rather than exiting 0 quietly.
+  const command = `SUPABASE_PROJECT_ID=${projectRef} SUPABASE_ACCESS_TOKEN=<account-level token> pnpm oauth:configure`;
+  console.log(`::warning::OAuth server configuration NOT VERIFIED for project ${projectRef}: this deploy's Supabase token is not privileged for the Management API auth-config endpoint (${error.status}). The ChatGPT connector depends on ${Object.keys(desired).join(', ')}. Verify with: ${command}`);
+  console.log(JSON.stringify({ level: 'warn', event: 'oauth_server.not_verified', projectRef, status: error.status, fields: Object.keys(desired) }));
+  process.exit(0);
+}
 const drift = Object.entries(desired).filter(([key, value]) => before[key] !== value);
 
 if (!drift.length) {
@@ -80,6 +105,7 @@ if (!drift.length) {
 
 async function read(): Promise<Record<string, unknown>> {
   const response = await fetch(endpoint, { headers });
+  if (response.status === 401 || response.status === 403) throw new NotAuthorized(response.status);
   if (!response.ok)
     throw new Error(
       `Could not read the auth configuration of project ${projectRef} (${response.status}): ${(await response.text()).slice(0, 300)}. ` +
@@ -87,6 +113,7 @@ async function read(): Promise<Record<string, unknown>> {
     );
   return await response.json() as Record<string, unknown>;
 }
+
 
 function required(name: string): string {
   const value = process.env[name];
