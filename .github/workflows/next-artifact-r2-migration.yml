@@ -1,0 +1,135 @@
+name: Next artifact blob migration to R2
+# Moves the historical artifact bodies from the legacy Supabase Storage bucket into R2 and repoints
+# the reference in the NEW control-plane database only.
+#
+#   mode: inventory  reads the new database and reports what would move. Changes nothing.
+#   mode: copy       per artifact: read legacy -> verify -> write R2 -> verify -> repoint the row.
+#   mode: verify     re-reads the new database and R2 and proves every reference resolves.
+#
+# The old control plane is not part of this at all: its database is never opened (there is no
+# SOURCE_DATABASE_URL here) and its Storage is only ever read. Nothing is deleted anywhere, and no
+# state COPY, `db:migrate`, Supabase CLI, Edge Function deploy or cutover happens in this workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'inventory (read-only report) | copy (move blobs) | verify (read-only comparison)'
+        required: true
+        type: choice
+        options: [inventory, copy, verify]
+      confirm:
+        description: 'INSPECT_R2_MIGRATION | MIGRATE_ARTIFACTS_TO_R2 | VERIFY_R2_MIGRATION'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-artifact-r2-migration
+  cancel-in-progress: false
+
+env:
+  # The reviewed commit this workflow is allowed to execute. Declared here as well as in the
+  # checkout `ref` below on purpose: if the two ever drift apart, the guard step fails the run
+  # instead of quietly executing whichever one was edited.
+  #
+  # Deliberately left unpinned: this file is authored on the migration branch, so the commit that
+  # contains it does not exist yet. A separate repoint branch off main replaces BOTH occurrences
+  # with the reviewed SHA before this workflow is usable. Until then it fails closed -- `checkout`
+  # cannot resolve this ref, and the guard below would reject it anyway.
+  MIGRATION_COMMIT: 20a8f53a78e62c09fa481ec0beb6f3dd5bb03e77
+
+jobs:
+  blobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # The NEW control-plane database -- the only database this workflow opens, and the only thing
+      # it writes to.
+      TARGET_DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      # Read credentials for the legacy Storage bucket. The script calls only `get` on this adapter.
+      AUTOPILOT_LEGACY_SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
+      AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+      # Verify-only: asserts the work the state migration left out did not reappear.
+      AUTOPILOT_MIGRATION_EXCLUDE_TASK_IDS: 410f320b-af24-48d2-b29b-b4506293b8ba,20508cde-b1f5-4d52-a932-a37f3e380e1b,341648aa-90e5-4b45-bf3d-46a36a06ee52,b49eee6b-a81f-4d70-8f9c-b9dc37906460,292b7cd3-d63c-488b-a1ea-8dd81625edad,f059b8c3-6113-42a4-9c13-01c198f6db0f,2f595824-97a3-472f-b360-9188b3508aec
+    steps:
+      - name: Guard - per-mode confirmation
+        env:
+          MODE_INPUT: ${{ inputs.mode }}
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          case "$MODE_INPUT" in
+            inventory) expected=INSPECT_R2_MIGRATION ;;
+            copy)      expected=MIGRATE_ARTIFACTS_TO_R2 ;;
+            verify)    expected=VERIFY_R2_MIGRATION ;;
+            *) echo "::error::Unsupported mode '$MODE_INPUT'." >&2; exit 1 ;;
+          esac
+          if [ "$CONFIRM_INPUT" != "$expected" ]; then
+            echo "::error::Refusing to run mode '$MODE_INPUT': input 'confirm' must be exactly $expected." >&2
+            exit 1
+          fi
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "TARGET_DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+            "AUTOPILOT_LEGACY_SUPABASE_URL:AUTOPILOT_SUPABASE_URL" \
+            "AUTOPILOT_LEGACY_SUPABASE_SERVICE_ROLE_KEY:AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY" \
+            "AUTOPILOT_R2_ACCOUNT_ID:AUTOPILOT_NEXT_R2_ACCOUNT_ID" \
+            "AUTOPILOT_R2_BUCKET_NAME:AUTOPILOT_NEXT_R2_BUCKET_NAME" \
+            "AUTOPILOT_R2_ACCESS_KEY_ID:AUTOPILOT_NEXT_R2_ACCESS_KEY_ID" \
+            "AUTOPILOT_R2_SECRET_ACCESS_KEY:AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to open a database or storage connection: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      # A pinned SHA, never a branch name: the workspace is exactly the reviewed commit.
+      # persist-credentials:false leaves no git credential behind, so nothing here can write back to
+      # the repository.
+      - uses: actions/checkout@v4
+        with:
+          ref: 20a8f53a78e62c09fa481ec0beb6f3dd5bb03e77
+          persist-credentials: false
+      - name: Guard - the checked-out tree is the pinned, reviewed commit
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if ! test "$actual" = "$MIGRATION_COMMIT"; then
+            echo "::error::Refusing to run: expected the pinned commit $MIGRATION_COMMIT but the workspace is at $actual." >&2
+            exit 1
+          fi
+          echo "pinned commit verified: $MIGRATION_COMMIT"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Report what would move
+        if: ${{ inputs.mode == 'inventory' }}
+        run: pnpm blobs:migrate:r2 -- --mode inventory
+      # Sequential, one artifact at a time, each in its own short transaction taken only after the
+      # body has been read back and verified from R2. Restartable: an interrupted run leaves every
+      # unfinished artifact pointing at the legacy bucket, and a re-run continues with what is left.
+      - name: Move the artifact blobs into R2
+        if: ${{ inputs.mode == 'copy' }}
+        run: pnpm blobs:migrate:r2 -- --mode copy
+      - name: Verify every artifact reference resolves in R2
+        if: ${{ inputs.mode == 'verify' }}
+        run: pnpm blobs:migrate:r2 -- --mode verify
