@@ -44,9 +44,16 @@ jobs:
     name: ${{ inputs.epic_key }} @ ${{ inputs.head_sha }}
     env:
       AUTOPILOT_EPIC_INPUT: ${{ inputs.epic_input }}
-      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
-      SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      # Bound to the NEXT control plane, exactly like autopilot-execution.yml: the epic runner
+      # reads and writes control state and externalizes its evidence artifacts, so leaving it on
+      # the old database and old Supabase Storage would keep a live runtime path attached to the
+      # retired project. With a complete AUTOPILOT_R2_* set, createArtifactBlobStore selects R2 and
+      # never resolves SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
       AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       # Credentials as query parameters, not as userinfo. A consumer that reaches PostgreSQL over

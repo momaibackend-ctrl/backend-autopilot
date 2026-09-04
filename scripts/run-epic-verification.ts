@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { ArtifactStore } from '../packages/artifact-store/src/index.js';
-import { SupabaseStorageArtifactBlobStore } from '../packages/adapters/supabase/src/artifact-storage.js';
+import { createArtifactBlobStore } from '../packages/adapters/artifact-storage/src/wiring.js';
 import { LocalGitAdapter } from '../packages/adapters/git/src/index.js';
 import { AutopilotService } from '../packages/core/src/application.js';
 import { PolicyViolation } from '../packages/core/src/errors.js';
@@ -55,7 +55,11 @@ const workflowRunUrl =
 
 try {
   const commands = new CommandRunner(new CommandPolicy(), systemClock);
-  const blobs = new SupabaseStorageArtifactBlobStore(required('SUPABASE_URL'), required('SUPABASE_SERVICE_ROLE_KEY'));
+  // Same ArtifactBlobStore selection as the durable execution runner: a complete AUTOPILOT_R2_*
+  // set routes every new externalized artifact to R2 and never resolves SUPABASE_URL /
+  // SUPABASE_SERVICE_ROLE_KEY at all, which is why they are required lazily here rather than
+  // unconditionally at module scope.
+  const blobs = createArtifactBlobStore({ get: name => process.env[name], requireCurrentSupabase: () => ({ url: required('SUPABASE_URL'), serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY') }) });
   const service = new AutopilotService({
     store,
     execution: new ExecutionEngine(new LocalGitAdapter(commands), systemClock),

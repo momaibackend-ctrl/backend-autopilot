@@ -1,4 +1,20 @@
 name: Backend Autopilot execution
+# The single canonical durable-execution workflow. After the control-plane cutover it is bound to
+# the NEXT control-plane Postgres and to Cloudflare R2 artifact storage.
+#
+# It deliberately references neither AUTOPILOT_CONTROL_DATABASE_URL nor AUTOPILOT_SUPABASE_URL /
+# AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY: with a complete AUTOPILOT_R2_* set, createArtifactBlobStore
+# selects R2 and never resolves Supabase Storage credentials at all, so every newly externalized
+# artifact is written to R2 only.
+#
+# AUTOPILOT_LEGACY_SUPABASE_* is deliberately NOT wired here either. The old Supabase project is
+# suspended (402), so making it a boot requirement would block every execution. Reads of
+# pre-cutover provider="supabase" references therefore fail closed with a typed CredentialMissing
+# instead of silently reaching for the new project's credential -- a known, bounded limitation
+# until those historical blobs are separately copied into R2.
+#
+# The safety envelope is unchanged from the pre-cutover workflow: job-id-only input, read-only
+# contents scope, per-job concurrency, 60-minute timeout, JDK 21.
 on:
   workflow_dispatch:
     inputs:
@@ -20,12 +36,42 @@ jobs:
     timeout-minutes: 60
     env:
       AUTOPILOT_JOB_ID: ${{ inputs.job_id }}
-      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
-      SUPABASE_URL: ${{ secrets.AUTOPILOT_SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AUTOPILOT_SUPABASE_SERVICE_ROLE_KEY }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
       AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
     steps:
+      # A partial R2 set already fails closed inside readR2ConfigFromEnv, but an entirely absent one
+      # would instead fall back to Supabase Storage and only fail later with an unrelated-looking
+      # "SUPABASE_URL is required". Naming the missing secret up front keeps that misconfiguration
+      # legible; only names are printed.
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+            "AUTOPILOT_R2_ACCOUNT_ID:AUTOPILOT_NEXT_R2_ACCOUNT_ID" \
+            "AUTOPILOT_R2_BUCKET_NAME:AUTOPILOT_NEXT_R2_BUCKET_NAME" \
+            "AUTOPILOT_R2_ACCESS_KEY_ID:AUTOPILOT_NEXT_R2_ACCESS_KEY_ID" \
+            "AUTOPILOT_R2_SECRET_ACCESS_KEY:AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY" \
+            "AUTOPILOT_GITHUB_TOKEN:AUTOPILOT_GITHUB_TOKEN" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to claim a durable job: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:

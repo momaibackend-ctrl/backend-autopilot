@@ -1,15 +1,30 @@
 name: Deploy Supabase control plane
+# The single canonical control-plane deploy. After the cutover it targets the NEXT Supabase
+# project, whose ref is DERIVED from AUTOPILOT_NEXT_SUPABASE_URL rather than hardcoded, so no
+# old-project identifier survives anywhere in this file.
+#
+# For the first cutover this is workflow_dispatch ONLY with an explicit confirmation input. The
+# push trigger is deliberately withheld until one successful, health-checked deploy against the new
+# project exists; re-enabling it is a follow-up change, not part of the cutover itself.
+#
+# Two things are deliberately NOT set as Edge secrets below: SUPABASE_URL and
+# SUPABASE_SERVICE_ROLE_KEY. Supabase reserves the `SUPABASE_` prefix and injects both into every
+# hosted Edge Function automatically, scoped to the project the function is deployed in. Passing
+# our own copies through `supabase secrets set` is rejected by the platform -- and would be wrong
+# anyway, since the values must be the NEW project's. `createEdgeRuntime` keeps reading them with
+# `Deno.env.get` and transparently gets the new project's own pair.
+#
+# AUTOPILOT_LEGACY_SUPABASE_* is deliberately absent. The old project is suspended (402); making
+# its credentials a boot requirement would keep the new control plane from starting at all. Reads
+# of pre-cutover provider="supabase" artifact references fail closed with a typed CredentialMissing
+# until those historical blobs are separately copied into R2. Every new write goes to R2.
 on:
-  push:
-    branches: [autopilot/v0.5-superadmin-mcp, main]
-    # packages/** is included because the edge functions bundle straight from these packages
-    # (see supabase/functions/_shared/edge-dependencies.ts) -- a fix landing anywhere in
-    # packages/core, packages/superadmin, etc. previously needed a manual workflow_dispatch to
-    # ever reach the deployed function, which is how the CORE-BE-07/09/10 apiCompatibility fix
-    # sat undeployed until someone noticed. Redeploying on every packages/** push is safe: the
-    # job is idempotent and health-checked with an automatic rollback to mcp-last-good.
-    paths: ["supabase/**", "packages/**", ".github/workflows/supabase.yml"]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY_NEXT_SUPABASE exactly to confirm this deploy to the NEXT Supabase project'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -22,14 +37,77 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: ${{ secrets.AUTOPILOT_CONTROL_DATABASE_URL }}
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_PROJECT_ID: qtyfdzjzmgxtrarpgcmn
+      # The project ref is derived from the URL below rather than kept as a second secret, so there
+      # is one less thing to configure and keep in sync.
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN }}
+      AUTOPILOT_NEXT_SUPABASE_URL: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_URL }}
+      # Schema for the NEXT control-plane Postgres only.
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      # R2 artifact storage for the new runtime (packages/adapters/r2).
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+      # Non-reserved runtime configuration required by createEdgeRuntime. These generic
+      # control-plane values are carried over unchanged from the pre-cutover canonical deployment.
       AUTOPILOT_GITHUB_DISPATCH_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
       AUTOPILOT_MCP_TOKEN: ${{ secrets.AUTOPILOT_MCP_TOKEN }}
       AUTOPILOT_SUPERADMIN_MCP_TOKEN: ${{ secrets.AUTOPILOT_SUPERADMIN_MCP_TOKEN }}
       AUTOPILOT_RECONCILE_TOKEN: ${{ secrets.AUTOPILOT_RECONCILE_TOKEN }}
     steps:
+      # Every guard below runs before checkout and before any provider call, so a wrong trigger
+      # costs nothing and touches nothing.
+      - name: Guard - explicit confirmation
+        env:
+          CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM_INPUT" != "DEPLOY_NEXT_SUPABASE" ]; then
+            echo "::error::Refusing to run: workflow_dispatch input 'confirm' must be exactly DEPLOY_NEXT_SUPABASE." >&2
+            exit 1
+          fi
+      - name: Preflight - required secrets are configured (names only, never values)
+        run: |
+          missing=0
+          for pair in \
+            "SUPABASE_ACCESS_TOKEN:AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN" \
+            "AUTOPILOT_NEXT_SUPABASE_URL:AUTOPILOT_NEXT_SUPABASE_URL" \
+            "DATABASE_URL:AUTOPILOT_NEXT_DATABASE_URL" \
+            "AUTOPILOT_R2_ACCOUNT_ID:AUTOPILOT_NEXT_R2_ACCOUNT_ID" \
+            "AUTOPILOT_R2_BUCKET_NAME:AUTOPILOT_NEXT_R2_BUCKET_NAME" \
+            "AUTOPILOT_R2_ACCESS_KEY_ID:AUTOPILOT_NEXT_R2_ACCESS_KEY_ID" \
+            "AUTOPILOT_R2_SECRET_ACCESS_KEY:AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY" \
+            "AUTOPILOT_GITHUB_DISPATCH_TOKEN:AUTOPILOT_GITHUB_TOKEN" \
+            "AUTOPILOT_MCP_TOKEN:AUTOPILOT_MCP_TOKEN" \
+            "AUTOPILOT_SUPERADMIN_MCP_TOKEN:AUTOPILOT_SUPERADMIN_MCP_TOKEN" \
+            "AUTOPILOT_RECONCILE_TOKEN:AUTOPILOT_RECONCILE_TOKEN" \
+          ; do
+            variable="${pair%%:*}"
+            secret="${pair#*:}"
+            if [ -z "${!variable}" ]; then
+              echo "::error::Required GitHub secret is not configured: $secret (expected in this job as \$$variable)"
+              missing=1
+            else
+              echo "configured: $secret"
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to contact any provider: one or more required secrets are missing. Only names are reported above; no value is ever printed." >&2
+            exit 1
+          fi
+      - name: Resolve the next project ref from its URL (the URL itself is never printed)
+        # The whole URL must match, not just its first label: taking the leading label and checking
+        # only its shape would accept https://<20-char-ref>.evil.com, and an unanchored match would
+        # accept a trailing subdomain, path, query or fragment. The ref is extracted only after the
+        # full match succeeds. SUPABASE_PROJECT_ID is what `pnpm mcp:health-check` uses to build its
+        # endpoint, so the health check below automatically targets the NEW project too.
+        run: |
+          if ! printf '%s' "$AUTOPILOT_NEXT_SUPABASE_URL" | grep -Eq '^https://[a-z0-9]{20}\.supabase\.co/?$'; then
+            echo "::error::AUTOPILOT_NEXT_SUPABASE_URL is not a Supabase project URL. Expected exactly https://<20-char-lowercase-ref>.supabase.co (one optional trailing slash). The secret value is not printed." >&2
+            exit 1
+          fi
+          project_ref="${AUTOPILOT_NEXT_SUPABASE_URL#https://}"
+          project_ref="${project_ref%%.*}"
+          echo "SUPABASE_PROJECT_ID=$project_ref" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with: { version: 10.32.1 }
@@ -39,12 +117,13 @@ jobs:
         with: { version: 2.75.0 }
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:migrate
-      - name: Configure Edge server secrets
+      - name: Configure Edge server secrets (no reserved SUPABASE_* names)
         run: >-
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
           AUTOPILOT_GITHUB_DISPATCH_TOKEN="$AUTOPILOT_GITHUB_DISPATCH_TOKEN"
           AUTOPILOT_CONTROL_REPOSITORY="momaibackend-ctrl/backend-autopilot"
           AUTOPILOT_CONTROL_REF="main"
+          AUTOPILOT_EXECUTION_WORKFLOW="autopilot-execution.yml"
           AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
           AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com"
           AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com"
@@ -55,24 +134,33 @@ jobs:
           AUTOPILOT_SUPERADMIN_MCP_TOKEN="$AUTOPILOT_SUPERADMIN_MCP_TOKEN"
           AUTOPILOT_SUPERADMIN_MCP_ACTOR="momaibackend-ctrl-superadmin"
           AUTOPILOT_RECONCILE_TOKEN="$AUTOPILOT_RECONCILE_TOKEN"
+          AUTOPILOT_R2_ACCOUNT_ID="$AUTOPILOT_R2_ACCOUNT_ID"
+          AUTOPILOT_R2_BUCKET_NAME="$AUTOPILOT_R2_BUCKET_NAME"
+          AUTOPILOT_R2_ACCESS_KEY_ID="$AUTOPILOT_R2_ACCESS_KEY_ID"
+          AUTOPILOT_R2_SECRET_ACCESS_KEY="$AUTOPILOT_R2_SECRET_ACCESS_KEY"
       - run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
       - name: Health-check the new deployment (tools/list + system_health)
         id: health
         run: pnpm mcp:health-check
       - name: Roll back the Edge Function to the last known-good deployment
+        # mcp-next-last-good is scoped to the NEXT project's own deployment lineage. The old
+        # mcp-last-good tag is deliberately never consulted here: it records a commit that was
+        # health-checked against the OLD project, and redeploying it into the new one would ship an
+        # unrelated runtime. Before the first successful new deploy no known-good exists at all, so
+        # this step fails closed instead of guessing.
         if: failure() && steps.health.outcome == 'failure'
         run: |
-          if ! git fetch origin refs/tags/mcp-last-good:refs/tags/mcp-last-good; then
-            echo "::error::Health check failed and no prior known-good deployment tag exists to roll back to. The live Superadmin MCP may be degraded; human intervention is required." >&2
+          if ! git fetch origin refs/tags/mcp-next-last-good:refs/tags/mcp-next-last-good; then
+            echo "::error::Health check failed and no known-good deployment tag (mcp-next-last-good) exists for the next Supabase project to roll back to. Nothing was rolled back; human intervention is required." >&2
             exit 1
           fi
-          git checkout mcp-last-good -- supabase
+          git checkout mcp-next-last-good -- supabase
           supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
           pnpm mcp:health-check
-          echo "::error::Deployed commit failed its health check; rolled back the live Superadmin MCP to the last known-good version (tag mcp-last-good)." >&2
+          echo "::error::Deployed commit failed its health check; rolled back the live Superadmin MCP to the last known-good version (tag mcp-next-last-good)." >&2
           exit 1
       - name: Record this deployment as the new known-good rollback point
         if: success()
         run: |
-          git tag -f mcp-last-good "$GITHUB_SHA"
-          git push origin refs/tags/mcp-last-good --force
+          git tag -f mcp-next-last-good "$GITHUB_SHA"
+          git push origin refs/tags/mcp-next-last-good --force
