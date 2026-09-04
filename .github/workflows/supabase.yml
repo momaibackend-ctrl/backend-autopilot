@@ -145,7 +145,16 @@ jobs:
         # every production setting the file does not declare. Unenforced documentation is how the
         # new project came up with dynamic client registration disabled (ChatGPT's connector then
         # fails registration with a 403 and never reaches consent) and an authorization path that
-        # resolved to a 404 on Pages. This step PATCHes only the named fields and re-reads them.
+        # resolved to a 404 on Pages.
+        #
+        # The Management API's auth-config endpoint needs an ACCOUNT-level token; the deploy token
+        # above is deliberately scoped to deploying and is refused there. If the optional
+        # AUTOPILOT_NEXT_SUPABASE_MANAGEMENT_TOKEN is configured this step verifies (and corrects)
+        # the configuration and fails the deploy on uncorrectable drift; if it is not, the step
+        # emits a ::warning:: saying the configuration was NOT verified and names the command to
+        # run. It never reports success it has no evidence for.
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.AUTOPILOT_NEXT_SUPABASE_MANAGEMENT_TOKEN || secrets.AUTOPILOT_NEXT_SUPABASE_ACCESS_TOKEN }}
         run: pnpm oauth:configure
       - name: Health-check the new deployment (tools/list + system_health)
         id: health
