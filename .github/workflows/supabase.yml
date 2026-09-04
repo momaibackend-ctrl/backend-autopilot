@@ -117,6 +117,25 @@ jobs:
         with: { version: 2.75.0 }
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:migrate
+      # NOTE: the command below is a YAML folded scalar (>-). A "#" inside it is NOT a comment --
+      # it is literal text, and the folded newlines collapse into spaces, so a single "#" turns the
+      # entire remainder of the command into one shell comment. That silently dropped eleven
+      # `supabase secrets set` assignments on one deploy while the step still printed "Finished
+      # supabase secrets set" and exited 0. Every explanatory comment for this step therefore lives
+      # out here, above `run:`, where YAML actually treats it as a comment.
+      #
+      # Two operator identities, deliberately. The infrastructure -- GitHub, Supabase, Cloudflare --
+      # belongs to momaibackend@gmail.com, which is the account the console is normally operated
+      # from. The ChatGPT connector completes its OAuth authorization as annetdenr@gmail.com, the
+      # Google identity signed in to ChatGPT. Both must be SUPERADMIN: the MCP function's OAuth path
+      # (authenticateOauthSuperadmin) resolves the bearer token to an operator row and returns 401
+      # for anything that is not SUPERADMIN, so an OPERATOR-only entry would let that account open
+      # the console but leave every connector tool call rejected.
+      #
+      # These lists are the ONLY thing that admits an identity: autopilot_operators does not survive
+      # a Supabase cutover, since its rows are keyed by auth.users.id and a new project mints new
+      # ids. The Edge function self-enrols an allowlisted email on first sign-in, which is why the
+      # new project came up with an empty operators table and rejected both console and connector.
       - name: Configure Edge server secrets (no reserved SUPABASE_* names)
         run: >-
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID"
@@ -125,20 +144,6 @@ jobs:
           AUTOPILOT_CONTROL_REF="main"
           AUTOPILOT_EXECUTION_WORKFLOW="autopilot-execution.yml"
           AUTOPILOT_SYSTEM_PROJECT_ID="ac6d68be-272c-4bca-aab1-cd1a442cf960"
-          # Two accounts, deliberately. The infrastructure -- GitHub, Supabase, Cloudflare -- belongs
-          # to momaibackend@gmail.com, and that is the account the console is normally operated
-          # from. The ChatGPT connector, however, completes its OAuth authorization as
-          # annetdenr@gmail.com, because that is the Google identity signed in to ChatGPT. Both
-          # must therefore be SUPERADMIN: the MCP function's OAuth path resolves the bearer token
-          # to an operator row and returns 401 unauthorized for anything that is not SUPERADMIN
-          # (authenticateOauthSuperadmin), so an OPERATOR-only entry would let that account open
-          # the console but leave every connector tool call rejected.
-          #
-          # These lists are the ONLY thing that admits an identity: neither project's
-          # autopilot_operators table survives a Supabase cutover, since its rows are keyed by
-          # auth.users.id and a new project mints new ids. The Edge function self-enrols an
-          # allowlisted email on its first sign-in, which is why the new project came up with an
-          # empty operators table and rejected both the console and the connector.
           AUTOPILOT_OPERATOR_EMAILS="momaibackend@gmail.com,annetdenr@gmail.com"
           AUTOPILOT_SUPERADMIN_EMAILS="momaibackend@gmail.com,annetdenr@gmail.com"
           AUTOPILOT_OPERATOR_PROJECT_IDS="ac6d68be-272c-4bca-aab1-cd1a442cf960"

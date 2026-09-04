@@ -237,6 +237,44 @@ describe("the operator console on GitHub Pages is built against the next project
   });
 });
 
+describe("no run: command silently truncates itself with a folded-scalar comment", () => {
+  // A "#" inside a YAML folded scalar (>-) is literal text, not a comment, and the folded newlines
+  // collapse into spaces -- so one "#" turns the entire remainder of the command into a single
+  // shell comment. This actually happened to `supabase secrets set`: eleven assignments, including
+  // both operator allowlists and every R2 credential, stopped being applied while the step still
+  // printed "Finished supabase secrets set" and exited 0. Nothing failed, because the secrets kept
+  // their values from an earlier deploy -- which is precisely what makes it worth a test.
+  const names = readdirSync(workflowDirectory).filter(name => name.endsWith(".yml"));
+
+  it("reads every workflow, so a renamed directory cannot make this vacuously pass", () => {
+    expect(names.length).toBeGreaterThan(0);
+  });
+
+  it("has no '#' inside a FOLDED block scalar under run:", () => {
+    // Only folded scalars (>, >-, >+). A literal block (run: |) preserves newlines, so a "#" on its
+    // own line there is an ordinary shell comment and entirely correct -- most workflows here use
+    // that form deliberately.
+    const offenders: string[] = [];
+    for (const name of names) {
+      const lines = readFileSync(join(workflowDirectory, name), "utf8").split("\n");
+      for (let index = 0; index < lines.length; index += 1) {
+        const opener = /^(\s*)(?:- )?run: >[-+]?\s*$/.exec(lines[index] ?? "");
+        if (!opener) continue;
+        // The block is every following line indented deeper than the `run:` key itself.
+        const outer = (opener[1] ?? "").length;
+        for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+          const line = lines[cursor] ?? "";
+          if (line.trim() === "") continue;
+          const indent = line.length - line.trimStart().length;
+          if (indent <= outer) break;
+          if (line.trimStart().startsWith("#")) offenders.push(`${name}:${cursor + 1}: ${line.trim().slice(0, 60)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("both operator identities the deployment actually uses are admitted", () => {
   // The allowlists are the only thing that admits an identity. autopilot_operators does not
   // survive a Supabase cutover -- its rows are keyed by auth.users.id and a new project mints new
