@@ -26,6 +26,11 @@ export class PostgrestStateStore implements StateStore {
   async updateTask(v:Task){await this.patch('tasks',`id=eq.${v.id}&project_id=eq.${v.projectId}`,{data:v});return v;}
   getTask(projectId:string,taskId:string){return this.one<Task>('tasks',`id=eq.${taskId}&project_id=eq.${projectId}`);}
   listTasks(projectId:string){return this.many<Task>('tasks',`project_id=eq.${projectId}&order=created_at.asc`);}
+  // PostgREST filters on the JSON path server-side. `ilike` with no wildcards is an exact,
+  // case-insensitive match, which is what a person typing a ticket key needs.
+  findTasksByExternalKey(externalKey:string){
+    return this.many<Task>('tasks',`data->>externalKey=ilike.${encodeURIComponent(externalKey.trim())}&order=created_at.asc`);
+  }
   createArtifactRow(v:Artifact){return {id:v.id,project_id:v.projectId,task_id:v.taskId??null,run_id:v.runId??null,kind:v.kind,status:v.status,content_hash:v.contentHash,storage_bucket:v.storage?.bucket??null,storage_path:v.storage?.path??null,byte_size:v.storage?.size??null,data:v,created_at:v.createdAt};}
   saveArtifact(v:Artifact){return this.insert<Artifact>('artifacts',this.createArtifactRow(v));}
   async updateArtifact(v:Artifact){await this.patch('artifacts',`id=eq.${v.id}&project_id=eq.${v.projectId}`,{status:v.status,data:v});return v;}

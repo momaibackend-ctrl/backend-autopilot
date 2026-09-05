@@ -83,6 +83,14 @@ export interface StateStore {
   createResource(resource:Resource):Promise<Resource>; updateResource(resource:Resource):Promise<Resource>; getResource(id:string):Promise<Resource|undefined>; findResource(projectId:string,externalReference:string):Promise<Resource|undefined>; listResources(projectId:string):Promise<Resource[]>;
   saveContext(context:ProjectContext):Promise<ProjectContext>; updateContext(context:ProjectContext):Promise<ProjectContext>; getContext(projectId:string,id:string):Promise<ProjectContext|undefined>; getLatestContext(projectId:string):Promise<ProjectContext|undefined>; listContexts(projectId:string):Promise<ProjectContext[]>;
   createTask(task:Task):Promise<Task>; updateTask(task:Task):Promise<Task>; getTask(projectId:string,taskId:string):Promise<Task|undefined>; listTasks(projectId:string):Promise<Task[]>;
+  /**
+   * Every task lookup took a UUID, so the only identifier a person actually has -- the key on the
+   * ticket, CORE-BE-25 -- could not be used to find anything. An agent had to list a project's
+   * tasks and scan, which needs the project id it does not have either. Matching is
+   * case-insensitive and spans every project, because a person naming a task rarely knows or cares
+   * which project row it lives in; the caller filters by project afterwards if it must.
+   */
+  findTasksByExternalKey(externalKey:string):Promise<Task[]>;
   saveArtifact(artifact:Artifact):Promise<Artifact>; updateArtifact(artifact:Artifact):Promise<Artifact>; getArtifact(projectId:string,id:string):Promise<Artifact|undefined>; listArtifacts(projectId:string,taskId?:string):Promise<Artifact[]>;
   /**
    * Bounded reads for views that summarise a project rather than export it. `listArtifacts` and
