@@ -166,6 +166,27 @@ export const taskRelationshipSchema = z.object({
   type: relationshipTypeSchema,
   targetTaskId: z.string().uuid(),
 });
+// Which part of the backend a task builds. This is the binding that makes an implementation
+// exportable on its own: CORE is shared foundation that every module may depend on, and a MODULE is
+// a self-contained feature area that must not reach into another module's internals. Stored inside
+// the task document, so it needs no schema migration, and optional on the type so the tasks that
+// predate it stay readable -- task_validate is what requires it going forward.
+export const taskComponentSchema = z
+  .object({
+    kind: z.enum(["CORE", "MODULE"]),
+    // Lowercase slug, so it can name a directory, a branch segment and an export bundle unchanged.
+    name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
+  })
+  .refine((value) => value.kind !== "MODULE" || !!value.name, {
+    message: "A MODULE component must carry the module name",
+    path: ["name"],
+  })
+  .refine((value) => value.kind !== "CORE" || !value.name, {
+    message: "A CORE component must not carry a module name; CORE is the single shared foundation",
+    path: ["name"],
+  });
+export type TaskComponent = z.infer<typeof taskComponentSchema>;
+
 export const taskSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -175,6 +196,7 @@ export const taskSchema = z.object({
   requirements: z.array(z.string()),
   state: taskStateSchema,
   relationships: z.array(taskRelationshipSchema),
+  component: taskComponentSchema.optional(),
   repairAttempts: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -188,6 +210,7 @@ export const taskCreateSchema = taskSchema.pick({
   description: true,
   requirements: true,
   relationships: true,
+  component: true,
 });
 export type TaskCreate = z.infer<typeof taskCreateSchema>;
 

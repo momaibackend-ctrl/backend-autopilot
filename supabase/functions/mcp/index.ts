@@ -4,6 +4,7 @@ import { WebStandardStreamableHTTPServerTransport } from 'npm:@modelcontextproto
 import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { requireProjectGithubRepository } from '../../../packages/core/src/repository-guard.ts';
+import { validateTaskFormulation } from '../../../packages/core/src/task-formulation.ts';
 import { PlatformVersions, autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, epicDimensionSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
@@ -20,7 +21,8 @@ const destructive={readOnlyHint:false,destructiveHint:true,idempotentHint:true,o
 const operationId=z.string().min(8).max(200),projectId=z.string().uuid(),entityId=z.string().uuid();
 const deleteInput={operationId,reason:z.string().min(8).max(500)};
 const contextItems=z.array(z.object({type:contextSectionTypeSchema,content:z.unknown(),sourceType:z.enum(['TASK_SOURCE','FILE','MCP','USER','REPOSITORY','DECISION']),sourceRef:z.string()}));
-const taskFields={projectId,externalKey:z.string().min(1),title:z.string().min(1),description:z.string(),requirements:z.array(z.string()),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:entityId})).default([])};
+const componentInput=z.object({kind:z.enum(['CORE','MODULE']),name:z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional()}).describe('Which part of the backend this task builds: {"kind":"CORE"} for shared foundation, or {"kind":"MODULE","name":"payments"} for a self-contained, separately exportable feature area');
+const taskFields={projectId,externalKey:z.string().min(1),title:z.string().min(1),description:z.string(),requirements:z.array(z.string()),component:componentInput.optional(),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:entityId})).default([])};
 const resourceFields={projectId,type:resourceTypeSchema,provider:z.string().min(1),externalReference:z.string().min(1),environment:environmentSchema,permissions:z.array(resourcePermissionSchema).min(1),secretRefs:z.array(z.string()).default([]),status:z.enum(['ACTIVE','DISABLED']).default('ACTIVE')};
 const scenarioFields={taskId:entityId.optional(),resourceId:entityId,name:z.string().min(1).max(120),description:z.string().max(1000).default(''),steps:z.array(validationScenarioStepSchema).min(1).max(20)};
 
@@ -97,6 +99,13 @@ Deno.serve(async request=>{
   // listing 172 of them to see which are RUNNING moved 10.5 MB. job_get still returns one in full.
   server.registerTool('job_list',{description:'List execution job statuses (no payload/result bodies -- use job_get for one job in full). Paged.',inputSchema:{projectId,taskId:entityId.optional(),status:z.string().optional().describe('Filter by status, e.g. RUNNING or FAILED'),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,status,limit,offset})=>{scoped(projectId);const all=await runtime.store.listExecutionJobSummaries(projectId,taskId);return paged(status?all.filter(j=>j.status===status):all,limit,offset);}));
   server.registerTool('job_get',{description:'Read one asynchronous execution job',inputSchema:{projectId,jobId:entityId},annotations:ro},safe(async({projectId,jobId})=>{scoped(projectId);return runtime.asyncExecution.get(projectId,jobId);}));
+  // Submitting an underspecified task does not fail at submission -- it fails minutes later, when
+  // the planner produces a plan nobody asked for or a READY gate demands evidence the task was
+  // never scoped to create. From the caller's side that looks like a platform fault, so it retries
+  // rather than rewriting. This tool moves that verdict to before the work starts, and answers with
+  // the specific edit to make rather than "add more detail".
+  server.registerTool('task_validate',{description:'Check how a task is worded BEFORE creating it. Returns whether it can be planned, and for each problem: the field, what is wrong, and the concrete change that fixes it. Call this first whenever a task is authored or rewritten.',inputSchema:{title:z.string().optional(),description:z.string().optional(),requirements:z.array(z.string()).optional(),externalKey:z.string().optional(),component:componentInput.optional()},annotations:ro},safe(async value=>validateTaskFormulation(value)));
+
   // A snapshot of a real project does not fit in a tool result and never did: on the control
   // plane's own project the full form is ~19 MB, and the Edge isolate died building it -- 6/6
   // attempts returned either HTTP 500 or, worse, HTTP 200 with an EMPTY body. A caller reading
@@ -150,7 +159,16 @@ Deno.serve(async request=>{
 
   server.registerTool('superadmin_task_list',{description:'List every task in a project (paged)',inputSchema:{projectId,limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,limit,offset})=>paged(await admin().taskList(principal,projectId),limit,offset)));
   server.registerTool('superadmin_task_get',{description:'Read one task',inputSchema:{projectId,taskId:entityId},annotations:ro},safe(async({projectId,taskId})=>admin().taskGet(principal,projectId,taskId)));
-  server.registerTool('superadmin_task_create',{description:'Create a task as untrusted requirement data',inputSchema:{operationId,...taskFields},annotations:mut},safe(async({operationId,...value})=>admin().taskCreate(principal,value,operationId)));
+  // Formulation is enforced HERE rather than inside ApplicationService.taskCreate. This is the
+  // boundary where authored, untrusted requirement text enters the system; the core primitive stays
+  // a mechanism that any internal caller (migrations, fixtures, recovery) can still use directly.
+  // A rejection carries the same findings task_validate returns, so the caller is told which field
+  // to change and to what, instead of discovering the problem when a READY gate fails much later.
+  server.registerTool('superadmin_task_create',{description:'Create a task as untrusted requirement data. The wording is validated first: a task that cannot be planned is REJECTED with the specific fields to change. Call task_validate to check a draft without creating it.',inputSchema:{operationId,...taskFields},annotations:mut},safe(async({operationId,...value})=>{
+    const verdict=validateTaskFormulation(value);
+    if(!verdict.acceptable)throw new PolicyViolation('This task cannot be planned as written. Each finding names the field, the problem and the change that fixes it; correct them and resubmit.',{acceptable:false,findings:verdict.findings,understoodAs:verdict.understoodAs});
+    return {task:await admin().taskCreate(principal,value,operationId),formulation:verdict};
+  }));
   server.registerTool('superadmin_task_update',{description:'Edit pre-plan title, description, requirements and relationships',inputSchema:{operationId,projectId,taskId:entityId,title:z.string().min(1).optional(),description:z.string().optional(),requirements:z.array(z.string()).optional(),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:entityId})).optional()},annotations:mut},safe(async({operationId,projectId,taskId,...value})=>admin().taskUpdate(principal,projectId,taskId,value,operationId)));
   server.registerTool('superadmin_task_transition',{description:'Perform only an allowed lifecycle transition; READY remains formal-gate-only',inputSchema:{operationId,projectId,taskId:entityId,to:taskStateSchema,reason:z.string().min(8)},annotations:mut},safe(async value=>admin().taskTransition(principal,value.projectId,value.taskId,value.to,value.reason,value.operationId)));
   // The preflight an agent should call whenever it is unsure what to do next. Answers from the
