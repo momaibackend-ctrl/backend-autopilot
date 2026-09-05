@@ -26,7 +26,17 @@ export class RoutingArtifactBlobStore implements ArtifactBlobStore {
     // guard as if they were a real, recognized provider instead of being rejected outright.
     if (!Object.hasOwn(this.readers, reference.provider)) throw new PolicyViolation(`Unrecognized artifact storage provider "${reference.provider}"`, { provider: reference.provider });
     const reader = this.readers[reference.provider];
-    if (!reader) throw new CredentialMissing(`No artifact storage reader is configured for provider "${reference.provider}"`, { provider: reference.provider });
+    // A caller that cannot tell "temporarily unavailable" from "gone for good" retries forever, and
+    // an autonomous caller does exactly that: on this control plane 95 COMMAND_STDOUT artifacts --
+    // the execution logs -- and 13 CODE_DIFFs were written to the pre-cutover Supabase project,
+    // whose credentials are deliberately not configured because that project is suspended. Every
+    // attempt to read one is permanently, identically unsuccessful, so the error says so in terms a
+    // caller can act on: stop asking for this blob, and here is what would make it readable.
+    if (!reader)
+      throw new CredentialMissing(
+        `Artifact content is permanently unavailable: it was externalized to storage provider "${reference.provider}", for which this runtime has no configured reader. This is not a transient failure and retrying will not succeed. The artifact's metadata is still readable; only its content is gone from this runtime's reach. To make blobs like this readable again, migrate them to the current provider or configure a reader for "${reference.provider}".`,
+        { provider: reference.provider, bucket: reference.bucket, path: reference.path, retryable: false, permanent: true },
+      );
     return reader.get(reference);
   }
 }

@@ -4,7 +4,7 @@ import { WebStandardStreamableHTTPServerTransport } from 'npm:@modelcontextproto
 import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { requireProjectGithubRepository } from '../../../packages/core/src/repository-guard.ts';
-import { autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, epicDimensionSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
+import { PlatformVersions, autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, epicDimensionSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
 import { scenarioRunToolAnnotations, scenarioRunToolDescription, scenarioRunToolInputSchema, scenarioRunToolName } from '../../../packages/http-runner/src/index.ts';
@@ -43,7 +43,24 @@ Deno.serve(async request=>{
   const runtime=createEdgeRuntime();
   const server=new McpServer({name:'backend-autopilot',version:'0.5.0'});
   const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:{result:value}});
+  // Every list tool is paged. Before this, they returned a project's entire history in one
+  // response: on the control plane's own project `artifact_list` was 19.1 MB / 26.6 s and
+  // `job_list` 10.5 MB / 14.1 s, far past what any MCP client can ingest, so the caller got a
+  // truncated or dropped result, learned nothing, and moved on to the next diagnostic tool --
+  // the loop this paging exists to end. `total` and `nextOffset` are what let a caller know it
+  // has seen everything, which a bare truncated array never told it.
+  const defaultPageSize=50, maxPageSize=200;
+  const paged=<T>(items:T[],limit?:number,offset?:number)=>{
+    const size=Math.min(limit??defaultPageSize,maxPageSize), start=offset??0;
+    const window=items.slice(start,start+size);
+    const next=start+window.length;
+    return {items:window,total:items.length,offset:start,limit:size,...(next<items.length?{nextOffset:next}:{}),complete:next>=items.length};
+  };
   const safe=<T>(fn:(value:T)=>Promise<unknown>)=>async(value:T):Promise<ToolResult>=>{try{return result(await fn(value));}catch(error){if(error instanceof DomainError)return {isError:true,content:[{type:'text',text:JSON.stringify({error:{code:error.code,message:error.message,details:error.details}})}]};throw error;}};
+  // Optional everywhere: an existing caller that passes neither still works, and now gets a
+  // bounded first page plus the total instead of an unbounded dump.
+  const limitInput=z.number().int().min(1).max(maxPageSize).optional().describe(`Maximum items to return (default ${defaultPageSize}, max ${maxPageSize})`);
+  const offsetInput=z.number().int().min(0).optional().describe('Items to skip; pass the nextOffset from the previous page');
   const scoped=(id:string)=>{if(principal.role!=='SUPERADMIN'&&!mcpProjectAllowed(id))throw new PolicyViolation('MCP token is not authorized for this project');};
   const admin=()=>{if(principal.role!=='SUPERADMIN')throw new PolicyViolation('SUPERADMIN role is required');return runtime.superadmin;};
 
@@ -51,18 +68,65 @@ Deno.serve(async request=>{
   server.registerTool('runtime_status',{description:'Return immutable runtime composition and safety state',inputSchema:{},annotations:ro},safe(async()=>({controlPlane:'SUPABASE',execution:'GITHUB_ACTIONS',console:'GITHUB_PAGES',alwaysOnServer:false,arbitraryShell:false,productionWrites:'NOT_SUPPORTED'})));
   server.registerTool('project_list',{description:'List projects visible to this principal',inputSchema:{},annotations:ro},safe(async()=>{const values=await runtime.service.projectList();return principal.role==='SUPERADMIN'?values:values.filter(value=>mcpProjectAllowed(value.id));}));
   server.registerTool('project_get',{description:'Read one project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{scoped(projectId);return runtime.service.projectGet(projectId);}));
-  server.registerTool('resource_list',{description:'List project resources',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{scoped(projectId);return runtime.service.resourceList(projectId);}));
+  server.registerTool('resource_list',{description:'List project resources (paged)',inputSchema:{projectId,limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,limit,offset})=>{scoped(projectId);return paged(await runtime.service.resourceList(projectId),limit,offset);}));
   server.registerTool('context_get',{description:'Read latest structured context',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{scoped(projectId);return runtime.service.contextGet(projectId);}));
-  server.registerTool('task_list',{description:'List project tasks',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{scoped(projectId);return runtime.service.taskList(projectId);}));
+  server.registerTool('task_list',{description:'List project tasks (paged; pass nextOffset for more)',inputSchema:{projectId,limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,limit,offset})=>{scoped(projectId);return paged(await runtime.service.taskList(projectId),limit,offset);}));
   server.registerTool('task_get',{description:'Read one task',inputSchema:{projectId,taskId:entityId},annotations:ro},safe(async({projectId,taskId})=>{scoped(projectId);return runtime.service.taskGet(projectId,taskId);}));
-  server.registerTool('task_status',{description:'Read lifecycle, jobs, runs and artifacts',inputSchema:{projectId,taskId:entityId},annotations:ro},safe(async({projectId,taskId})=>{scoped(projectId);return {...await runtime.service.taskStatus(projectId,taskId),jobs:await runtime.asyncExecution.list(projectId,taskId),readiness:await runtime.service.taskReadiness(projectId,taskId)};}));
-  server.registerTool('artifact_list',{description:'List artifact metadata',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>{scoped(projectId);return runtime.service.artifactList(projectId,taskId);}));
+  // The single call an agent makes to answer "where is this task now". It must therefore be
+  // bounded and terminal: artifacts come back as metadata, jobs as statuses, and `readiness` says
+  // what is still missing. Nothing here grows with the project's history.
+  server.registerTool('task_status',{description:'Read the lifecycle of one task: transitions, job statuses, runs and artifact metadata, plus what its READY gates still require. Artifact content is not included -- use artifact_read.',inputSchema:{projectId,taskId:entityId},annotations:ro},safe(async({projectId,taskId})=>{
+    scoped(projectId);
+    const status=await runtime.service.taskStatus(projectId,taskId);
+    const [jobs,readiness,digests]=await Promise.all([
+      runtime.store.listExecutionJobSummaries(projectId,taskId),
+      runtime.service.taskReadiness(projectId,taskId),
+      runtime.store.listArtifactDigests(projectId),
+    ]);
+    return {task:status.task,transitions:status.transitions,runs:status.runs,artifacts:digests.filter(a=>a.taskId===taskId),jobs,readiness};
+  }));
+  // Metadata only -- which is what this tool always claimed to return. It previously returned every
+  // artifact WITH its inline content (3858 artifacts = 19.1 MB on the control plane's own project),
+  // so its description actively invited a caller to fetch nine megabytes expecting a listing. Use
+  // artifact_read for one artifact's content.
+  server.registerTool('artifact_list',{description:'List artifact metadata: id, kind, task, timestamps. Content is NOT included -- use artifact_read for one artifact. Paged.',inputSchema:{projectId,taskId:entityId.optional(),kind:z.string().optional().describe('Filter by artifact kind, e.g. TEST_REPORT'),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,kind,limit,offset})=>{scoped(projectId);const all=await runtime.store.listArtifactDigests(projectId);const filtered=all.filter(a=>(!taskId||a.taskId===taskId)&&(!kind||a.kind===kind));return paged(filtered,limit,offset);}));
   server.registerTool('artifact_read',{description:'Read and hydrate one artifact',inputSchema:{projectId,artifactId:entityId},annotations:ro},safe(async({projectId,artifactId})=>{scoped(projectId);return runtime.service.artifactRead(projectId,artifactId);}));
-  server.registerTool('run_list',{description:'List task runs',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>{scoped(projectId);return runtime.service.runList(projectId,taskId);}));
+  server.registerTool('run_list',{description:'List task runs (paged)',inputSchema:{projectId,taskId:entityId.optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,limit,offset})=>{scoped(projectId);return paged(await runtime.service.runList(projectId,taskId),limit,offset);}));
   server.registerTool('run_get',{description:'Read one run',inputSchema:{projectId,runId:entityId},annotations:ro},safe(async({projectId,runId})=>{scoped(projectId);return runtime.service.runGet(projectId,runId);}));
-  server.registerTool('job_list',{description:'List asynchronous execution jobs',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>{scoped(projectId);return runtime.asyncExecution.list(projectId,taskId);}));
+  // Statuses without payloads: a job's payload/result/error average 29 kB and reach 202 kB, so
+  // listing 172 of them to see which are RUNNING moved 10.5 MB. job_get still returns one in full.
+  server.registerTool('job_list',{description:'List execution job statuses (no payload/result bodies -- use job_get for one job in full). Paged.',inputSchema:{projectId,taskId:entityId.optional(),status:z.string().optional().describe('Filter by status, e.g. RUNNING or FAILED'),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,status,limit,offset})=>{scoped(projectId);const all=await runtime.store.listExecutionJobSummaries(projectId,taskId);return paged(status?all.filter(j=>j.status===status):all,limit,offset);}));
   server.registerTool('job_get',{description:'Read one asynchronous execution job',inputSchema:{projectId,jobId:entityId},annotations:ro},safe(async({projectId,jobId})=>{scoped(projectId);return runtime.asyncExecution.get(projectId,jobId);}));
-  server.registerTool('project_snapshot',{description:'Read reproducible project snapshot',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{scoped(projectId);return runtime.service.projectSnapshot(projectId);}));
+  // A snapshot of a real project does not fit in a tool result and never did: on the control
+  // plane's own project the full form is ~19 MB, and the Edge isolate died building it -- 6/6
+  // attempts returned either HTTP 500 or, worse, HTTP 200 with an EMPTY body. A caller reading
+  // that saw "success" with nothing in it, could conclude nothing, and had no error to react to.
+  // This now returns a bounded, always-serialisable summary and says where the detail lives.
+  server.registerTool('project_snapshot',{description:'Project summary: identity, resources, task states, counts and recent activity. Bounded -- it never returns full task/artifact/audit history. Use task_list, artifact_list, job_list and audit_list to page through detail, and project_export for a complete reproducible export.',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{
+    scoped(projectId);
+    const project=await runtime.service.projectGet(projectId);
+    const [resources,tasks,runs,jobs,digests,recentAudit]=await Promise.all([
+      runtime.service.resourceList(projectId),
+      runtime.service.taskList(projectId),
+      runtime.service.runList(projectId),
+      runtime.store.listExecutionJobSummaries(projectId),
+      runtime.store.listArtifactDigests(projectId),
+      runtime.store.listRecentAudit(projectId,20),
+    ]);
+    const tally=<T,K extends string>(values:T[],key:(value:T)=>K)=>values.reduce<Record<string,number>>((into,value)=>{const k=key(value);into[k]=(into[k]??0)+1;return into;},{});
+    return {
+      project,
+      versions:PlatformVersions,
+      resources,
+      counts:{tasks:tasks.length,runs:runs.length,jobs:jobs.length,artifacts:digests.length},
+      taskStates:tally(tasks,task=>task.state),
+      jobStatuses:tally(jobs,job=>job.status),
+      artifactKinds:tally(digests,artifact=>artifact.kind??'UNKNOWN'),
+      tasks:tasks.map(task=>({id:task.id,externalKey:task.externalKey,title:task.title,state:task.state,updatedAt:task.updatedAt})),
+      activeJobs:jobs.filter(job=>!['SUCCEEDED','FAILED','CANCELLED'].includes(job.status)),
+      recentAudit,
+    };
+  }));
 
   server.registerTool('superadmin_system_overview',{description:'Return projects, tasks, jobs, failed gates, errors, capabilities, migrations, Edge deployment and Actions runs',inputSchema:{},annotations:ro},safe(async()=>admin().systemOverview(principal)));
   server.registerTool('superadmin_project_list',{description:'List every project regardless of membership',inputSchema:{},annotations:ro},safe(async()=>admin().projectList(principal)));
@@ -84,7 +148,7 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_context_update',{description:'Create a replacement context version linked by audit',inputSchema:{operationId,projectId,contextId:entityId,items:contextItems},annotations:mut},safe(async({operationId,projectId,contextId,items})=>admin().contextUpdate(principal,projectId,contextId,items,operationId)));
   server.registerTool('superadmin_context_delete',{description:'Tombstone a context version',inputSchema:{...deleteInput,projectId,contextId:entityId,confirmation:z.literal('DELETE_CONTEXT')},annotations:destructive},safe(async({projectId,contextId,...input})=>admin().contextDelete(principal,projectId,contextId,input)));
 
-  server.registerTool('superadmin_task_list',{description:'List every task in a project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>admin().taskList(principal,projectId)));
+  server.registerTool('superadmin_task_list',{description:'List every task in a project (paged)',inputSchema:{projectId,limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,limit,offset})=>paged(await admin().taskList(principal,projectId),limit,offset)));
   server.registerTool('superadmin_task_get',{description:'Read one task',inputSchema:{projectId,taskId:entityId},annotations:ro},safe(async({projectId,taskId})=>admin().taskGet(principal,projectId,taskId)));
   server.registerTool('superadmin_task_create',{description:'Create a task as untrusted requirement data',inputSchema:{operationId,...taskFields},annotations:mut},safe(async({operationId,...value})=>admin().taskCreate(principal,value,operationId)));
   server.registerTool('superadmin_task_update',{description:'Edit pre-plan title, description, requirements and relationships',inputSchema:{operationId,projectId,taskId:entityId,title:z.string().min(1).optional(),description:z.string().optional(),requirements:z.array(z.string()).optional(),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:entityId})).optional()},annotations:mut},safe(async({operationId,projectId,taskId,...value})=>admin().taskUpdate(principal,projectId,taskId,value,operationId)));
@@ -121,15 +185,15 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_task_rebase_onto_current_base',{description:'Transfer an already-verified READY task onto the current base branch of its registered repository after a dependency merge made the existing pull request conflict: replays the commit range of the task itself with a real 3-way cherry-pick, reports genuine semantic conflicts with base/current/task evidence, accepts resolutions for exactly those paths, re-runs the whole verification pipeline, then opens a fresh pull request and supersedes the stale one',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId,resolutions:z.array(z.object({path:z.string().min(1).max(400),content:z.string().max(400000)})).max(50).default([])},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().taskRebaseOntoCurrentBase(principal,value)));
   server.registerTool('superadmin_task_delete',{description:'Tombstone an unexecuted non-ready task',inputSchema:{...deleteInput,projectId,taskId:entityId,confirmation:z.literal('DELETE_TASK')},annotations:destructive},safe(async({projectId,taskId,...input})=>admin().taskDelete(principal,projectId,taskId,input)));
 
-  server.registerTool('superadmin_job_list',{description:'List execution jobs',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>admin().jobList(principal,projectId,taskId)));
+  server.registerTool('superadmin_job_list',{description:'List execution job statuses (no payload/result bodies -- use superadmin_job_get). Paged.',inputSchema:{projectId,taskId:entityId.optional(),status:z.string().optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,status,limit,offset})=>{admin();const all=await runtime.store.listExecutionJobSummaries(projectId,taskId);return paged(status?all.filter(j=>j.status===status):all,limit,offset);}));
   server.registerTool('superadmin_job_get',{description:'Read one execution job',inputSchema:{projectId,jobId:entityId},annotations:ro},safe(async({projectId,jobId})=>admin().jobGet(principal,projectId,jobId)));
   server.registerTool('superadmin_job_create',{description:'Create and dispatch a task execution job from structured file changes; resourceId is optional when the project has an ACTIVE canonical development repository',inputSchema:{operationId,projectId,taskId:entityId,resourceId:entityId.optional(),changes:z.array(fileChangeSchema).min(1)},annotations:{...mut,openWorldHint:true}},safe(async value=>admin().jobCreate(principal,value,value.resourceId,value.operationId)));
   server.registerTool('superadmin_job_cancel',{description:'Cancel a non-terminal job with a structured reason',inputSchema:{...deleteInput,projectId,jobId:entityId,confirmation:z.literal('CANCEL_JOB')},annotations:destructive},safe(async({projectId,jobId,...input})=>admin().jobCancel(principal,projectId,jobId,input)));
-  server.registerTool('superadmin_run_list',{description:'List runs',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>admin().runList(principal,projectId,taskId)));
+  server.registerTool('superadmin_run_list',{description:'List runs (paged)',inputSchema:{projectId,taskId:entityId.optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,limit,offset})=>paged(await admin().runList(principal,projectId,taskId),limit,offset)));
   server.registerTool('superadmin_run_get',{description:'Read one run',inputSchema:{projectId,runId:entityId},annotations:ro},safe(async({projectId,runId})=>admin().runGet(principal,projectId,runId)));
   server.registerTool('superadmin_run_delete',{description:'Tombstone a terminal run while preserving evidence',inputSchema:{...deleteInput,projectId,runId:entityId,confirmation:z.literal('DELETE_RUN')},annotations:destructive},safe(async({projectId,runId,...input})=>admin().runDelete(principal,projectId,runId,input)));
 
-  server.registerTool('superadmin_artifact_list',{description:'List every artifact including tombstones',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>admin().artifactList(principal,projectId,taskId)));
+  server.registerTool('superadmin_artifact_list',{description:'List artifact metadata including tombstones. Content is NOT included -- use superadmin_artifact_get. Paged.',inputSchema:{projectId,taskId:entityId.optional(),kind:z.string().optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,kind,limit,offset})=>{admin();const all=await runtime.store.listArtifactDigests(projectId);return paged(all.filter(a=>(!taskId||a.taskId===taskId)&&(!kind||a.kind===kind)),limit,offset);}));
   server.registerTool('superadmin_artifact_get',{description:'Read one artifact, including blob-backed content over the externalization threshold',inputSchema:{projectId,artifactId:entityId},annotations:ro},safe(async({projectId,artifactId})=>admin().artifactRead(principal,projectId,artifactId)));
   server.registerTool('superadmin_artifact_create',{description:'Create only ADMIN_NOTE or CONSOLE_SNAPSHOT artifacts; formal gates cannot be forged',inputSchema:{operationId,projectId,taskId:entityId.optional(),kind:z.enum(['ADMIN_NOTE','CONSOLE_SNAPSHOT']),content:z.unknown()},annotations:mut},safe(async({operationId,projectId,...value})=>admin().artifactCreate(principal,projectId,value,operationId)));
   server.registerTool('superadmin_artifact_update',{description:'Update only administrative artifact content',inputSchema:{operationId,projectId,artifactId:entityId,content:z.unknown()},annotations:mut},safe(async value=>admin().artifactUpdate(principal,value.projectId,value.artifactId,value.content,value.operationId)));
@@ -167,7 +231,7 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_membership_get',{description:'Read one membership',inputSchema:{projectId,userId:entityId},annotations:ro},safe(async({projectId,userId})=>admin().membershipGet(principal,userId,projectId)));
   server.registerTool('superadmin_membership_upsert',{description:'Create or update a structured project membership',inputSchema:{operationId,projectId,userId:entityId,role:membershipRoleSchema},annotations:destructive},safe(async({operationId,...value})=>admin().membershipUpsert(principal,value,operationId)));
   server.registerTool('superadmin_membership_delete',{description:'Delete one exact project membership',inputSchema:{...deleteInput,projectId,userId:entityId,confirmation:z.literal('DELETE_MEMBERSHIP')},annotations:destructive},safe(async({projectId,userId,...input})=>admin().membershipDelete(principal,userId,projectId,input)));
-  server.registerTool('superadmin_audit_list',{description:'List immutable audit events for any project',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>admin().auditList(principal,projectId)));
+  server.registerTool('superadmin_audit_list',{description:'List immutable audit events, newest first (paged)',inputSchema:{projectId,limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,limit,offset})=>{admin();const size=Math.min(limit??defaultPageSize,maxPageSize),start=offset??0;const rows=await runtime.store.listRecentAudit(projectId,start+size+1);const window=rows.slice(start,start+size);return {items:window,offset:start,limit:size,...(rows.length>start+size?{nextOffset:start+size}:{}),complete:rows.length<=start+size};}));
   server.registerTool('superadmin_audit_get',{description:'Read one immutable audit event',inputSchema:{projectId,auditId:entityId},annotations:ro},safe(async({projectId,auditId})=>admin().auditGet(principal,projectId,auditId)));
 
   // Closes the one remaining step of the remote self-repair loop (task_execute already runs

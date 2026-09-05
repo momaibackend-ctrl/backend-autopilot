@@ -2,7 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, desc, eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { Conflict } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
@@ -54,6 +54,12 @@ export class PostgresStateStore implements StateStore {
   async getExecutionJobById(id:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(eq(s.executionJobs.id,id)).limit(1))[0]);}
   async findExecutionJobByOperation(projectId:string,operationId:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.operationId,operationId))).limit(1))[0]);}
   async listExecutionJobs(projectId:string,taskId?:string){const rows=taskId?await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId))):await this.db.select().from(s.executionJobs).where(eq(s.executionJobs.projectId,projectId));return rows.map(r=>r.data as ExecutionJob);}
+  // Indexed columns only; `data` -- which carries payload, result and error -- is never read.
+  async listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>{
+    const where=taskId?and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId)):eq(s.executionJobs.projectId,projectId);
+    const rows=await this.db.select({id:s.executionJobs.id,projectId:s.executionJobs.projectId,taskId:s.executionJobs.taskId,resourceId:s.executionJobs.resourceId,runId:s.executionJobs.runId,operationId:s.executionJobs.operationId,kind:s.executionJobs.kind,status:s.executionJobs.status,attempt:s.executionJobs.attempt,workflowRunId:s.executionJobs.workflowRunId,leaseOwner:s.executionJobs.leaseOwner,leaseExpiresAt:s.executionJobs.leaseExpiresAt,queuedAt:s.executionJobs.createdAt,updatedAt:s.executionJobs.updatedAt}).from(s.executionJobs).where(where).orderBy(s.executionJobs.createdAt);
+    return rows.map(r=>({id:r.id,projectId:r.projectId,taskId:r.taskId,resourceId:r.resourceId,...(r.runId?{runId:r.runId}:{}),operationId:r.operationId,kind:r.kind,status:r.status,attempt:r.attempt,...(r.workflowRunId?{workflowRunId:r.workflowRunId}:{}),...(r.leaseOwner?{leaseOwner:r.leaseOwner}:{}),...(r.leaseExpiresAt?{leaseExpiresAt:r.leaseExpiresAt.toISOString()}:{}),queuedAt:r.queuedAt.toISOString(),updatedAt:r.updatedAt.toISOString()}));
+  }
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){if(!await this.getExecutionJob(projectId,id))return undefined;const requestedSeconds=Math.max(60,Math.round((new Date(leaseExpiresAt).getTime()-new Date(now).getTime())/1000));const result=await this.pool.query<{job:ExecutionJob|null}>('select claim_execution_job($1::uuid,$2::text,$3::integer) as job',[id,leaseOwner,requestedSeconds]);const job=result.rows[0]?.job??undefined;return job?.projectId===projectId?job:undefined;}
   async transitionTask(task:Task,transition:Transition){await this.db.transaction(async tx=>{await tx.update(s.tasks).set({data:task}).where(and(eq(s.tasks.id,task.id),eq(s.tasks.projectId,task.projectId)));await tx.insert(s.transitions).values({id:transition.id,taskId:transition.taskId,data:transition,createdAt:new Date(transition.timestamp)});});return task;}
   async appendTransition(v:Transition){await this.db.insert(s.transitions).values({id:v.id,taskId:v.taskId,data:v,createdAt:new Date(v.timestamp)});}

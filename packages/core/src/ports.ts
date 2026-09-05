@@ -37,6 +37,29 @@ export interface ArtifactDigest {
   createdAt:string;
 }
 
+/**
+ * An execution job without its three unbounded fields. `payload`, `result` and `error` hold whole
+ * task inputs and whole run outputs: on the control plane's own project they average 29 kB per row
+ * and reach 202 kB, so listing 172 jobs to read their statuses moved 5 MB. Every field kept here is
+ * a real indexed column, so a store can satisfy this without reading the `data` document at all.
+ */
+export interface ExecutionJobSummary {
+  id:string;
+  projectId:string;
+  taskId:string;
+  resourceId:string;
+  runId?:string|undefined;
+  operationId:string;
+  kind:string;
+  status:string;
+  attempt:number;
+  workflowRunId?:string|undefined;
+  leaseOwner?:string|undefined;
+  leaseExpiresAt?:string|undefined;
+  queuedAt:string;
+  updatedAt:string;
+}
+
 export interface StateStore {
   createProject(project:Project):Promise<Project>; updateProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
   createResource(resource:Resource):Promise<Resource>; updateResource(resource:Resource):Promise<Resource>; getResource(id:string):Promise<Resource|undefined>; findResource(projectId:string,externalReference:string):Promise<Resource|undefined>; listResources(projectId:string):Promise<Resource[]>;
@@ -53,6 +76,8 @@ export interface StateStore {
   latestArtifactOfKind(projectId:string,kind:string):Promise<Artifact|undefined>;
   saveRun(run:Run):Promise<Run>; updateRun(run:Run):Promise<Run>; getRun(projectId:string,id:string):Promise<Run|undefined>; findRunByOperation(projectId:string,operationId:string):Promise<Run|undefined>; listRuns(projectId:string,taskId?:string):Promise<Run[]>;
   createExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; updateExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; getExecutionJob(projectId:string,id:string):Promise<ExecutionJob|undefined>; getExecutionJobById(id:string):Promise<ExecutionJob|undefined>; findExecutionJobByOperation(projectId:string,operationId:string):Promise<ExecutionJob|undefined>; listExecutionJobs(projectId:string,taskId?:string):Promise<ExecutionJob[]>;
+  /** Statuses without payloads. See ExecutionJobSummary for why listing full jobs is not viable. */
+  listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>;
   claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string):Promise<ExecutionJob|undefined>;
   transitionTask(task:Task,transition:Transition):Promise<Task>;
   appendTransition(transition:Transition):Promise<void>; listTransitions(taskId:string):Promise<Transition[]>;

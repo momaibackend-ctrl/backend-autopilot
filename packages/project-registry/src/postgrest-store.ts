@@ -1,5 +1,5 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 // Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
@@ -54,6 +54,11 @@ export class PostgrestStateStore implements StateStore {
   getExecutionJobById(id:string){return this.one<ExecutionJob>('execution_jobs',`id=eq.${id}`);}
   findExecutionJobByOperation(projectId:string,operationId:string){return this.one<ExecutionJob>('execution_jobs',`project_id=eq.${projectId}&operation_id=eq.${encodeURIComponent(operationId)}`);}
   listExecutionJobs(projectId:string,taskId?:string){return this.many<ExecutionJob>('execution_jobs',`project_id=eq.${projectId}${taskId?`&task_id=eq.${taskId}`:''}&order=created_at.asc`);}
+  // `select=` omits `data`, so PostgREST never serialises payload/result/error.
+  async listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>{
+    const rows=await this.page<{id:string;project_id:string;task_id:string;resource_id:string;run_id:string|null;operation_id:string;kind:string;status:string;attempt:number;workflow_run_id:string|null;lease_owner:string|null;lease_expires_at:string|null;created_at:string;updated_at:string}>('execution_jobs','id,project_id,task_id,resource_id,run_id,operation_id,kind,status,attempt,workflow_run_id,lease_owner,lease_expires_at,created_at,updated_at',`project_id=eq.${projectId}${taskId?`&task_id=eq.${taskId}`:''}&order=created_at.asc`);
+    return rows.map(r=>({id:r.id,projectId:r.project_id,taskId:r.task_id,resourceId:r.resource_id,...(r.run_id?{runId:r.run_id}:{}),operationId:r.operation_id,kind:r.kind,status:r.status,attempt:r.attempt,...(r.workflow_run_id?{workflowRunId:r.workflow_run_id}:{}),...(r.lease_owner?{leaseOwner:r.lease_owner}:{}),...(r.lease_expires_at?{leaseExpiresAt:r.lease_expires_at}:{}),queuedAt:r.created_at,updatedAt:r.updated_at}));
+  }
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){const seconds=Math.max(60,Math.round((new Date(leaseExpiresAt).getTime()-new Date(now).getTime())/1000));const value=await this.rpc<ExecutionJob|null>('claim_execution_job',{requested_job_id:id,requested_owner:leaseOwner,lease_seconds:seconds});return value?.projectId===projectId?value:undefined;}
   transitionTask(task:Task,transition:Transition){return this.rpc<Task>('transition_task_atomic',{task_data:task,transition_data:transition});}
   async appendTransition(v:Transition){await this.insert<Transition>('task_transitions',{id:v.id,task_id:v.taskId,data:v,created_at:v.timestamp});}
