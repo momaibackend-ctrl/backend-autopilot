@@ -35,7 +35,56 @@ Every input is Zod-validated. Read and mutation annotations are declared on each
 
 ## Read-compatible tools
 
-`system_health`, `runtime_status`, `project_list`, `project_get`, `resource_list`, `context_get`, `task_list`, `task_get`, `task_status`, `artifact_list`, `artifact_read`, `run_list`, `run_get`, `job_list`, `job_get`, and `project_snapshot`.
+`system_health`, `runtime_status`, `project_list`, `project_get`, `resource_list`, `context_get`, `task_list`, `task_get`, `task_status`, `task_validate`, `artifact_list`, `artifact_read`, `run_list`, `run_get`, `job_list`, `job_get`, `project_components`, and `project_snapshot`.
+
+### Every list is a page, and says so
+
+Each list tool takes `limit` (default 50, max 200) and `offset`, and answers with `items`, `total`,
+`complete`, and `nextOffset` when more remains. Both are optional, so a caller that passes neither
+still gets a bounded first page plus the total.
+
+This is not a convenience. These tools previously returned a project's entire history in one
+response — measured on this control plane's own project, `artifact_list` was 19.1 MB over 26.6 s and
+`project_snapshot` returned HTTP 200 with an **empty body** because the Edge isolate died
+mid-serialisation. None of that is a failure a caller can react to: the transport reports success,
+the payload is unusable, and an autonomous caller learns nothing and moves on to the next
+diagnostic tool. `total` and `complete` are what let it know it has finished looking, which a bare
+truncated array never told it.
+
+**Listing never carries the heavy bodies.** `artifact_list` returns metadata (id, kind, task,
+timestamps) and `job_list` returns statuses; artifact content and job `payload`/`result`/`error`
+come from `artifact_read` and `job_get`, one entity at a time. `artifact_list` and `job_list` also
+take `kind` and `status` filters, which is almost always cheaper than paging to find one row.
+
+`project_snapshot` is a bounded summary — identity, resources, counts, task states, artifact kinds,
+active jobs, recent audit. It is not an export; `superadmin_repository_export_plan` is.
+
+### Unreadable artifact content is reported as permanent
+
+An artifact whose blob was written to a storage provider this runtime has no reader for fails with
+`CREDENTIAL_MISSING` carrying `retryable: false` and `permanent: true`. Retrying cannot succeed, and
+the metadata is still readable — only the content is out of reach. On this control plane 108 of 119
+externalized artifacts, including 95 `COMMAND_STDOUT` execution logs, were written to the retired
+pre-cutover Supabase project, so every read of one fails identically forever.
+
+### Task wording is checked before the work starts
+
+`task_validate` judges a draft without creating anything, and `superadmin_task_create` runs the same
+check and **refuses** a task that cannot be planned. Each finding carries `field`, `problem` and a
+concrete `fix`. Blocking: an absent or too-thin description, no requirements, a requirement stating
+a quality with no failing value (`fast` cannot be refuted; `p95 under 200 ms at 50 rps` can), an
+unresolved `TBD`, a description that both requests and denies an HTTP surface, and a missing
+CORE/MODULE binding. Advisory: an off-convention `externalKey`, a title naming no deliverable, and
+two deliverables joined into one task.
+
+### Every task is bound to the core or to one module
+
+`component` is `{"kind":"CORE"}` or `{"kind":"MODULE","name":"<slug>"}`. A MODULE must be named and
+CORE must not be, so a second core cannot appear by accident; the name is a lowercase slug so it
+serves unchanged as a directory, a branch segment and a bundle name. `project_components` reads a
+project back one component at a time. Tasks authored before the binding existed report as
+`UNASSIGNED` rather than being folded into CORE — an unbound task is a real gap in the export story,
+not a core task.
 
 ## Superadmin tools
 
