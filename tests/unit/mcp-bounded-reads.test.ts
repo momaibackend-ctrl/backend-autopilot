@@ -271,3 +271,29 @@ describe("reading one artifact is bounded too", () => {
     expect(adminRead).toContain("sliceArtifact(");
   });
 });
+
+describe("the merge tool states its own policy, so a caller does not invent one", () => {
+  // An agent was withholding merges "until native CI confirms and you give a separate command".
+  // Half of that is real and enforced -- READY requires a CI_REPORT from the actual CI run for that
+  // exact commit. The other half exists nowhere in this platform: merge takes no confirmation
+  // token, unlike every genuinely destructive tool. A caller with no stated policy invents a
+  // cautious one, and an approval step whose approver cannot evaluate the change adds latency
+  // without adding safety.
+  const body = tool("superadmin_sandbox_pull_request_merge");
+
+  it("says no separate human confirmation is required", () => {
+    expect(body).toContain("NO SEPARATE HUMAN CONFIRMATION IS REQUIRED OR ACCEPTED");
+  });
+
+  it("takes no confirmation token, unlike the destructive tools", () => {
+    expect(body).not.toContain("confirmation:");
+    for (const destructive of ["superadmin_task_delete", "superadmin_resource_delete", "superadmin_run_delete"])
+      expect(tool(destructive), destructive).toContain("confirmation:z.literal(");
+  });
+
+  it("names the evidence it does enforce, so the real gate is not mistaken for ceremony", () => {
+    for (const evidence of ["TEST_REPORT", "SECURITY_REPORT", "REVIEW_REPORT", "CI_REPORT", "FINAL_CHANGE_MANIFEST"])
+      expect(body, evidence).toContain(evidence);
+    expect(body).toContain("non-production");
+  });
+});
