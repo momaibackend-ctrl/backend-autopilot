@@ -1,5 +1,5 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 // Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
@@ -66,6 +66,13 @@ export class PostgrestStateStore implements StateStore {
   async appendAudit(v:AuditEvent){await this.insert<AuditEvent>('audit_events',{id:v.id,project_id:v.projectId,data:v,created_at:v.timestamp});}
   getAudit(projectId:string,id:string){return this.one<AuditEvent>('audit_events',`id=eq.${id}&project_id=eq.${projectId}`);}
   listAudit(projectId:string){return this.many<AuditEvent>('audit_events',`project_id=eq.${projectId}&order=created_at.asc`);}
+  // PostgREST projects JSON paths server-side, so `input` and `result` -- an audit event's two
+  // unbounded fields, together ~19 kB per event here -- never cross the wire.
+  async listRecentAuditDigests(projectId:string,limit:number):Promise<AuditDigest[]>{
+    const select='id,project_id,created_at,actor:data->>actor,action:data->>action,taskId:data->>taskId,resourceId:data->>resourceId,reason:data->>reason,correlationId:data->>correlationId,timestamp:data->>timestamp';
+    const rows=await this.request<Array<{id:string;project_id:string;created_at:string;actor:string|null;action:string|null;taskId:string|null;resourceId:string|null;reason:string|null;correlationId:string|null;timestamp:string|null}>>('GET',`/rest/v1/audit_events?select=${select}&project_id=eq.${projectId}&order=created_at.desc&limit=${Math.max(1,Math.trunc(limit))}`);
+    return rows.map(r=>({id:r.id,projectId:r.project_id,actor:r.actor??'',action:r.action??'',...(r.taskId?{taskId:r.taskId}:{}),...(r.resourceId?{resourceId:r.resourceId}:{}),reason:r.reason??'',correlationId:r.correlationId??'',timestamp:r.timestamp??r.created_at}));
+  }
   // Bounded by `limit`, so this is a single small request rather than a paged walk of the whole
   // audit trail -- audit payloads carry each event's full input and result.
   async listRecentAudit(projectId:string,limit:number){

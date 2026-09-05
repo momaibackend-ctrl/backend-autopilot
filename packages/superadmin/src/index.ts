@@ -151,17 +151,23 @@ export class SuperadminService {
           this.deps.store.listExecutionJobSummaries(project.id),
           this.deps.store.listRuns(project.id),
           this.deps.store.listArtifactDigests(project.id),
-          this.deps.store.listRecentAudit(project.id, 10),
+          this.deps.store.listRecentAuditDigests(project.id, 10),
         ]);
         // Job summaries deliberately carry no `error` body. A failed job is still named here, with
         // the pointer needed to fetch it in full, so nothing is hidden -- it is one job_get away
         // instead of ten redacted payloads inlined into every overview.
         const failedJobs = jobs.filter((value) => ["FAILED", "CANCELLED"].includes(value.status));
+        // A system-wide view names what needs attention and counts the rest. Inlining all 172 job
+        // summaries and all 175 runs of one project cost 180 kB of a 466 kB response to render a
+        // status tally -- and that is per project, so it grew with every project added.
+        const active = jobs.filter((value) => !["SUCCEEDED", "FAILED", "CANCELLED"].includes(value.status));
         return {
           project,
           tasks: tasks.map((value) => ({ id: value.id, externalKey: value.externalKey, title: value.title, state: value.state, updatedAt: value.updatedAt })),
-          jobs,
-          runs,
+          counts: { tasks: tasks.length, jobs: jobs.length, runs: runs.length, artifacts: artifacts.length },
+          jobStatuses: jobs.reduce<Record<string, number>>((into, value) => { into[value.status] = (into[value.status] ?? 0) + 1; return into; }, {}),
+          activeJobs: active,
+          latestRuns: runs.slice(-10),
           failedGates: tasks.filter((value) => ["FAILED", "BLOCKED"].includes(value.state)).map((value) => ({ id: value.id, externalKey: value.externalKey, state: value.state })),
           latestErrors: failedJobs.slice(-10).map((value) => ({ jobId: value.id, taskId: value.taskId, status: value.status, attempt: value.attempt, readWith: "job_get" })),
           artifactCount: artifacts.length,

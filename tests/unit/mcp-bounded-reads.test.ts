@@ -147,3 +147,43 @@ describe("an unreadable artifact says it is permanent, not transient", () => {
     expect(router).toContain("metadata is still readable");
   });
 });
+
+describe("audit events are summarised, not inlined whole", () => {
+  // After paging landed, audit became the dominant term by a wide margin: an event carries full
+  // `input` and `result` payloads and averages ~19 kB here, so twenty of them were 195 kB of a
+  // 226 kB project_snapshot, and ten of them 188 kB of one project entry in the system overview.
+  const stores = ["packages/project-registry/src/postgrest-store.ts", "packages/project-registry/src/postgres-store.ts", "packages/project-registry/src/memory-store.ts", "packages/project-registry/src/file-store.ts"];
+
+  it("every store implements the digest read, so the port is genuinely satisfied", () => {
+    for (const path of stores) expect(readFileSync(join(root, path), "utf8"), path).toContain("listRecentAuditDigests");
+  });
+
+  it("projects the fields server-side rather than reading the document", () => {
+    const postgrest = readFileSync(join(root, "packages/project-registry/src/postgrest-store.ts"), "utf8");
+    expect(postgrest).toContain("actor:data->>actor");
+    expect(postgrest).not.toMatch(/listRecentAuditDigests[\s\S]{0,600}select=data&/);
+  });
+
+  it("the polled and agent-facing views all use digests", () => {
+    expect(tool("project_snapshot")).toContain("listRecentAuditDigests");
+    expect(superadmin).toContain("listRecentAuditDigests");
+    expect(readFileSync(join(root, "supabase/functions/control-api/index.ts"), "utf8")).toContain("listRecentAuditDigests");
+  });
+});
+
+describe("the system overview counts what it does not need to enumerate", () => {
+  const body = superadmin.slice(superadmin.indexOf("async systemOverview("), superadmin.indexOf("projectList(principal: SuperadminPrincipal)"));
+
+  it("no longer inlines every run and every job of every project", () => {
+    // 172 job summaries + 175 runs was 180 kB of a 466 kB response, per project, to render a tally.
+    expect(body).toContain("jobStatuses:");
+    expect(body).toContain("activeJobs:");
+    expect(body).toContain("latestRuns: runs.slice(-10)");
+    expect(body).not.toMatch(/^\s+jobs,$/m);
+    expect(body).not.toMatch(/^\s+runs,$/m);
+  });
+
+  it("still reports the totals it stopped enumerating", () => {
+    expect(body).toContain("counts: { tasks: tasks.length, jobs: jobs.length, runs: runs.length, artifacts: artifacts.length }");
+  });
+});
