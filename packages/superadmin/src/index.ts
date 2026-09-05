@@ -56,6 +56,7 @@ import {
 } from "../../http-runner/src/index.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { z } from "zod";
+import { awaitingCaller } from '../../core/src/task-awaiting.js';
 
 export interface SuperadminPrincipal {
   actor: string;
@@ -167,6 +168,9 @@ export class SuperadminService {
           counts: { tasks: tasks.length, jobs: jobs.length, runs: runs.length, artifacts: artifacts.length },
           jobStatuses: jobs.reduce<Record<string, number>>((into, value) => { into[value.status] = (into[value.status] ?? 0) + 1; return into; }, {}),
           activeJobs: active,
+          // See awaitingCaller: a task handed back by a finished execution is in neither of the two
+          // lists above, so before this it was visible nowhere.
+          awaitingCaller: awaitingCaller({ tasks, jobs, now: this.clock.now() }),
           latestRuns: runs.slice(-10),
           failedGates: tasks.filter((value) => ["FAILED", "BLOCKED"].includes(value.state)).map((value) => ({ id: value.id, externalKey: value.externalKey, state: value.state })),
           latestErrors: failedJobs.slice(-10).map((value) => ({ jobId: value.id, taskId: value.taskId, status: value.status, attempt: value.attempt, readWith: "job_get" })),
