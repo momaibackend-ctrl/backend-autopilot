@@ -232,3 +232,42 @@ describe("a project can be read one component at a time", () => {
     expect(body).toContain("listArtifactDigests");
   });
 });
+
+describe("reading one artifact is bounded too", () => {
+  // Listing was fixed first, which left the other half of the same failure in place: CORE-BE-25's
+  // two COMMAND_STDOUT artifacts are 3.0 MB each, and because every tool result is serialised twice
+  // (text content plus structuredContent) a single artifact_read returned 6 057 768 B in 8.1 s.
+  // That is the "extract the test log" step an agent was observed stalling on: the reply arrives,
+  // no client can ingest it, and the caller goes looking for the failure somewhere else.
+  const read = tool("artifact_read");
+  const adminRead = tool("superadmin_artifact_get");
+
+  it("both readers take the same slice inputs", () => {
+    for (const [name, body] of [["artifact_read", read], ["superadmin_artifact_get", adminRead]] as const)
+      expect(body, name).toContain("...sliceInput");
+  });
+
+  it("offers tail, because on a failing log the end is the part worth reading", () => {
+    expect(mcp).toContain("tail:z.boolean()");
+    expect(read).toContain("tail=true to read the END of a log");
+  });
+
+  it("caps a slice and says so in the reply", () => {
+    expect(mcp).toContain("const defaultArtifactSlice=32_768, maxArtifactSlice=131_072");
+    expect(mcp).toContain("contentLength:content.length");
+    expect(mcp).toContain("truncated:content.length>slice.length");
+    expect(mcp).toContain("nextOffset:end");
+  });
+
+  it("never cuts structured content into unparseable JSON", () => {
+    // Slicing a log leaves something that still reads as a log. Slicing a JSON document leaves
+    // something that parses as nothing, so an oversized one is described rather than mangled.
+    expect(mcp).toContain("STRUCTURED_CONTENT_TOO_LARGE");
+    expect(mcp).toContain("typeof content!=='string'");
+  });
+
+  it("shares one implementation between both readers", () => {
+    expect(read).toContain("sliceArtifact(");
+    expect(adminRead).toContain("sliceArtifact(");
+  });
+});
