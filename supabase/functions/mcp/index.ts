@@ -52,6 +52,26 @@ Deno.serve(async request=>{
   // the loop this paging exists to end. `total` and `nextOffset` are what let a caller know it
   // has seen everything, which a bare truncated array never told it.
   const defaultPageSize=50, maxPageSize=200;
+  // Characters of artifact text per reply. Doubling by the two encodings is deliberate headroom:
+  // 64 KiB of log becomes ~128 KiB on the wire, which every client handles.
+  const defaultArtifactSlice=32_768, maxArtifactSlice=131_072;
+  const sliceArtifact=(artifact:unknown,length?:number,offset?:number,tail?:boolean)=>{
+    const size=Math.min(length??defaultArtifactSlice,maxArtifactSlice);
+    const content=(artifact as {content?:unknown}).content;
+    // A string body is a log or a diff: sliceable, and a slice of it still reads as itself. Anything
+    // else is a structured document, where an arbitrary cut yields unparseable JSON -- so it is
+    // returned whole when it fits and described rather than mangled when it does not.
+    if(typeof content!=='string'){
+      const serialised=JSON.stringify(content??null);
+      if(serialised.length<=maxArtifactSlice)return artifact;
+      return {...artifact as object,content:undefined,contentOmitted:{reason:'STRUCTURED_CONTENT_TOO_LARGE',contentLength:serialised.length,limit:maxArtifactSlice,hint:'This artifact holds structured content larger than one reply. Read a narrower artifact, or fetch it from its storage reference.'},storageReference:(artifact as {storage?:unknown}).storage};
+    }
+    const start=tail?Math.max(0,content.length-size):(offset??0);
+    const slice=content.slice(start,start+size);
+    const end=start+slice.length;
+    return {...artifact as object,content:slice,contentLength:content.length,offset:start,returned:slice.length,truncated:content.length>slice.length,...(end<content.length?{nextOffset:end}:{}),...(tail?{readFrom:'END'}:{})};
+  };
+  const sliceInput={length:z.number().int().min(1).max(maxArtifactSlice).optional().describe(`Characters to return (default ${defaultArtifactSlice}, max ${maxArtifactSlice})`),offset:z.number().int().min(0).optional().describe('Characters to skip from the start; ignored when tail is true'),tail:z.boolean().optional().describe('Return the LAST `length` characters instead of the first. Use this on a failing test log.')};
   const paged=<T>(items:T[],limit?:number,offset?:number)=>{
     const size=Math.min(limit??defaultPageSize,maxPageSize), start=offset??0;
     const window=items.slice(start,start+size);
@@ -92,7 +112,19 @@ Deno.serve(async request=>{
   // so its description actively invited a caller to fetch nine megabytes expecting a listing. Use
   // artifact_read for one artifact's content.
   server.registerTool('artifact_list',{description:'List artifact metadata: id, kind, task, timestamps. Content is NOT included -- use artifact_read for one artifact. Paged.',inputSchema:{projectId,taskId:entityId.optional(),kind:z.string().optional().describe('Filter by artifact kind, e.g. TEST_REPORT'),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,kind,limit,offset})=>{scoped(projectId);const all=await runtime.store.listArtifactDigests(projectId);const filtered=all.filter(a=>(!taskId||a.taskId===taskId)&&(!kind||a.kind===kind));return paged(filtered,limit,offset);}));
-  server.registerTool('artifact_read',{description:'Read and hydrate one artifact',inputSchema:{projectId,artifactId:entityId},annotations:ro},safe(async({projectId,artifactId})=>{scoped(projectId);return runtime.service.artifactRead(projectId,artifactId);}));
+  // Reading one artifact is bounded for the same reason listing is. An execution log is routinely
+  // megabytes -- CORE-BE-25's two COMMAND_STDOUT artifacts are 3.0 MB each -- and every tool result
+  // is serialised twice (once as text content, once as structuredContent), so reading one returned
+  // 6.06 MB in 8.1 s. No MCP client ingests that, so the caller got nothing usable and went looking
+  // for the failure somewhere else. Paging exists so the content can actually be read; `tail` is
+  // here because on a failing log the part worth reading is the end.
+  // Reading one artifact is bounded for the same reason listing is. An execution log is routinely
+  // megabytes -- CORE-BE-25's two COMMAND_STDOUT artifacts are 3.0 MB each -- and every tool result
+  // is serialised twice (once as text content, once as structuredContent), so reading one returned
+  // 6.06 MB in 8.1 s. No MCP client ingests that, so the caller got nothing usable and went looking
+  // for the failure somewhere else. `tail` is here because on a failing log the end is the part
+  // worth reading.
+  server.registerTool('artifact_read',{description:'Read one artifact. Text content comes back in bounded slices: pass tail=true to read the END of a log (where a failure is), or offset/length to page forward. The reply reports contentLength, returned, truncated and nextOffset. Structured content is returned whole when it fits.',inputSchema:{projectId,artifactId:entityId,...sliceInput},annotations:ro},safe(async({projectId,artifactId,length,offset,tail})=>{scoped(projectId);return sliceArtifact(await runtime.service.artifactRead(projectId,artifactId),length,offset,tail);}));
   server.registerTool('run_list',{description:'List task runs (paged)',inputSchema:{projectId,taskId:entityId.optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,limit,offset})=>{scoped(projectId);return paged(await runtime.service.runList(projectId,taskId),limit,offset);}));
   server.registerTool('run_get',{description:'Read one run',inputSchema:{projectId,runId:entityId},annotations:ro},safe(async({projectId,runId})=>{scoped(projectId);return runtime.service.runGet(projectId,runId);}));
   // Statuses without payloads: a job's payload/result/error average 29 kB and reach 202 kB, so
@@ -247,7 +279,7 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_run_delete',{description:'Tombstone a terminal run while preserving evidence',inputSchema:{...deleteInput,projectId,runId:entityId,confirmation:z.literal('DELETE_RUN')},annotations:destructive},safe(async({projectId,runId,...input})=>admin().runDelete(principal,projectId,runId,input)));
 
   server.registerTool('superadmin_artifact_list',{description:'List artifact metadata including tombstones. Content is NOT included -- use superadmin_artifact_get. Paged.',inputSchema:{projectId,taskId:entityId.optional(),kind:z.string().optional(),limit:limitInput,offset:offsetInput},annotations:ro},safe(async({projectId,taskId,kind,limit,offset})=>{admin();const all=await runtime.store.listArtifactDigests(projectId);return paged(all.filter(a=>(!taskId||a.taskId===taskId)&&(!kind||a.kind===kind)),limit,offset);}));
-  server.registerTool('superadmin_artifact_get',{description:'Read one artifact, including blob-backed content over the externalization threshold',inputSchema:{projectId,artifactId:entityId},annotations:ro},safe(async({projectId,artifactId})=>admin().artifactRead(principal,projectId,artifactId)));
+  server.registerTool('superadmin_artifact_get',{description:'Read one artifact, including blob-backed content over the externalization threshold. Text content is sliced the same way artifact_read slices it: tail=true for the end of a log, offset/length to page.',inputSchema:{projectId,artifactId:entityId,...sliceInput},annotations:ro},safe(async({projectId,artifactId,length,offset,tail})=>sliceArtifact(await admin().artifactRead(principal,projectId,artifactId),length,offset,tail)));
   server.registerTool('superadmin_artifact_create',{description:'Create only ADMIN_NOTE or CONSOLE_SNAPSHOT artifacts; formal gates cannot be forged',inputSchema:{operationId,projectId,taskId:entityId.optional(),kind:z.enum(['ADMIN_NOTE','CONSOLE_SNAPSHOT']),content:z.unknown()},annotations:mut},safe(async({operationId,projectId,...value})=>admin().artifactCreate(principal,projectId,value,operationId)));
   server.registerTool('superadmin_artifact_update',{description:'Update only administrative artifact content',inputSchema:{operationId,projectId,artifactId:entityId,content:z.unknown()},annotations:mut},safe(async value=>admin().artifactUpdate(principal,value.projectId,value.artifactId,value.content,value.operationId)));
   server.registerTool('superadmin_artifact_delete',{description:'Tombstone an artifact; audit remains immutable',inputSchema:{...deleteInput,projectId,artifactId:entityId,confirmation:z.literal('DELETE_ARTIFACT')},annotations:destructive},safe(async({projectId,artifactId,...input})=>admin().artifactDelete(principal,projectId,artifactId,input)));
