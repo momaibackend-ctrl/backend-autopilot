@@ -1,8 +1,8 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { Conflict } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
@@ -68,6 +68,18 @@ export class PostgresStateStore implements StateStore {
   async getAudit(projectId:string,id:string){return data<AuditEvent>((await this.db.select().from(s.auditEvents).where(and(eq(s.auditEvents.id,id),eq(s.auditEvents.projectId,projectId))).limit(1))[0]);}
   async listAudit(projectId:string){return (await this.db.select().from(s.auditEvents).where(eq(s.auditEvents.projectId,projectId)).orderBy(s.auditEvents.createdAt)).map(r=>r.data as AuditEvent);}
   async listRecentAudit(projectId:string,limit:number){return (await this.db.select({data:s.auditEvents.data}).from(s.auditEvents).where(eq(s.auditEvents.projectId,projectId)).orderBy(desc(s.auditEvents.createdAt)).limit(limit)).map(r=>r.data as AuditEvent);}
+  // The digest fields live inside the `data` document, so this projects them with ->> rather than
+  // reading the document: `input` and `result` -- the two unbounded fields -- are never fetched.
+  async listRecentAuditDigests(projectId:string,limit:number):Promise<AuditDigest[]>{
+    const rows=await this.db.select({
+      id:s.auditEvents.id,projectId:s.auditEvents.projectId,createdAt:s.auditEvents.createdAt,
+      actor:sql<string>`${s.auditEvents.data}->>'actor'`,action:sql<string>`${s.auditEvents.data}->>'action'`,
+      taskId:sql<string|null>`${s.auditEvents.data}->>'taskId'`,resourceId:sql<string|null>`${s.auditEvents.data}->>'resourceId'`,
+      reason:sql<string|null>`${s.auditEvents.data}->>'reason'`,correlationId:sql<string|null>`${s.auditEvents.data}->>'correlationId'`,
+      timestamp:sql<string|null>`${s.auditEvents.data}->>'timestamp'`,
+    }).from(s.auditEvents).where(eq(s.auditEvents.projectId,projectId)).orderBy(desc(s.auditEvents.createdAt)).limit(limit);
+    return rows.map(r=>({id:r.id,projectId:r.projectId,actor:r.actor??'',action:r.action??'',...(r.taskId?{taskId:r.taskId}:{}),...(r.resourceId?{resourceId:r.resourceId}:{}),reason:r.reason??'',correlationId:r.correlationId??'',timestamp:r.timestamp??r.createdAt.toISOString()}));
+  }
   async upsertSystemSetting(v:SystemSetting){await this.pool.query('insert into system_settings(key,data,updated_at) values($1,$2,$3) on conflict(key) do update set data=excluded.data,updated_at=excluded.updated_at',[v.key,v,v.updatedAt]);return v;}
   async getSystemSetting(key:string){const r=await this.pool.query<{data:SystemSetting}>('select data from system_settings where key=$1 limit 1',[key]);return r.rows[0]?.data;}
   async listSystemSettings(){return (await this.pool.query<{data:SystemSetting}>('select data from system_settings order by key')).rows.map(v=>v.data);}

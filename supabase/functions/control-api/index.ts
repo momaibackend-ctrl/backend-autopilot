@@ -155,7 +155,7 @@ async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awai
       runtime.store.listArtifactDigests(project.id),
       runtime.store.latestArtifactOfKind(project.id,'CI_REPORT'),
       // Already newest-first from the store, which is the order the feed renders in.
-      runtime.store.listRecentAudit(project.id,5),
+      runtime.store.listRecentAuditDigests(project.id,5),
     ]);
     const repository=resources.find(value=>value.type==='GITHUB_REPOSITORY');
     const database=resources.find(value=>value.type==='DATABASE');

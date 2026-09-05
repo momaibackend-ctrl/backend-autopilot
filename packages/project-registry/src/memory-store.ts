@@ -1,5 +1,5 @@
 import { Conflict } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
@@ -53,6 +53,7 @@ export class MemoryStateStore implements StateStore {
   async appendTransition(v:Transition){this.transitions.push(structuredClone(v));} async listTransitions(taskId:string){return clones(this.transitions.filter(t=>t.taskId===taskId));}
   async appendAudit(v:AuditEvent){this.audit.push(structuredClone(v));} async listAudit(projectId:string){return clones(this.audit.filter(a=>a.projectId===projectId));}
   async listRecentAudit(projectId:string,limit:number){return clones(this.audit.filter(a=>a.projectId===projectId).slice(-limit).reverse());}
+  async listRecentAuditDigests(projectId:string,limit:number):Promise<AuditDigest[]>{return this.audit.filter(a=>a.projectId===projectId).slice(-limit).reverse().map(auditDigest);}
   async getAudit(projectId:string,id:string){return clone(this.audit.find(a=>a.projectId===projectId&&a.id===id));}
   async upsertSystemSetting(v:SystemSetting){this.settings.set(v.key,structuredClone(v));return structuredClone(v);} async getSystemSetting(key:string){return clone(this.settings.get(key));} async listSystemSettings(){return clones([...this.settings.values()]);} async deleteSystemSetting(key:string){this.settings.delete(key);}
   async upsertConsoleScreen(v:ConsoleScreen){this.screens.set(v.screenId,structuredClone(v));return structuredClone(v);} async getConsoleScreen(id:string){return clone(this.screens.get(id));} async listConsoleScreens(){return clones([...this.screens.values()]);} async deleteConsoleScreen(id:string){this.screens.delete(id);}
@@ -99,4 +100,8 @@ function byCreatedAt(a:{createdAt:string},b:{createdAt:string}){return a.created
 
 function jobSummary(job:ExecutionJob):ExecutionJobSummary{
   return {id:job.id,projectId:job.projectId,taskId:job.taskId,resourceId:job.resourceId,...(job.runId?{runId:job.runId}:{}),operationId:job.operationId,kind:job.kind,status:job.status,attempt:job.attempt,...(job.workflowRunId?{workflowRunId:job.workflowRunId}:{}),...(job.leaseOwner?{leaseOwner:job.leaseOwner}:{}),...(job.leaseExpiresAt?{leaseExpiresAt:job.leaseExpiresAt}:{}),queuedAt:job.queuedAt,updatedAt:job.updatedAt};
+}
+
+function auditDigest(event:AuditEvent):AuditDigest{
+  return {id:event.id,projectId:event.projectId,actor:event.actor,action:event.action,...(event.taskId?{taskId:event.taskId}:{}),...(event.resourceId?{resourceId:event.resourceId}:{}),reason:event.reason,correlationId:event.correlationId,timestamp:event.timestamp};
 }

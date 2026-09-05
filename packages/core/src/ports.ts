@@ -60,6 +60,24 @@ export interface ExecutionJobSummary {
   updatedAt:string;
 }
 
+/**
+ * An audit event without its `input` and `result` payloads. Those two hold whole tool inputs and
+ * whole execution results: on this control plane an event averages ~19 kB, so ten of them in a
+ * system overview outweighed every other field combined. Everything an activity feed or a
+ * "what happened last" view renders is kept; the payloads are one audit_get away.
+ */
+export interface AuditDigest {
+  id:string;
+  projectId:string;
+  actor:string;
+  action:string;
+  taskId?:string|undefined;
+  resourceId?:string|undefined;
+  reason:string;
+  correlationId:string;
+  timestamp:string;
+}
+
 export interface StateStore {
   createProject(project:Project):Promise<Project>; updateProject(project:Project):Promise<Project>; getProject(id:string):Promise<Project|undefined>; listProjects():Promise<Project[]>;
   createResource(resource:Resource):Promise<Resource>; updateResource(resource:Resource):Promise<Resource>; getResource(id:string):Promise<Resource|undefined>; findResource(projectId:string,externalReference:string):Promise<Resource|undefined>; listResources(projectId:string):Promise<Resource[]>;
@@ -84,6 +102,8 @@ export interface StateStore {
   appendAudit(event:AuditEvent):Promise<void>; getAudit(projectId:string,id:string):Promise<AuditEvent|undefined>; listAudit(projectId:string):Promise<AuditEvent[]>;
   /** The `limit` newest audit events for a project, newest first. */
   listRecentAudit(projectId:string,limit:number):Promise<AuditEvent[]>;
+  /** The `limit` newest audit events as digests, newest first. See AuditDigest. */
+  listRecentAuditDigests(projectId:string,limit:number):Promise<AuditDigest[]>;
   upsertSystemSetting(value:SystemSetting):Promise<SystemSetting>; getSystemSetting(key:string):Promise<SystemSetting|undefined>; listSystemSettings():Promise<SystemSetting[]>; deleteSystemSetting(key:string):Promise<void>;
   upsertConsoleScreen(value:ConsoleScreen):Promise<ConsoleScreen>; getConsoleScreen(screenId:string):Promise<ConsoleScreen|undefined>; listConsoleScreens():Promise<ConsoleScreen[]>; deleteConsoleScreen(screenId:string):Promise<void>;
   upsertOperator(value:Operator):Promise<Operator>; getOperator(userId:string):Promise<Operator|undefined>; listOperators():Promise<Operator[]>; deleteOperator(userId:string):Promise<void>;

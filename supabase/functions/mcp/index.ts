@@ -111,7 +111,7 @@ Deno.serve(async request=>{
       runtime.service.runList(projectId),
       runtime.store.listExecutionJobSummaries(projectId),
       runtime.store.listArtifactDigests(projectId),
-      runtime.store.listRecentAudit(projectId,20),
+      runtime.store.listRecentAuditDigests(projectId,20),
     ]);
     const tally=<T,K extends string>(values:T[],key:(value:T)=>K)=>values.reduce<Record<string,number>>((into,value)=>{const k=key(value);into[k]=(into[k]??0)+1;return into;},{});
     return {
