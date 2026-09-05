@@ -39,6 +39,7 @@
     "../../../packages/canonical-repository/src/rename.js": "../../../packages/canonical-repository/src/rename.ts",
     "../../../packages/adapters/r2/src/artifact-storage.js": "../../../packages/adapters/r2/src/artifact-storage.ts",
     "../../../packages/adapters/supabase/src/artifact-storage.js": "../../../packages/adapters/supabase/src/artifact-storage.ts",
-    "../../../packages/adapters/artifact-storage/src/router.js": "../../../packages/adapters/artifact-storage/src/router.ts"
+    "../../../packages/adapters/artifact-storage/src/router.js": "../../../packages/adapters/artifact-storage/src/router.ts",
+    "../../../packages/core/src/task-awaiting.js": "../../../packages/core/src/task-awaiting.ts"
   }
 }

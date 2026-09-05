@@ -5,6 +5,7 @@ import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { requireProjectGithubRepository } from '../../../packages/core/src/repository-guard.ts';
 import { validateTaskFormulation } from '../../../packages/core/src/task-formulation.ts';
+import { awaitingCaller } from '../../../packages/core/src/task-awaiting.ts';
 import { PlatformVersions, autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, epicDimensionSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
@@ -200,6 +201,11 @@ Deno.serve(async request=>{
       artifactKinds:tally(digests,artifact=>artifact.kind??'UNKNOWN'),
       tasks:tasks.map(task=>({id:task.id,externalKey:task.externalKey,title:task.title,state:task.state,updatedAt:task.updatedAt})),
       activeJobs:jobs.filter(job=>!['SUCCEEDED','FAILED','CANCELLED'].includes(job.status)),
+      // Tasks where nothing is running and the next move is the caller's. Without this a task that
+      // came back from a failed execution sits in IMPLEMENTING indefinitely and shows up in no
+      // overview at all: its job is finished so it is not active, and its own state is not FAILED so
+      // it is not a failed gate.
+      awaitingCaller:awaitingCaller({tasks,jobs,now:new Date().toISOString()}),
       recentAudit,
     };
   }));
