@@ -106,12 +106,47 @@ Deno.serve(async request=>{
   // the specific edit to make rather than "add more detail".
   server.registerTool('task_validate',{description:'Check how a task is worded BEFORE creating it. Returns whether it can be planned, and for each problem: the field, what is wrong, and the concrete change that fixes it. Call this first whenever a task is authored or rewritten.',inputSchema:{title:z.string().optional(),description:z.string().optional(),requirements:z.array(z.string()).optional(),externalKey:z.string().optional(),component:componentInput.optional()},annotations:ro},safe(async value=>validateTaskFormulation(value)));
 
+  // The per-component view. A project is built as one CORE plus a set of MODULEs, and the value of
+  // that binding is only realised if it can actually be read back: this is what lets a caller ask
+  // "what is in the payments module and is it self-contained" without paging the whole project, and
+  // what a human reads in the console to see the same breakdown. Tasks written before the binding
+  // existed surface under UNASSIGNED rather than being silently folded into CORE -- an unbound task
+  // is a real gap in the export story, not a core task.
+  server.registerTool('project_components',{description:'Break a project down by backend component: the CORE, each named MODULE, and anything still UNASSIGNED. Per component: task count, task states, artifact kinds and the tasks themselves. Use it to see what a module contains before exporting or extending it.',inputSchema:{projectId,component:z.string().optional().describe('Restrict to one component: CORE, UNASSIGNED, or a module slug')},annotations:ro},safe(async({projectId,component})=>{
+    scoped(projectId);
+    const [tasks,digests]=await Promise.all([runtime.service.taskList(projectId),runtime.store.listArtifactDigests(projectId)]);
+    const nameOf=(task:{component?:{kind:string;name?:string}})=>task.component?(task.component.kind==='MODULE'?(task.component.name??'UNNAMED_MODULE'):'CORE'):'UNASSIGNED';
+    const byTask=new Map(tasks.map(task=>[task.id,nameOf(task)]));
+    const groups=new Map<string,{kind:string;tasks:typeof tasks;artifactKinds:Record<string,number>}>();
+    for(const task of tasks){
+      const key=nameOf(task);
+      const group=groups.get(key)??{kind:key==='CORE'?'CORE':key==='UNASSIGNED'?'UNASSIGNED':'MODULE',tasks:[],artifactKinds:{}};
+      group.tasks.push(task);
+      groups.set(key,group);
+    }
+    for(const artifact of digests){
+      const key=artifact.taskId?byTask.get(artifact.taskId):undefined;
+      const group=key?groups.get(key):undefined;
+      if(!group)continue;
+      const kind=artifact.kind??'UNKNOWN';
+      group.artifactKinds[kind]=(group.artifactKinds[kind]??0)+1;
+    }
+    const components=[...groups.entries()].filter(([name])=>!component||name===component).map(([name,group])=>({
+      name,kind:group.kind,
+      taskCount:group.tasks.length,
+      taskStates:group.tasks.reduce<Record<string,number>>((into,task)=>{into[task.state]=(into[task.state]??0)+1;return into;},{}),
+      artifactKinds:group.artifactKinds,
+      tasks:group.tasks.map(task=>({id:task.id,externalKey:task.externalKey,title:task.title,state:task.state})),
+    })).sort((a,b)=>a.name.localeCompare(b.name));
+    return {projectId,components,unassignedTasks:groups.get('UNASSIGNED')?.tasks.length??0};
+  }));
+
   // A snapshot of a real project does not fit in a tool result and never did: on the control
   // plane's own project the full form is ~19 MB, and the Edge isolate died building it -- 6/6
   // attempts returned either HTTP 500 or, worse, HTTP 200 with an EMPTY body. A caller reading
   // that saw "success" with nothing in it, could conclude nothing, and had no error to react to.
   // This now returns a bounded, always-serialisable summary and says where the detail lives.
-  server.registerTool('project_snapshot',{description:'Project summary: identity, resources, task states, counts and recent activity. Bounded -- it never returns full task/artifact/audit history. Use task_list, artifact_list, job_list and audit_list to page through detail, and project_export for a complete reproducible export.',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{
+  server.registerTool('project_snapshot',{description:'Project summary: identity, resources, task states, counts and recent activity. Bounded -- it never returns full task/artifact/audit history. Use task_list, artifact_list, job_list and superadmin_audit_list to page through detail, project_components for the CORE/MODULE breakdown, and superadmin_repository_export_plan for a reproducible repository-level export.',inputSchema:{projectId},annotations:ro},safe(async({projectId})=>{
     scoped(projectId);
     const project=await runtime.service.projectGet(projectId);
     const [resources,tasks,runs,jobs,digests,recentAudit]=await Promise.all([
