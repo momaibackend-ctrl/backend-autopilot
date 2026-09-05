@@ -26,6 +26,7 @@ export class MemoryStateStore implements StateStore {
   async createTask(v:Task){if([...this.tasks.values()].some(t=>t.projectId===v.projectId&&t.externalKey===v.externalKey))throw new Conflict('Task external key already exists');this.tasks.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateTask(v:Task){this.tasks.set(v.id,structuredClone(v));return structuredClone(v);}
   async getTask(projectId:string,taskId:string){const v=this.tasks.get(taskId);return v?.projectId===projectId?structuredClone(v):undefined;}
+  async findTasksByExternalKey(externalKey:string){const wanted=externalKey.trim().toLowerCase();return clones([...this.tasks.values()].filter(task=>task.externalKey.toLowerCase()===wanted));}
   async listTasks(projectId:string){return clones([...this.tasks.values()].filter(t=>t.projectId===projectId));}
   async saveArtifact(v:Artifact){this.artifacts.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateArtifact(v:Artifact){this.artifacts.set(v.id,structuredClone(v));return structuredClone(v);}

@@ -175,6 +175,44 @@ Deno.serve(async request=>{
     return {projectId,components,unassignedTasks:groups.get('UNASSIGNED')?.tasks.length??0};
   }));
 
+  // The entry point for a person who has a ticket key and nothing else. Every other task tool takes
+  // a UUID, and a person reading a board has the key -- CORE-BE-25 -- not the id, and not the
+  // project id either. Without this the only route was: guess the project, list its tasks, scan.
+  //
+  // It answers the question actually being asked, which is never "does this row exist" but "what is
+  // happening with this and what do I do now": state, how the last execution ended, how long it has
+  // been idle, the next call, what is still blocking READY, and -- when the last run failed -- the
+  // id of the log to read, so the caller does not have to go looking for it.
+  server.registerTool('task_find',{description:'Find a task by the key on its ticket (for example CORE-BE-25) and report what is happening with it and what to do next: state, how its last execution ended, how long it has been idle, the next call to make, remaining READY blockers, and the id of the failing log when there is one. Use this whenever you are given a task key rather than a UUID.',inputSchema:{externalKey:z.string().min(1).describe('The task key as written on the ticket, e.g. CORE-BE-25. Case-insensitive.'),projectId:projectId.optional().describe('Only needed to disambiguate when the same key exists in several projects')},annotations:ro},safe(async({externalKey,projectId:only})=>{
+    const found=(await runtime.store.findTasksByExternalKey(externalKey)).filter(task=>(!only||task.projectId===only)&&(principal.role==='SUPERADMIN'||mcpProjectAllowed(task.projectId)));
+    if(found.length===0)return {externalKey,found:0,tasks:[],hint:'No task carries this key in any project visible to you. Check the key, or list projects and tasks to find it.'};
+    const matches=await Promise.all(found.map(async task=>{
+      const [project,jobs,readiness,digests]=await Promise.all([
+        runtime.service.projectGet(task.projectId),
+        runtime.store.listExecutionJobSummaries(task.projectId,task.id),
+        runtime.service.taskReadiness(task.projectId,task.id).catch(()=>undefined),
+        runtime.store.listArtifactDigests(task.projectId),
+      ]);
+      const [waiting]=awaitingCaller({tasks:[task],jobs,now:new Date().toISOString()});
+      const lastJob=[...jobs].sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+      // When the last run failed, the log is what the caller needs next, so name it here rather
+      // than making them list artifacts to find it. Newest COMMAND_STDOUT of this task.
+      const failingLog=lastJob&&['FAILED','TIMED_OUT'].includes(lastJob.status)
+        ? digests.filter(a=>a.taskId===task.id&&a.kind==='COMMAND_STDOUT').at(-1)
+        : undefined;
+      return {
+        project:{id:project.id,name:project.name},
+        task:{id:task.id,externalKey:task.externalKey,title:task.title,state:task.state,component:task.component,repairAttempts:task.repairAttempts,updatedAt:task.updatedAt},
+        lastJob:lastJob?{id:lastJob.id,kind:lastJob.kind,status:lastJob.status,attempt:lastJob.attempt,workflowRunId:lastJob.workflowRunId}:undefined,
+        waitingOnYou:waiting?{idleHours:waiting.idleHours,why:waiting.why}:undefined,
+        nextAction:readiness?.nextAction,
+        blockers:readiness?.blockers,
+        ...(failingLog?{failingLog:{artifactId:failingLog.id,readWith:`artifact_read with artifactId ${failingLog.id} and tail:true`}}:{}),
+      };
+    }));
+    return {externalKey,found:matches.length,tasks:matches,...(matches.length>1?{note:'This key exists in more than one project. Pass projectId to narrow it.'}:{})};
+  }));
+
   // A snapshot of a real project does not fit in a tool result and never did: on the control
   // plane's own project the full form is ~19 MB, and the Edge isolate died building it -- 6/6
   // attempts returned either HTTP 500 or, worse, HTTP 200 with an EMPTY body. A caller reading

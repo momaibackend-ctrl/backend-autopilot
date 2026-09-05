@@ -27,6 +27,12 @@ export class PostgresStateStore implements StateStore {
   async createTask(v:Task){await this.db.insert(s.tasks).values({id:v.id,projectId:v.projectId,externalKey:v.externalKey,data:v,createdAt:new Date(v.createdAt)});return v;}
   async updateTask(v:Task){await this.db.update(s.tasks).set({data:v}).where(and(eq(s.tasks.id,v.id),eq(s.tasks.projectId,v.projectId)));return v;}
   async getTask(projectId:string,id:string){return data<Task>((await this.db.select().from(s.tasks).where(and(eq(s.tasks.id,id),eq(s.tasks.projectId,projectId))).limit(1))[0]);}
+  // ->> on the document rather than a column: externalKey has no column of its own, and adding one
+  // would mean a migration for a lookup that runs when a person asks about a ticket, not in a loop.
+  async findTasksByExternalKey(externalKey:string){
+    const rows=await this.db.select({data:s.tasks.data}).from(s.tasks).where(sql`lower(${s.tasks.data}->>'externalKey') = ${externalKey.trim().toLowerCase()}`);
+    return rows.map(r=>r.data as Task);
+  }
   async listTasks(projectId:string){return (await this.db.select().from(s.tasks).where(eq(s.tasks.projectId,projectId))).map(r=>r.data as Task);}
   async saveArtifact(v:Artifact){await this.db.insert(s.artifacts).values({id:v.id,projectId:v.projectId,taskId:v.taskId??null,runId:v.runId??null,kind:v.kind,status:v.status,contentHash:v.contentHash,storageBucket:v.storage?.bucket??null,storagePath:v.storage?.path??null,byteSize:v.storage?.size??null,data:v,createdAt:new Date(v.createdAt)});return v;}
   async updateArtifact(v:Artifact){await this.db.update(s.artifacts).set({status:v.status,data:v}).where(and(eq(s.artifacts.id,v.id),eq(s.artifacts.projectId,v.projectId)));return v;}
