@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { validateTaskFormulation } from "../../packages/core/src/task-formulation.js";
 import { taskComponentSchema } from "../../packages/schemas/src/index.js";
+import { inferComponent } from "../../packages/core/src/task-formulation.js";
 
 // A task that cannot be planned is not rejected by anything downstream in a way its author can act
 // on: the planner produces a plan nobody asked for, or a READY gate demands evidence the task was
@@ -91,9 +92,10 @@ describe("what blocks planning", () => {
     expect(codesFor({ ...wellFormed, requirements: [...wellFormed.requirements, "Rate limit is TODO"] })).toContain("REQUIREMENT_PLACEHOLDER");
   });
 
-  it("rejects a task bound to neither the core nor a module", () => {
-    // This is the binding that makes one implementation exportable on its own.
-    expect(codesFor({ ...wellFormed, component: undefined })).toContain("COMPONENT_MISSING");
+  it("rejects a task bound to neither the core nor a module, and whose key implies neither", () => {
+    // The binding is what makes one implementation exportable on its own, so a task that has none
+    // and offers no way to derive one is refused.
+    expect(codesFor({ ...wellFormed, component: undefined, externalKey: undefined })).toContain("COMPONENT_MISSING");
   });
 
   it("rejects a description that both asks for and denies an HTTP surface", () => {
@@ -164,5 +166,55 @@ describe("formulation is enforced where authored input enters", () => {
     // Migrations, fixtures and recovery paths construct tasks directly; the policy belongs at the
     // untrusted boundary, not in the mechanism.
     expect(readFileSync(join(root, "packages/core/src/application.ts"), "utf8")).not.toContain("validateTaskFormulation");
+  });
+});
+
+describe("the component binding is read from the key when it is not given", () => {
+  // `component` was introduced as an immediately BLOCKING field. That hard-blocked any client still
+  // holding the previous tool schema: the policy demanded a parameter the caller's cached schema did
+  // not offer, so no rewording could satisfy it -- CORE-BE-26 could not be created at all. A rule a
+  // client cannot satisfy is a platform defect, not a formulation problem. Task keys have carried
+  // this information all along (CORE-* is the shared foundation; every other prefix names an area),
+  // so deriving it removes the class of block without weakening the binding.
+
+  it("reads CORE from a CORE-prefixed key", () => {
+    expect(inferComponent("CORE-BE-26")).toEqual({ kind: "CORE" });
+    expect(inferComponent("core-be-26")).toEqual({ kind: "CORE" });
+  });
+
+  it("reads a module from any other prefix, lowercased into a usable slug", () => {
+    expect(inferComponent("PAYMENTS-API-02")).toEqual({ kind: "MODULE", name: "payments" });
+    expect(inferComponent("INFRA-07")).toEqual({ kind: "MODULE", name: "infra" });
+  });
+
+  it("declines rather than guessing when a key implies nothing", () => {
+    for (const key of [undefined, "", "   ", "123-45", "-LEADING"]) expect(inferComponent(key), String(key)).toBeUndefined();
+  });
+
+  it("accepts a task whose key implies the binding, and says it inferred one", () => {
+    const verdict = validateTaskFormulation({ ...wellFormed, component: undefined, externalKey: "CORE-BE-26" });
+    expect(verdict.acceptable).toBe(true);
+    expect(verdict.component).toEqual({ kind: "CORE" });
+    const finding = verdict.findings.find((value) => value.code === "COMPONENT_INFERRED");
+    expect(finding?.severity).toBe("ADVISORY");
+    expect(finding?.problem).toContain("CORE-BE-26");
+  });
+
+  it("never overrides a component the caller stated", () => {
+    const verdict = validateTaskFormulation({ ...wellFormed, externalKey: "CORE-BE-26", component: { kind: "MODULE", name: "payments" } });
+    expect(verdict.component).toEqual({ kind: "MODULE", name: "payments" });
+    expect(verdict.findings.map((value) => value.code)).not.toContain("COMPONENT_INFERRED");
+  });
+
+  it("still refuses a MODULE the caller named badly", () => {
+    const verdict = validateTaskFormulation({ ...wellFormed, component: { kind: "MODULE" } });
+    expect(verdict.acceptable).toBe(false);
+    expect(verdict.findings.map((value) => value.code)).toContain("COMPONENT_MODULE_UNNAMED");
+  });
+
+  it("is what the creation path persists, so an inferred binding is not dropped", () => {
+    const mcp = readFileSync(join(root, "supabase/functions/mcp/index.ts"), "utf8");
+    const create = mcp.slice(mcp.indexOf("server.registerTool('superadmin_task_create'"), mcp.indexOf("server.registerTool('superadmin_task_update'"));
+    expect(create).toContain("verdict.component?{component:verdict.component}");
   });
 });
