@@ -187,3 +187,48 @@ describe("the system overview counts what it does not need to enumerate", () => 
     expect(body).toContain("counts: { tasks: tasks.length, jobs: jobs.length, runs: runs.length, artifacts: artifacts.length }");
   });
 });
+
+describe("tool descriptions point only at tools that exist", () => {
+  // A description naming a tool the server does not register sends an autonomous caller looking for
+  // something unreachable: the same dead end as an unusable response, because it has been told what
+  // to do next and cannot do it. I introduced exactly this while writing project_snapshot's new
+  // description, which pointed at a "project_export" that does not exist.
+  const registered = new Set([...mcp.matchAll(/registerTool\('([a-z0-9_]+)'/g)].map(match => match[1]!));
+
+  it("finds the registered tools, so the scrape is not silently empty", () => {
+    expect(registered.size).toBeGreaterThan(50);
+  });
+
+  it("every tool name referenced inside a description is a registered tool", () => {
+    const prefixes = /\b(?:superadmin|project|task|artifact|job|run|audit|resource|context|system)_[a-z0-9_]+\b/g;
+    const dangling: string[] = [];
+    for (const name of registered) {
+      const body = tool(name);
+      const start = body.indexOf("description:");
+      const description = start === -1 ? "" : body.slice(start, body.indexOf(",inputSchema", start));
+      for (const referenced of description.match(prefixes) ?? [])
+        if (!registered.has(referenced)) dangling.push(name + " -> " + referenced);
+    }
+    expect(dangling).toEqual([]);
+  });
+});
+
+describe("a project can be read one component at a time", () => {
+  const body = tool("project_components");
+
+  it("is registered and groups by CORE, MODULE and UNASSIGNED", () => {
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain("'CORE'");
+    expect(body).toContain("'UNASSIGNED'");
+  });
+
+  it("does not fold unbound tasks into CORE", () => {
+    // An unbound task is a real gap in the export story. Counting it as core would hide precisely
+    // what the component binding exists to surface.
+    expect(body).toContain("unassignedTasks");
+  });
+
+  it("uses the bounded artifact read", () => {
+    expect(body).toContain("listArtifactDigests");
+  });
+});
