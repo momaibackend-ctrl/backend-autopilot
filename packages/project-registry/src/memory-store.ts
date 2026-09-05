@@ -1,5 +1,5 @@
 import { Conflict } from '../../core/src/errors.js';
-import type { ArtifactDigest, CanonicalPromotionRequest, StateStore } from '../../core/src/ports.js';
+import type { ArtifactDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
 import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
@@ -47,6 +47,7 @@ export class MemoryStateStore implements StateStore {
   async getExecutionJobById(id:string){return clone(this.jobs.get(id));}
   async findExecutionJobByOperation(projectId:string,operationId:string){return clone([...this.jobs.values()].find(v=>v.projectId===projectId&&v.operationId===operationId));}
   async listExecutionJobs(projectId:string,taskId?:string){return clones([...this.jobs.values()].filter(v=>v.projectId===projectId&&(!taskId||v.taskId===taskId)));}
+  async listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>{return [...this.jobs.values()].filter(v=>v.projectId===projectId&&(!taskId||v.taskId===taskId)).map(jobSummary);}
   async claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string){const value=await this.getExecutionJob(projectId,id);if(!value||!["QUEUED","DISPATCHED","CLAIMED"].includes(value.status))return undefined;if(value.leaseExpiresAt&&value.leaseExpiresAt>now&&value.leaseOwner!==leaseOwner)return undefined;const claimed:ExecutionJob={...value,status:"CLAIMED",leaseOwner,leaseExpiresAt,startedAt:value.startedAt??now,updatedAt:now};this.jobs.set(id,structuredClone(claimed));return structuredClone(claimed);}
   async transitionTask(task:Task,transition:Transition){this.tasks.set(task.id,structuredClone(task));this.transitions.push(structuredClone(transition));return structuredClone(task);}
   async appendTransition(v:Transition){this.transitions.push(structuredClone(v));} async listTransitions(taskId:string){return clones(this.transitions.filter(t=>t.taskId===taskId));}
@@ -95,3 +96,7 @@ function digestOf(artifact:Artifact):ArtifactDigest{
   return {id:artifact.id,projectId:artifact.projectId,...(artifact.taskId?{taskId:artifact.taskId}:{}),...(artifact.runId?{runId:artifact.runId}:{}),...(artifact.kind?{kind:artifact.kind}:{}),createdAt:artifact.createdAt};
 }
 function byCreatedAt(a:{createdAt:string},b:{createdAt:string}){return a.createdAt.localeCompare(b.createdAt);}
+
+function jobSummary(job:ExecutionJob):ExecutionJobSummary{
+  return {id:job.id,projectId:job.projectId,taskId:job.taskId,resourceId:job.resourceId,...(job.runId?{runId:job.runId}:{}),operationId:job.operationId,kind:job.kind,status:job.status,attempt:job.attempt,...(job.workflowRunId?{workflowRunId:job.workflowRunId}:{}),...(job.leaseOwner?{leaseOwner:job.leaseOwner}:{}),...(job.leaseExpiresAt?{leaseExpiresAt:job.leaseExpiresAt}:{}),queuedAt:job.queuedAt,updatedAt:job.updatedAt};
+}

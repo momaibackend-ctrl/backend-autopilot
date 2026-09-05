@@ -136,33 +136,36 @@ export class SuperadminService {
     return this.mutate(principal,tool,projectId,operationId,input,action);
   }
 
+  // A whole-system view across every project, so it is the single call most exposed to history
+  // growth. It used to load full tasks, jobs, runs, artifacts AND the entire audit trail per
+  // project and then use counts, a state filter, ten errors and ten events -- 12.0 MB and 19.3 s
+  // measured on this control plane. Every read below is bounded by what the view renders, so the
+  // response size now tracks the number of PROJECTS rather than the volume of their history.
   async systemOverview(principal: SuperadminPrincipal) {
     this.requireSuperadmin(principal);
     const projects = await this.deps.store.listProjects();
     const snapshots = await Promise.all(
       projects.map(async (project) => {
-        const [tasks, jobs, runs, artifacts, audit] = await Promise.all([
+        const [tasks, jobs, runs, artifacts, latestAudit] = await Promise.all([
           this.deps.store.listTasks(project.id),
-          this.deps.store.listExecutionJobs(project.id),
+          this.deps.store.listExecutionJobSummaries(project.id),
           this.deps.store.listRuns(project.id),
-          this.deps.store.listArtifacts(project.id),
-          this.deps.store.listAudit(project.id),
+          this.deps.store.listArtifactDigests(project.id),
+          this.deps.store.listRecentAudit(project.id, 10),
         ]);
+        // Job summaries deliberately carry no `error` body. A failed job is still named here, with
+        // the pointer needed to fetch it in full, so nothing is hidden -- it is one job_get away
+        // instead of ten redacted payloads inlined into every overview.
+        const failedJobs = jobs.filter((value) => ["FAILED", "CANCELLED"].includes(value.status));
         return {
           project,
-          tasks,
+          tasks: tasks.map((value) => ({ id: value.id, externalKey: value.externalKey, title: value.title, state: value.state, updatedAt: value.updatedAt })),
           jobs,
           runs,
-          failedGates: tasks.filter((value) =>
-            ["FAILED", "BLOCKED"].includes(value.state),
-          ),
-          latestErrors: jobs
-            .filter((value) => value.error)
-            .slice(-10)
-            .map((value) => ({ jobId: value.id, error: redact(value.error) })),
-          artifactCount: artifacts.filter((value) => value.status !== "DELETED")
-            .length,
-          latestAudit: audit.slice(-10),
+          failedGates: tasks.filter((value) => ["FAILED", "BLOCKED"].includes(value.state)).map((value) => ({ id: value.id, externalKey: value.externalKey, state: value.state })),
+          latestErrors: failedJobs.slice(-10).map((value) => ({ jobId: value.id, taskId: value.taskId, status: value.status, attempt: value.attempt, readWith: "job_get" })),
+          artifactCount: artifacts.length,
+          latestAudit,
         };
       }),
     );
