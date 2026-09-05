@@ -279,7 +279,9 @@ Deno.serve(async request=>{
   server.registerTool('superadmin_task_create',{description:'Create a task as untrusted requirement data. The wording is validated first: a task that cannot be planned is REJECTED with the specific fields to change. Call task_validate to check a draft without creating it.',inputSchema:{operationId,...taskFields},annotations:mut},safe(async({operationId,...value})=>{
     const verdict=validateTaskFormulation(value);
     if(!verdict.acceptable)throw new PolicyViolation('This task cannot be planned as written. Each finding names the field, the problem and the change that fixes it; correct them and resubmit.',{acceptable:false,findings:verdict.findings,understoodAs:verdict.understoodAs});
-    return {task:await admin().taskCreate(principal,value,operationId),formulation:verdict};
+    // Persist the RESOLVED binding, not the caller's input: when it was read from the key, storing
+    // `value` unchanged would drop it and leave the task unbound after it had just been accepted.
+    return {task:await admin().taskCreate(principal,{...value,...(verdict.component?{component:verdict.component}:{})},operationId),formulation:verdict};
   }));
   server.registerTool('superadmin_task_update',{description:'Edit pre-plan title, description, requirements and relationships',inputSchema:{operationId,projectId,taskId:entityId,title:z.string().min(1).optional(),description:z.string().optional(),requirements:z.array(z.string()).optional(),relationships:z.array(z.object({type:relationshipTypeSchema,targetTaskId:entityId})).optional()},annotations:mut},safe(async({operationId,projectId,taskId,...value})=>admin().taskUpdate(principal,projectId,taskId,value,operationId)));
   server.registerTool('superadmin_task_transition',{description:'Perform only an allowed lifecycle transition; READY remains formal-gate-only',inputSchema:{operationId,projectId,taskId:entityId,to:taskStateSchema,reason:z.string().min(8)},annotations:mut},safe(async value=>admin().taskTransition(principal,value.projectId,value.taskId,value.to,value.reason,value.operationId)));

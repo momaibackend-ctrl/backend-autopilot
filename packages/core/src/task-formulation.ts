@@ -35,6 +35,12 @@ export interface TaskFormulationVerdict {
   findings: FormulationFinding[];
   /** How the scope classifier read the text, so the author can see the reading it will be planned against. */
   understoodAs: { apiChange: boolean; databaseChange: boolean };
+  /**
+   * The binding the task will actually be stored with: the caller's own `component` when given,
+   * otherwise the one implied by its key. Callers should persist THIS rather than their input, so
+   * an inferred binding is never quietly dropped.
+   */
+  component?: TaskComponent | undefined;
 }
 
 // Words that carry a judgement no artifact can settle. "Fast" has no failing value; "p95 under
@@ -46,6 +52,24 @@ const unverifiableCue = /\b(fast|quick|slow|efficient|optimal|clean|nice|good|be
 const conjunctionCue = /\b(?:and also|as well as|additionally|plus also)\b|;\s*(?:then\s+)?(?:also\s+)?(?:add|implement|create|build|expose|migrate)\b/i;
 const placeholderCue = /\b(tbd|todo|fixme|xxx|placeholder|to be (?:defined|decided|determined))\b/i;
 const requestsSurface = /\b(?:add|expose|create|implement)\b[^.]{0,60}\b(?:endpoint|route|api)\b/i;
+
+// The component a task key already implies. Keys here have carried this convention for a long
+// time -- CORE-* is the shared foundation (38 of them), and every other prefix names an area -- so
+// requiring the field to be restated by hand added a way to fail without adding information.
+//
+// This also exists because of how the requirement landed. `component` was introduced as an
+// immediately BLOCKING field, which hard-blocked any client still holding the previous tool schema:
+// the policy demanded a parameter the caller's cached schema did not offer, and the caller could
+// not comply no matter how it reworded the task. A rule a client cannot satisfy is a platform
+// defect, not a formulation problem. Inferring from a key the caller already sends removes the
+// class: the binding is still always present on the stored task, and an explicit component always
+// wins over an inferred one.
+export function inferComponent(externalKey: string | undefined): TaskComponent | undefined {
+  const prefix = (externalKey ?? '').trim().split('-')[0] ?? '';
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(prefix)) return undefined;
+  if (prefix.toUpperCase() === 'CORE') return { kind: 'CORE' };
+  return { kind: 'MODULE', name: prefix.toLowerCase() };
+}
 
 const minimumDescription = 40;
 const minimumRequirement = 12;
@@ -89,9 +113,12 @@ export function validateTaskFormulation(input: TaskFormulationInput): TaskFormul
   // The component binding is what keeps a project from becoming an undifferentiated pile. It is
   // what makes one implementation exportable on its own, and what stops shared foundation work and
   // module work from being mixed inside a single change.
-  if (!input.component)
-    findings.push({ code: 'COMPONENT_MISSING', severity: 'BLOCKING', field: 'component', problem: 'The task is bound neither to the backend core nor to a named module, so its output cannot be exported on its own.', fix: 'Set component to {"kind":"CORE"} for shared foundation work, or {"kind":"MODULE","name":"<module-slug>"} for work that must stay self-contained and separately exportable.' });
-  else if (input.component.kind === 'MODULE' && !input.component.name)
+  const inferred = input.component ?? inferComponent(input.externalKey);
+  if (!input.component && inferred)
+    findings.push({ code: 'COMPONENT_INFERRED', severity: 'ADVISORY', field: 'component', problem: `No component was given, so it was read from the key "${input.externalKey}" as ${JSON.stringify(inferred)}.`, fix: 'Nothing is required. Pass component explicitly if that reading is wrong -- an explicit value always wins over an inferred one.' });
+  else if (!input.component && !inferred)
+    findings.push({ code: 'COMPONENT_MISSING', severity: 'BLOCKING', field: 'component', problem: 'The task is bound neither to the backend core nor to a named module, and its key does not imply one, so its output could not be exported on its own.', fix: 'Set component to {"kind":"CORE"} for shared foundation work, or {"kind":"MODULE","name":"<module-slug>"} for a self-contained area. An externalKey like CORE-BE-26 or PAYMENTS-API-02 would also imply it.' });
+  if (input.component && input.component.kind === 'MODULE' && !input.component.name)
     findings.push({ code: 'COMPONENT_MODULE_UNNAMED', severity: 'BLOCKING', field: 'component', problem: 'The task is bound to a module, but the module has no name.', fix: 'Give the module a lowercase slug, for example: {"kind":"MODULE","name":"payments"}.' });
 
   if (input.externalKey !== undefined && !/^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/.test(input.externalKey))
@@ -117,5 +144,6 @@ export function validateTaskFormulation(input: TaskFormulationInput): TaskFormul
     acceptable: !findings.some((finding) => finding.severity === 'BLOCKING'),
     findings,
     understoodAs: { apiChange: scope.api.intended, databaseChange: scope.database.intended },
+    ...(inferred ? { component: inferred } : {}),
   };
 }
