@@ -5,7 +5,8 @@ import { z } from 'npm:zod@3.25.76';
 import { DomainError, ExecutionFailed, NotFound, PolicyViolation, UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { requireProjectGithubRepository } from '../../../packages/core/src/repository-guard.ts';
 import { validateTaskFormulation } from '../../../packages/core/src/task-formulation.ts';
-import { awaitingCaller } from '../../../packages/core/src/task-awaiting.ts';
+import { awaitingCaller } from '../../../packages/core/src/task-readiness.ts';
+
 import { PlatformVersions, autonomyModeSchema, consoleBlockSchema, contextSectionTypeSchema, environmentSchema, epicDimensionSchema, fileChangeSchema, membershipRoleSchema, operatorRoleSchema, relationshipTypeSchema, repositoryIdentitySchema, resourcePermissionSchema, resourceTypeSchema, taskStateSchema, validationScenarioStepSchema, validationSuiteSchema } from '../../../packages/schemas/src/index.ts';
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';

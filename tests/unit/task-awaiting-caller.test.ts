@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { awaitingCaller } from "../../packages/core/src/task-awaiting.js";
+import { awaitingCaller } from "../../packages/core/src/task-readiness.js";
 
 // CORE-BE-25 is the case this exists for. Its execution job ended FAILED, the lifecycle returned the
 // task to IMPLEMENTING for a repair attempt, and there it sat for eight hours -- correct behaviour,

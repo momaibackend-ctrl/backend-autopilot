@@ -191,3 +191,73 @@ export function taskReadiness(input: {
     gateArtifactsComplete: blockers.length === 0,
   };
 }
+
+// The project-wide companion to taskReadiness. taskReadiness answers "what does THIS task still
+// need"; this answers "which tasks are waiting on me at all" -- the question nobody could ask
+// before, because a task handed back by a finished execution appeared in no view. CORE-BE-25's job
+// ended FAILED, the lifecycle returned the task to IMPLEMENTING for a repair attempt, and it sat
+// there for eight hours: not in activeJobs, since its job had finished, and not in failedGates,
+// which only covers tasks whose own state is FAILED or BLOCKED.
+//
+// It lives here rather than in a module of its own so it travels with taskReadiness through the
+// Edge bundle -- and because it is the same question at a different scope.
+
+/** Nothing further happens to a task in one of these states unless someone asks for it. */
+const terminalTaskStates = new Set(['READY', 'FAILED']);
+/** A job in one of these is still the platform's turn; anything else has handed the task back. */
+const liveJobStatuses = new Set(['QUEUED', 'DISPATCHING', 'DISPATCHED', 'CLAIMED', 'RUNNING']);
+
+export interface AwaitingTask {
+  taskId: string;
+  externalKey: string;
+  title: string;
+  state: string;
+  /** How the last execution ended, or NONE when the task has never been executed. */
+  lastJobStatus: string;
+  repairAttempts: number;
+  updatedAt: string;
+  /** Whole hours since the task last changed, so a long-forgotten one is obvious at a glance. */
+  idleHours: number;
+  why: string;
+}
+
+export function awaitingCaller(input: {
+  tasks: Array<{ id: string; externalKey: string; title: string; state: string; repairAttempts?: number; updatedAt: string }>;
+  jobs: Array<{ taskId: string; status: string; updatedAt: string }>;
+  now: string;
+}): AwaitingTask[] {
+  const latestJob = new Map<string, { status: string; updatedAt: string }>();
+  for (const job of input.jobs) {
+    const seen = latestJob.get(job.taskId);
+    if (!seen || seen.updatedAt < job.updatedAt) latestJob.set(job.taskId, { status: job.status, updatedAt: job.updatedAt });
+  }
+  const nowMs = Date.parse(input.now);
+  return input.tasks
+    .filter((task) => !terminalTaskStates.has(task.state))
+    .filter((task) => !input.jobs.some((job) => job.taskId === task.id && liveJobStatuses.has(job.status)))
+    .map((task) => {
+      const last = latestJob.get(task.id);
+      const lastJobStatus = last?.status ?? 'NONE';
+      return {
+        taskId: task.id,
+        externalKey: task.externalKey,
+        title: task.title,
+        state: task.state,
+        lastJobStatus,
+        repairAttempts: task.repairAttempts ?? 0,
+        updatedAt: task.updatedAt,
+        idleHours: Math.max(0, Math.floor((nowMs - Date.parse(task.updatedAt)) / 3_600_000)),
+        why: reasonFor(task.state, lastJobStatus),
+      };
+    })
+    .sort((a, b) => b.idleHours - a.idleHours);
+}
+
+function reasonFor(state: string, lastJobStatus: string): string {
+  if (state === 'BLOCKED') return 'BLOCKED by an unmet dependency or a policy gate. Read task_status.readiness.blockers for which one.';
+  if (lastJobStatus === 'NONE') return `In ${state} and never executed. It is waiting for its first execution.`;
+  if (['FAILED', 'TIMED_OUT'].includes(lastJobStatus))
+    return `Its last execution ended ${lastJobStatus} and the lifecycle returned it to ${state} for a repair attempt. Read the failing log with artifact_read(tail:true), then send the repair through task_status.readiness.nextAction.`;
+  if (lastJobStatus === 'CANCELLED') return `Its last execution was CANCELLED, so ${state} is where it was left. Re-execute it or close it out.`;
+  return `In ${state} with its last execution ${lastJobStatus}. Nothing is running, so it is waiting on the next call from you.`;
+}
