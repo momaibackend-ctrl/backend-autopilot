@@ -10,6 +10,24 @@ Explicitly allowlisted live sandbox resources for project `ac6d68be-272c-4bca-aa
 | Supabase | project | `shzdgtatfonznkprnxrz` | sandbox | active |
 | PostgreSQL | database | `supabase:shzdgtatfonznkprnxrz:postgres` | sandbox | active |
 
+Explicitly allowlisted resources for project `f40add71-0c6a-41f2-b407-9c858b500ab0` (`momna-backend-aicorn-org`):
+
+| Provider | Type | External reference | Environment | Status |
+|---|---|---|---|---|
+| GitHub | organization account | `AICorn-Rocket-Group` | sandbox | active |
+| GitHub | private repository | `AICorn-Rocket-Group/momna-backend` | sandbox | active; canonical development repository at version 1 |
+
+This namespace is not owned by the sandbox identity. `momaibackend-ctrl` holds ADMIN on that one
+repository as an explicitly invited collaborator and holds nothing else in the organization, which
+is the entire basis on which the registration was accepted — see
+`scripts/register-organization-repository.ts`. The repository is a separate project precisely
+because a project has exactly one canonical development repository: registering it beside
+`momaibackend-ctrl/momna-backend` would have left it unexecutable, and promoting it inside the
+existing project would have superseded that mirror instead of adding to it. Either repository is
+withdrawn from the connector at any time with `superadmin_resource_update` `status=DISABLED`, and
+restored with `status=ACTIVE`; a disabled repository fails every execution, PR and read path with
+`Resource is disabled`.
+
 The repository and Supabase project existed before registration; Backend Autopilot verified and adopted them rather than creating duplicates. Migration, RLS, Auth, Storage, CI, and PR evidence is retained in project-scoped artifacts and the audit log. Destruction remains unavailable without a separate resource-bound confirmation object.
 
 ## Control-plane deployment resources

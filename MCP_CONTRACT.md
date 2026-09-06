@@ -117,7 +117,7 @@ There are 88 registered remote tools. `superadmin_system_overview` returns proje
 - Console blocks are typed `TEXT`, `METRIC` or `JSON`; raw HTML, scripts and file/component paths are not accepted.
 - Safety settings such as production-write denial cannot be changed or deleted.
 - The last active superadmin cannot be deleted.
-- Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution.
+- Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution. That flow adopts an organization-owned repository only when GitHub itself reports the active sandbox identity as ADMIN on that exact repository; owning the namespace is not required and would be impossible, since an organization login can never equal a user login. A namespace on its own confers nothing — ADMIN on the one registered repository is what every write passes through.
 - Delete, membership and resource binding tools require structured identity, confirmation enum and reason fields. No free-form command is interpreted.
 
 ## Rebase onto the current base
