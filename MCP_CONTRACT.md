@@ -97,6 +97,7 @@ not a core task.
 | Tasks/lifecycle | `superadmin_task_list`, `superadmin_task_get`, `superadmin_task_create`, `superadmin_task_update`, `superadmin_task_transition`, `superadmin_task_analyze`, `superadmin_task_plan`, `superadmin_task_execute`, `superadmin_task_retry`, `superadmin_task_review`, `superadmin_task_rebase_onto_current_base`, `superadmin_task_delete` |
 | Jobs | `superadmin_job_list`, `superadmin_job_get`, `superadmin_job_create`, `superadmin_job_cancel` |
 | Runs | `superadmin_run_list`, `superadmin_run_get`, `superadmin_run_delete` |
+| Repository evidence | `superadmin_sandbox_repository_read`, `superadmin_sandbox_repository_ci_runs`, `superadmin_sandbox_repository_ci_log` |
 | Artifacts | `superadmin_artifact_list`, `superadmin_artifact_get`, `superadmin_artifact_create`, `superadmin_artifact_update`, `superadmin_artifact_delete` |
 | Scenarios | `superadmin_scenario_list`, `superadmin_scenario_get`, `superadmin_scenario_create`, `superadmin_scenario_update`, `superadmin_scenario_delete`, `superadmin_scenario_run` |
 | Validations | `superadmin_validation_list`, `superadmin_validation_get`, `superadmin_validation_run`, `superadmin_validation_delete` |
@@ -117,7 +118,8 @@ There are 88 registered remote tools. `superadmin_system_overview` returns proje
 - Console blocks are typed `TEXT`, `METRIC` or `JSON`; raw HTML, scripts and file/component paths are not accepted.
 - Safety settings such as production-write denial cannot be changed or deleted.
 - The last active superadmin cannot be deleted.
-- Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution.
+- CI evidence is readable, not just repository content. `superadmin_sandbox_repository_ci_runs` and `superadmin_sandbox_repository_ci_log` answer "what did the workflow actually do" for a registered repository, so a red check on a private repository is diagnosed from its own job log instead of guessed at. Both are read-only, resolve the same registered non-PRODUCTION READ-permitted resource, and address GitHub only as that resource, so a run id from another repository 404s rather than reading somewhere else. The returned log tail is redacted for credential shapes on top of the masking Actions already applies.
+- Git/GitHub resources cannot be created or rebound through generic resource tools. The existing dedicated identity/repository verification flow is required and only registered resource UUIDs are accepted by execution. That flow adopts an organization-owned repository only when GitHub itself reports the active sandbox identity as ADMIN on that exact repository; owning the namespace is not required and would be impossible, since an organization login can never equal a user login. A namespace on its own confers nothing — ADMIN on the one registered repository is what every write passes through.
 - Delete, membership and resource binding tools require structured identity, confirmation enum and reason fields. No free-form command is interpreted.
 
 ## Rebase onto the current base

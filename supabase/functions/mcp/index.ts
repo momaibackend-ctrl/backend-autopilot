@@ -398,6 +398,8 @@ Deno.serve(async request=>{
   // required elsewhere, and cannot escape the registered repository (path is scoped server-side
   // to that resource's externalReference, never an arbitrary URL the caller supplies).
   server.registerTool('superadmin_sandbox_repository_read',{description:'Read a file (returns text content) or list a directory (returns entries) from a registered GitHub repository at an exact ref, defaulting to the repository default branch',inputSchema:{projectId,resourceId:entityId,path:z.string().default(''),ref:z.string().optional()},annotations:ro},safe(async({projectId,resourceId,path,ref})=>{admin();return readSandboxRepository(runtime,{projectId,resourceId,path,ref});}));
+  server.registerTool('superadmin_sandbox_repository_ci_runs',{description:'List recent GitHub Actions workflow runs for a registered repository, newest first, optionally narrowed to one branch or one exact head SHA. Read-only. It reaches only the registered repository own runs and returns status, conclusion, event, head SHA and the run id that a log read needs.',inputSchema:{projectId,resourceId:entityId,branch:z.string().min(1).max(255).optional(),headSha:z.string().regex(/^[0-9a-f]{40}$/).optional(),limit:z.number().int().min(1).max(50).default(10)},annotations:ro},safe(async({projectId,resourceId,branch,headSha,limit})=>{admin();return listSandboxRepositoryCiRuns(runtime,{projectId,resourceId,branch,headSha,limit});}));
+  server.registerTool('superadmin_sandbox_repository_ci_log',{description:'Read the GitHub Actions job log for one run of a registered repository, so a red check is diagnosed from its actual output instead of guessed at. Returns each selected job step list with per-step conclusions plus the tail of its log, defaulting to the jobs that did not succeed. Read-only, and the tail is redacted for credential shapes on top of the masking Actions already applies.',inputSchema:{projectId,resourceId:entityId,runId:z.number().int().positive(),jobId:z.number().int().positive().optional(),onlyFailed:z.boolean().default(true),tailLines:z.number().int().min(10).max(2000).default(200)},annotations:ro},safe(async({projectId,resourceId,runId,jobId,onlyFailed,tailLines})=>{admin();return readSandboxRepositoryCiLog(runtime,{projectId,resourceId,runId,jobId,onlyFailed,tailLines});}));
 
   // ------------------------------------------------------------------------
   // Stage II: Canonical Development Repository, repository export, human handover.
@@ -529,6 +531,74 @@ async function readSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime
     throw new ExecutionFailed('GitHub repository content read returned no readable content',{path:body.path});
   }
   return {type:'file',path:body.path,sha:body.sha,size:body.size,content};
+}
+
+
+// CI evidence, read-only. `superadmin_sandbox_repository_read` answers "what is in the tree";
+// nothing answered "what did the workflow actually do", so a red check on a private repository was
+// unreadable from this surface and the only honest report was "root cause unknown". These two close
+// that gap without opening a new one: both resolve the same registered, non-PRODUCTION,
+// READ-permitted resource and address GitHub only as `/repos/<that resource>/...`, so a run id
+// belonging to another repository resolves against this one and 404s rather than reading elsewhere.
+async function requireReadableSandboxRepository(runtime:ReturnType<typeof createEdgeRuntime>,projectId:string,resourceId:string){
+  const resource=await requireProjectGithubRepository(runtime.store,projectId,resourceId);
+  if(resource.environment==='PRODUCTION')throw new UnsupportedOperation('Production resource access is not supported');
+  if(!resource.permissions.includes('READ'))throw new PolicyViolation('Resource permission denied',{required:'READ'});
+  return resource;
+}
+
+async function githubActionsJson<T>(path:string):Promise<T>{
+  const response=await fetch(`https://api.github.com${path}`,{headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'}});
+  if(response.status===404)throw new NotFound('GitHub Actions record not found for this repository',{path});
+  if(!response.ok)throw new ExecutionFailed('GitHub Actions read failed',{status:response.status,body:(await response.text()).slice(0,300)});
+  return await response.json() as T;
+}
+
+async function listSandboxRepositoryCiRuns(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;branch?:string;headSha?:string;limit:number}){
+  const resource=await requireReadableSandboxRepository(runtime,input.projectId,input.resourceId);
+  const query=new URLSearchParams({per_page:String(input.limit)});
+  if(input.branch)query.set('branch',input.branch);
+  if(input.headSha)query.set('head_sha',input.headSha);
+  const body=await githubActionsJson<{total_count:number;workflow_runs:Array<{id:number;name:string;path:string;head_branch:string;head_sha:string;event:string;status:string;conclusion:string|null;created_at:string;html_url:string}>}>(`/repos/${resource.externalReference}/actions/runs?${query.toString()}`);
+  return {repository:resource.externalReference,totalCount:body.total_count,runs:(body.workflow_runs??[]).map(run=>({runId:run.id,workflow:run.name,path:run.path,branch:run.head_branch,headSha:run.head_sha,event:run.event,status:run.status,conclusion:run.conclusion,createdAt:run.created_at,url:run.html_url}))};
+}
+
+async function readSandboxRepositoryCiLog(runtime:ReturnType<typeof createEdgeRuntime>,input:{projectId:string;resourceId:string;runId:number;jobId?:number;onlyFailed:boolean;tailLines:number}){
+  const resource=await requireReadableSandboxRepository(runtime,input.projectId,input.resourceId);
+  const run=await githubActionsJson<{id:number;name:string;head_branch:string;head_sha:string;event:string;status:string;conclusion:string|null;html_url:string}>(`/repos/${resource.externalReference}/actions/runs/${input.runId}`);
+  const body=await githubActionsJson<{jobs:Array<{id:number;name:string;status:string;conclusion:string|null;html_url:string;steps?:Array<{number:number;name:string;status:string;conclusion:string|null}>}>}>(`/repos/${resource.externalReference}/actions/runs/${input.runId}/jobs?per_page=100`);
+  const all=body.jobs??[];
+  // A green run asked for with the default filter would otherwise come back with no jobs at all,
+  // which reads as "no evidence" rather than "nothing failed". Fall back to every job in that case.
+  const failed=all.filter(job=>job.conclusion&&job.conclusion!=='success'&&job.conclusion!=='skipped');
+  const selected=input.jobId?all.filter(job=>job.id===input.jobId):input.onlyFailed&&failed.length?failed:all;
+  const jobs=[];
+  for(const job of selected.slice(0,5))
+    jobs.push({jobId:job.id,name:job.name,status:job.status,conclusion:job.conclusion,url:job.html_url,steps:(job.steps??[]).map(step=>({number:step.number,name:step.name,conclusion:step.conclusion})),log:await sandboxRepositoryJobLogTail(resource.externalReference,job.id,input.tailLines)});
+  return {repository:resource.externalReference,runId:run.id,workflow:run.name,branch:run.head_branch,headSha:run.head_sha,event:run.event,status:run.status,conclusion:run.conclusion,url:run.html_url,jobCount:all.length,failedJobCount:failed.length,jobs};
+}
+
+async function sandboxRepositoryJobLogTail(repository:string,jobId:number,tailLines:number){
+  // GitHub answers a job log with a 302 to a signed storage URL on a different host. The redirect is
+  // followed by hand so the Authorization header is never replayed to that third party.
+  const response=await fetch(`https://api.github.com/repos/${repository}/actions/jobs/${jobId}/logs`,{redirect:'manual',headers:{authorization:`Bearer ${required('AUTOPILOT_GITHUB_DISPATCH_TOKEN')}`,accept:'application/vnd.github+json','user-agent':'backend-autopilot','x-github-api-version':'2022-11-28'}});
+  const location=response.headers.get('location');
+  const download=location?await fetch(location,{headers:{'user-agent':'backend-autopilot'}}):response;
+  if(download.status===404||download.status===410)return {available:false,reason:'Job log is expired or unavailable'};
+  if(!download.ok)throw new ExecutionFailed('GitHub Actions job log read failed',{status:download.status});
+  const lines=(await download.text()).split('\n');
+  const tail=lines.slice(-tailLines);
+  return {available:true,totalLines:lines.length,returnedLines:tail.length,text:redactCiLog(tail.join('\n'))};
+}
+
+// Actions already masks values registered as secrets. This is a second, shape-based pass, so a
+// credential that was never registered as a secret cannot leave through a log tail either.
+function redactCiLog(text:string){
+  return text
+    .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g,'[REDACTED_GITHUB_TOKEN]')
+    .replace(/github_pat_[A-Za-z0-9_]{20,}/g,'[REDACTED_GITHUB_TOKEN]')
+    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,'[REDACTED_JWT]')
+    .replace(/((?:authorization|x-api-key|password|token)\s*[:=]\s*)(?:bearer\s+)?\S{8,}/gi,'$1[REDACTED]');
 }
 
 function protectedResourceMetadata():Response{
