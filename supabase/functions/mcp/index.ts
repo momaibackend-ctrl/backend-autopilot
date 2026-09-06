@@ -45,7 +45,14 @@ Deno.serve(async request=>{
   // a server that does not offer a server->client stream, and clients handle it without retrying.
   if(request.method==='GET')return new Response(JSON.stringify({jsonrpc:'2.0',error:{code:-32000,message:'Method Not Allowed: this MCP server is stateless and offers no server-initiated SSE stream'},id:null}),{status:405,headers:{'content-type':'application/json',allow:'POST, DELETE, OPTIONS',...mcpCorsHeaders(request)}});
   const runtime=createEdgeRuntime();
-  const server=new McpServer({name:'backend-autopilot',version:'0.5.0'});
+  // The advertised version is the TOOL SURFACE revision, deliberately independent of
+  // PlatformVersions.platform. Clients cache the tool manifest against server identity and only
+  // refetch when that identity changes: leaving this pinned at the platform version meant adding
+  // superadmin_sandbox_repository_ci_runs/_ci_log deployed a server whose tools had changed while
+  // it still announced itself as the server the client had already catalogued, so connectors kept
+  // serving the previous list and re-authenticating did not help. Bump this whenever a tool is
+  // added, removed or renamed -- it is the only signal a client gets that its catalogue is stale.
+  const server=new McpServer({name:'backend-autopilot',version:'0.5.1'});
   const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:{result:value}});
   // Every list tool is paged. Before this, they returned a project's entire history in one
   // response: on the control plane's own project `artifact_list` was 19.1 MB / 26.6 s and
