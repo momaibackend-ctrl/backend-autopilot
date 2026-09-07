@@ -68,7 +68,7 @@ describe('deterministic asynchronous execution contract',()=>{
     // Force straight to REVIEWING: IMPLEMENTATION_PLAN/ARCHITECTURE_REVIEW are the real artifacts
     // taskPlan just wrote, so the independent review below evaluates genuine evidence, not a stub.
     await store.updateTask({...(await store.getTask(project.id,task.id))!,state:'REVIEWING'});
-    await store.saveArtifact({id:crypto.randomUUID(),projectId:project.id,taskId:task.id,kind:'CODE_DIFF',schemaVersion:'1',content:{diff:'diff --git a/x b/x',changedFiles:['x']},contentHash:'hash',status:'AVAILABLE',createdAt:new Date().toISOString()} as never);
+    await store.saveArtifact({id:crypto.randomUUID(),projectId:project.id,taskId:task.id,kind:'CODE_DIFF',schemaVersion:'1',content:{diff:'diff --git a/src/x.ts b/src/x.ts\n+ log.info("x.handled")',changedFiles:['src/x.ts']},contentHash:'hash',status:'AVAILABLE',createdAt:new Date().toISOString()} as never);
     // Every testsRequired type from the real plan (UNIT/INTEGRATION/SECURITY/REGRESSION for a
     // task whose text doesn't mention database or API) passes, so the independent review itself
     // passes -- isolating the assertion to the terminal artifact gate, not review failure.
