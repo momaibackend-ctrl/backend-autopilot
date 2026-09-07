@@ -70,7 +70,8 @@ const reviewCheckRemediation: Record<string, string> = {
   security: "The plan lists no securityConsiderations; restate the task's security constraints and re-plan.",
   dataOwnership: "The plan lists no dataOwners; restate ownership in the task requirements and re-plan.",
   errorHandling: "REGRESSION must be among the plan's testsRequired.",
-  observability: "State an observability/logging requirement in the task, or keep the task at LOW risk.",
+  observability:
+    "The change adds operational code that emits nothing an operator could see. Add structured logging, a metric, a span or a health signal to the code this task actually changed -- the check reads the CODE_DIFF artifact, so restating the requirement or lowering the task's risk level does nothing. The review's warnings name which files were inspected. A change made only of docs, tests, migrations or contracts is recorded NOT_APPLICABLE and is never asked for telemetry.",
   raceConditions: "State a concurrency/ownership/idempotency security consideration in the task requirements.",
   idempotency: "Describe an idempotent rollback strategy, or avoid database changes in this task.",
   rollback: "The plan needs a rollback strategy; restate it in the task requirements and re-plan.",

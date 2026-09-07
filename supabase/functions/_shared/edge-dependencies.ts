@@ -17,6 +17,7 @@ import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';
 import '../../../packages/context-engine/src/index.ts';
 import '../../../packages/execution-engine/src/reviewer.ts';
+import '../../../packages/execution-engine/src/observability-evidence.ts';
 import '../../../packages/operator-console/src/delivery.ts';
 import '../../../packages/operator-console/src/projections.ts';
 import '../../../packages/core/src/task-readiness.ts';
