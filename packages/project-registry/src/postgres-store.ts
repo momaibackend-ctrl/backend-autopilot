@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { Conflict } from '../../core/src/errors.js';
 import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
@@ -59,10 +59,15 @@ export class PostgresStateStore implements StateStore {
   async getExecutionJob(projectId:string,id:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.id,id),eq(s.executionJobs.projectId,projectId))).limit(1))[0]);}
   async getExecutionJobById(id:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(eq(s.executionJobs.id,id)).limit(1))[0]);}
   async findExecutionJobByOperation(projectId:string,operationId:string){return data<ExecutionJob>((await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.operationId,operationId))).limit(1))[0]);}
-  async listExecutionJobs(projectId:string,taskId?:string){const rows=taskId?await this.db.select().from(s.executionJobs).where(and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId))):await this.db.select().from(s.executionJobs).where(eq(s.executionJobs.projectId,projectId));return rows.map(r=>r.data as ExecutionJob);}
+  // Ordered, because callers read this list positionally -- branch continuity inherits from the
+  // LAST job on a branch. Without an explicit order Postgres is free to return rows in whatever
+  // order it finds them, and an UPDATE moves a row, so "last" silently meant "most recently
+  // rewritten". The PostgREST store has always ordered by created_at; this one now agrees.
+  async listExecutionJobs(projectId:string,taskId?:string){const where=taskId?and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId)):eq(s.executionJobs.projectId,projectId);const rows=await this.db.select().from(s.executionJobs).where(where).orderBy(asc(s.executionJobs.createdAt));return rows.map(r=>r.data as ExecutionJob);}
   // Indexed columns only; `data` -- which carries payload, result and error -- is never read.
-  async listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>{
-    const where=taskId?and(eq(s.executionJobs.projectId,projectId),eq(s.executionJobs.taskId,taskId)):eq(s.executionJobs.projectId,projectId);
+  async listExecutionJobSummaries(projectId:string,taskId?:string,statuses?:readonly string[]):Promise<ExecutionJobSummary[]>{
+    const filters=[eq(s.executionJobs.projectId,projectId),...(taskId?[eq(s.executionJobs.taskId,taskId)]:[]),...(statuses?.length?[inArray(s.executionJobs.status,[...statuses])]:[])];
+    const where=filters.length>1?and(...filters):filters[0];
     const rows=await this.db.select({id:s.executionJobs.id,projectId:s.executionJobs.projectId,taskId:s.executionJobs.taskId,resourceId:s.executionJobs.resourceId,runId:s.executionJobs.runId,operationId:s.executionJobs.operationId,kind:s.executionJobs.kind,status:s.executionJobs.status,attempt:s.executionJobs.attempt,workflowRunId:s.executionJobs.workflowRunId,leaseOwner:s.executionJobs.leaseOwner,leaseExpiresAt:s.executionJobs.leaseExpiresAt,queuedAt:s.executionJobs.createdAt,updatedAt:s.executionJobs.updatedAt}).from(s.executionJobs).where(where).orderBy(s.executionJobs.createdAt);
     return rows.map(r=>({id:r.id,projectId:r.projectId,taskId:r.taskId,resourceId:r.resourceId,...(r.runId?{runId:r.runId}:{}),operationId:r.operationId,kind:r.kind,status:r.status,attempt:r.attempt,...(r.workflowRunId?{workflowRunId:r.workflowRunId}:{}),...(r.leaseOwner?{leaseOwner:r.leaseOwner}:{}),...(r.leaseExpiresAt?{leaseExpiresAt:r.leaseExpiresAt.toISOString()}:{}),queuedAt:r.queuedAt.toISOString(),updatedAt:r.updatedAt.toISOString()}));
   }

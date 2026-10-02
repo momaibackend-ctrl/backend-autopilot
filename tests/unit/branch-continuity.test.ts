@@ -26,4 +26,25 @@ describe("resolveBranchContinuity", () => {
     });
     expect(result).toEqual({ status: "DIVERGED" });
   });
+
+  it("adopts the real HEAD when the expected commit is not an object this repository has", () => {
+    const actualHeadSha = "c".repeat(40);
+    const result = resolveBranchContinuity({
+      expectedSha: "a".repeat(40),
+      actualHeadSha,
+      isAncestor: false,
+      expectedExists: false,
+    });
+    expect(result).toEqual({ status: "UNPUBLISHED", healedSha: actualHeadSha });
+  });
+
+  it("still reports a match when an unresolvable expected SHA is nevertheless the HEAD", () => {
+    const sha = "a".repeat(40);
+    const result = resolveBranchContinuity({ expectedSha: sha, actualHeadSha: sha, isAncestor: false, expectedExists: false });
+    expect(result).toEqual({ status: "MATCH" });
+  });
+
+  it("keeps the two-sided behaviour when existence is not reported", () => {
+    expect(resolveBranchContinuity({ expectedSha: "a".repeat(40), actualHeadSha: "c".repeat(40), isAncestor: false })).toEqual({ status: "DIVERGED" });
+  });
 });

@@ -12,7 +12,28 @@ Deno.serve(async request => {
   if (request.headers.get('authorization') !== `Bearer ${required('AUTOPILOT_RECONCILE_TOKEN')}`) return json({ error: 'unauthorized' }, 401);
   const runtime = createEdgeRuntime(), token = required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'), repository = required('AUTOPILOT_CONTROL_REPOSITORY');
   const projects = await runtime.store.listProjects();
-  const candidates = (await Promise.all(projects.map(project => runtime.store.listExecutionJobs(project.id)))).flat().filter(job => activeJobStatuses.includes(job.status));
+  // Statuses first; payloads only where they are genuinely needed.
+  //
+  // This is the one caller in the system that runs unattended on a timer, so an unbounded read here
+  // is not a slow page someone notices -- it is quota spent every fifteen minutes with nobody
+  // watching. `payload`, `result` and `error` average 29 kB per row and reach 202 kB (see
+  // ExecutionJobSummary), so listing full jobs to read their statuses moved about 5 MB per project
+  // per run. At 96 runs a day that exhausted the project's entire monthly egress allowance in
+  // roughly ten days and left every service on it restricted with HTTP 402.
+  //
+  // Every other caller had already been migrated to the summary read; this one was missed precisely
+  // because it is the one nobody watches. Active jobs are normally zero, so the full envelope --
+  // which classifyExecutionJob and the write-backs below do need -- is now fetched for those few
+  // and for nothing else.
+  //
+  // The status filter is applied in the store, not here, so the poll reads only what is in flight.
+  // Filtering after the read would still have made the cost proportional to everything that ever
+  // ran -- which is the shape that failed -- and the table only grows.
+  //
+  // The 15-minute cadence is deliberately unchanged. Making each run cheap is what fixes the quota;
+  // slowing the schedule down would instead delay the stuck-job recovery this exists to perform.
+  const active = (await Promise.all(projects.map(project => runtime.store.listExecutionJobSummaries(project.id, undefined, activeJobStatuses)))).flat();
+  const candidates = (await Promise.all(active.map(summary => runtime.store.getExecutionJob(summary.projectId, summary.id)))).filter((job): job is ExecutionJob => Boolean(job));
   const results = [];
   for (const job of candidates) {
     let workflowRun: WorkflowRunView | undefined;

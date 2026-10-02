@@ -74,8 +74,16 @@ export class AsyncExecutionCoordinator {
     if(task.state==='PLANNED')task=await this.workflow.transition(task,'IMPLEMENTING','Remote execution job queued',actor);
     const now=this.clock.now();const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,startedAt:now};
     await this.store.saveRun(run);
-    const previous=(await this.store.listExecutionJobs(project.id,task.id)).filter(value=>value.commitSha).at(-1);
-    let job:ExecutionJob={id:this.ids.next(),projectId:project.id,taskId:task.id,resourceId:targetResourceId,runId:run.id,operationId:data.operationId,kind:task.repairAttempts?'REPAIR':'IMPLEMENTATION',status:'QUEUED',payload:{changes:data.changes},branch:deterministicTaskBranch(task),...(previous?.commitSha?{commitSha:previous.commitSha}:{}),...(dependencyBase?{baseBranch:dependencyBase.branch,baseCommitSha:dependencyBase.commitSha}:{}),attempt:task.repairAttempts,queuedAt:now,updatedAt:now};
+    // Branch continuity is a property of ONE ref: the inherited SHA only means anything as
+    // "what origin carries for exactly this branch". A REBASE job publishes its commit on a
+    // throwaway `autopilot/...-rebase-<base>` branch, so inheriting "the last job that has any
+    // commitSha" pairs this job's task branch with a commit from an unrelated lineage -- which
+    // the runner can only read as divergence, permanently, because every later job re-inherits
+    // the same value. Scoping the lookup to the branch this job will actually check out keeps
+    // the pair honest and needs no per-kind exclusion list.
+    const branch=deterministicTaskBranch(task);
+    const previous=(await this.store.listExecutionJobs(project.id,task.id)).filter(value=>value.commitSha&&value.branch===branch).at(-1);
+    let job:ExecutionJob={id:this.ids.next(),projectId:project.id,taskId:task.id,resourceId:targetResourceId,runId:run.id,operationId:data.operationId,kind:task.repairAttempts?'REPAIR':'IMPLEMENTATION',status:'QUEUED',payload:{changes:data.changes},branch,...(previous?.commitSha?{commitSha:previous.commitSha}:{}),...(dependencyBase?{baseBranch:dependencyBase.branch,baseCommitSha:dependencyBase.commitSha}:{}),attempt:task.repairAttempts,queuedAt:now,updatedAt:now};
     job=await this.store.createExecutionJob(job);
     await this.audit.record({actor,action:'execution.job.queued',projectId:project.id,taskId:task.id,resourceId:targetResourceId,input:{operationId:data.operationId,changePaths:data.changes.map(value=>value.path)},result:{jobId:job.id,runId:run.id,repositoryResolution:target.source,repository:repository.externalReference,...(dependencyBase?{baseCommitSha:dependencyBase.commitSha}:{})},reason:'Authorized asynchronous GitHub Actions execution',correlationId:data.operationId});
     try{

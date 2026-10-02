@@ -1141,6 +1141,12 @@ export const executionJobSchema = z.object({
   baseCommit: z.string().optional(),
   baseBranch: z.string().optional(),
   baseCommitSha: z.string().optional(),
+  // The commit this job built but has not yet published. It exists only in the runner's
+  // disposable workspace until the push succeeds, so it must never be read as branch-continuity
+  // evidence -- a job that dies between committing and pushing would otherwise leave behind a
+  // SHA that no clone can ever resolve, and which therefore can never be anyone's ancestor.
+  attemptedCommitSha: z.string().optional(),
+  /** Published: origin carries this commit on `branch`. Only a successful push may write it. */
   commitSha: z.string().optional(),
   attempt: z.number().int().nonnegative(),
   leaseOwner: z.string().optional(),

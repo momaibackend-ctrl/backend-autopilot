@@ -13,7 +13,7 @@ import { AutopilotService } from '../packages/core/src/application.js';
 import { ExecutionFailed, PolicyViolation } from '../packages/core/src/errors.js';
 import { systemClock, uuidGenerator } from '../packages/core/src/ports.js';
 import type { StateStore } from '../packages/core/src/ports.js';
-import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, resolveBranchContinuity, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseGit } from '../packages/execution-engine/src/index.js';
+import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, resolveBranchContinuity, resolveRebasePublication, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseCommitIdentity, type RebaseGit } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
 import { requireProjectGithubRepository } from '../packages/core/src/repository-guard.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
@@ -78,11 +78,23 @@ try{
   const rebaseOutcome=rebase?await performRebase({workspace,job:current,commands,rebase,githubToken,artifacts,audit,store,project,task,resource,owner}):undefined;
   const result=rebaseOutcome?rebaseOutcome.result:await execution.execute({workspace,task,changes:payload.changes});
   const provisionedWrapperSha=await commitProvisionedGradleWrapper(workspace,current,commands,git);const commitSha=provisionedWrapperSha??result.commitSha;
-  current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha,updatedAt:systemClock.now()});
+  // The commit exists only in this disposable workspace until the push below succeeds, so it is
+  // recorded as ATTEMPTED, never as the job's published commitSha. Writing it as published up
+  // front is what let a failed push leave behind a SHA that no clone can resolve -- and an
+  // unresolvable SHA can never be anyone's ancestor, so every later job that inherited it for
+  // branch continuity failed closed against it forever. `commitSha` is promoted after the push.
+  // A rebase moves the job onto a different branch, so a commit published for the previous one
+  // stops describing this job's branch and is dropped rather than carried across lineages.
+  const stillPublished=current.branch===result.branch?current.commitSha:undefined;
+  current=await store.updateExecutionJob({...current,baseCommit:result.baseCommit,branch:result.branch,commitSha:stillPublished,attemptedCommitSha:commitSha,updatedAt:systemClock.now()});
   await artifacts.write(project.id,'CODE_DIFF',{diff:result.diff,changedFiles:result.changedFiles},task.id,current.runId);
   const migrationFiles=rebaseOutcome?[]:payload.changes.filter(value=>/migrations?\//.test(value.path));if(migrationFiles.length)await artifacts.write(project.id,'MIGRATION_MANIFEST',{migrations:migrationFiles.map(value=>({path:value.path,content:value.content})),validation:'Pending migration test gate',rollback:'Implementation plan rollback strategy'},task.id,current.runId);
   const apiFiles=rebaseOutcome?[]:payload.changes.filter(value=>/openapi/i.test(value.path)&&value.content!==undefined);if(apiFiles.length)await artifacts.write(project.id,'API_CONTRACT',{contracts:apiFiles.map(value=>({path:value.path,document:(/\.ya?ml$/i.test(value.path)?parseYaml(value.content as string):JSON.parse(value.content as string)) as unknown}))},task.id,current.runId);
-  await new LiveGitHubAdapter(commands).push(resource,{workspace,branch:result.branch,correlationId:task.id});
+  // A transfer the target base already carries publishes nothing: its branch would be a ref
+  // identical to the base, and if an earlier attempt left one behind, pushing the base over it
+  // is the very non-fast-forward this path exists to avoid.
+  if(!rebaseOutcome?.alreadyIntegrated)await new LiveGitHubAdapter(commands).push(resource,{workspace,branch:result.branch,correlationId:task.id,...(rebaseOutcome?.lease?{lease:rebaseOutcome.lease}:{})});
+  current=await store.updateExecutionJob({...current,commitSha,updatedAt:systemClock.now()});
   if(current.runId){const run=await store.getRun(project.id,current.runId);if(run)await store.updateRun({...run,baseCommit:result.baseCommit,branch:result.branch,commitSha});}
   await service.taskTest(project.id,task.id,owner,current.operationId,workspace);
   const toolchain=stack==='KOTLIN_GRADLE'?await gradleToolchainVersions(workspace,current,commands):undefined;
@@ -122,14 +134,21 @@ async function prepareWorkspace(repository:string,job:ExecutionJob,commands:Comm
         const actualHeadSha=head.stdout.trim();
         if(actualHeadSha!==job.commitSha){
           const ancestry=await commands.run({command:'git',args:['merge-base','--is-ancestor',job.commitSha,'HEAD'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
-          const decision=resolveBranchContinuity({expectedSha:job.commitSha,actualHeadSha,isAncestor:ancestry.record.exitCode===0});
-          if(decision.status!=='FAST_FORWARD')throw new ExecutionFailed('Remote task branch no longer matches the persisted exact commit SHA',{expected:job.commitSha,actual:actualHeadSha});
-          // FAST_FORWARD: heal the persisted commitSha to the new HEAD so this job -- and any
-          // future retry that inherits it for continuity -- doesn't deadlock against a value that
-          // can now never match again.
-          console.log(JSON.stringify({level:'warn',event:'execution.branch.fast_forward_adopted',jobId:job.id,taskId:job.taskId,expected:job.commitSha,actual:actualHeadSha}));
-          job={...job,commitSha:decision.healedSha};
-          await store.updateExecutionJob({...job,updatedAt:systemClock.now()});
+          // Whether the expected commit is an object this repository actually has. If it is not,
+          // it never reached origin, so it cannot have contributed anything the branch would now
+          // be losing -- and it can never become an ancestor either, which is precisely what made
+          // the fail-closed branch permanent rather than protective.
+          const reachable=await commands.run({command:'git',args:['cat-file','-e',`${job.commitSha}^{commit}`],cwd:workspace,taskId:job.taskId,allowed:['READ']});
+          const decision=resolveBranchContinuity({expectedSha:job.commitSha,actualHeadSha,isAncestor:ancestry.record.exitCode===0,expectedExists:reachable.record.exitCode===0});
+          if(decision.status==='DIVERGED')throw new ExecutionFailed('Remote task branch no longer matches the persisted exact commit SHA',{expected:job.commitSha,actual:actualHeadSha});
+          if(decision.status!=='MATCH'){
+            // FAST_FORWARD / UNPUBLISHED: heal the persisted commitSha to the new HEAD so this
+            // job -- and any future retry that inherits it for continuity -- doesn't deadlock
+            // against a value that can now never match again.
+            console.log(JSON.stringify({level:'warn',event:'execution.branch.continuity_healed',status:decision.status,jobId:job.id,taskId:job.taskId,expected:job.commitSha,actual:actualHeadSha}));
+            job={...job,commitSha:decision.healedSha};
+            await store.updateExecutionJob({...job,updatedAt:systemClock.now()});
+          }
         }
       }
     }else if(job.baseBranch){
@@ -169,6 +188,14 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
   await assertDependencyMerged(git,rebase.originalBaseCommit,targetBaseCommit);
 
   const branch=rebaseBranchName(rebase.rebaseBranchPrefix,targetBaseCommit);
+  // What origin already holds for this exact (task, base) pair, read BEFORE the branch is rebuilt
+  // underneath it. The transfer is deterministic in its inputs but not in its commit identity --
+  // replaying the same work onto the same base yields the same tree under a fresh SHA -- so
+  // without this the second attempt pushes a commit that is neither equal to nor a descendant of
+  // the published one and is simply rejected, with nothing to retry into.
+  const published=await commands.run({command:'git',args:['ls-remote','--exit-code','--heads','origin',branch],cwd:workspace,taskId:task.id,allowed:['NETWORK'],env});
+  const remoteBranchSha=published.record.exitCode===0?published.stdout.trim().split(/\s+/)[0]:undefined;
+  if(remoteBranchSha)await checked(commands,{command:'git',args:['fetch','origin',branch],cwd:workspace,taskId:task.id,allowed:['NETWORK'],env});
   await checked(commands,{command:'git',args:['switch','-C',branch,targetBaseCommit],cwd:workspace,taskId:task.id,allowed:['BUILD']});
   const taskPaths=await taskChangedPaths(git,rebase.originalBaseCommit,rebase.sourceCommitSha);
   const transfer=await transferTaskCommits(git,{originalBaseCommit:rebase.originalBaseCommit,sourceCommitSha:rebase.sourceCommitSha,readFile});
@@ -187,7 +214,7 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
     }
     resolved=await applyResolutions(git,{conflicts:transfer.conflicts,resolutions:rebase.resolutions,writeFile});
   }
-  const rebasedCommitSha=await commitTransfer(git,`autopilot: ${task.externalKey} ${task.title} (transferred onto ${targetBaseBranch}@${targetBaseCommit.slice(0,12)})`);
+  let rebasedCommitSha=await commitTransfer(git,`autopilot: ${task.externalKey} ${task.title} (transferred onto ${targetBaseBranch}@${targetBaseCommit.slice(0,12)})`);
   if(rebasedCommitSha===undefined){
     // The target base already carries this task's verified end state byte-for-byte -- almost
     // always because the task's own pull request was already merged before this rebase ran (an
@@ -197,7 +224,23 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
     // returns the task straight to READY through the normal test/review gate chain instead of
     // failing a re-verification the git evidence already proved safe to run.
     await audit.record({actor:owner,action:'execution.rebase.already_integrated',projectId:project.id,taskId:task.id,input:{jobId:input.job.id,sourceCommitSha:rebase.sourceCommitSha,targetBaseCommit},result:{rebaseBranch:branch},reason:'Target base already contains the verified commit; nothing to transfer',correlationId:input.job.operationId});
-    return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:true as const,report:{...report,resolutions:resolved,basePathsVerified:[],changedFiles:[]},result:{baseCommit:targetBaseCommit,branch,commitSha:targetBaseCommit,diff:'',changedFiles:[],completedAt:systemClock.now()}};
+    return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:true as const,lease:undefined as string|undefined,report:{...report,resolutions:resolved,basePathsVerified:[],changedFiles:[]},result:{baseCommit:targetBaseCommit,branch,commitSha:targetBaseCommit,diff:'',changedFiles:[],completedAt:systemClock.now()}};
+  }
+  // Decide against what origin already publishes for this branch: an identical transfer is
+  // adopted as-is rather than rewritten (rewriting the head of a branch an open pull request
+  // points at, for no change in content, is pure churn), and a genuinely different one
+  // supersedes it under a lease pinned to the SHA observed above.
+  const remoteIdentity=await commitIdentity(commands,workspace,task.id,remoteBranchSha);
+  const localIdentity=await commitIdentity(commands,workspace,task.id,rebasedCommitSha);
+  if(!localIdentity)throw new ExecutionFailed('Transferred commit could not be identified',{rebasedCommitSha});
+  const publication=resolveRebasePublication({...(remoteBranchSha?{remoteBranchSha}:{}),...(remoteIdentity?{remote:remoteIdentity}:{}),local:localIdentity});
+  if(publication.action==='ADOPT'){
+    // Byte-for-byte the same transfer, on the same parent, already on origin. Move onto the
+    // published commit and let it stand: the branch, its pull request and its CI evidence stay
+    // exactly as they are, and the push below becomes a no-op instead of a rewrite.
+    await checked(commands,{command:'git',args:['switch','-C',branch,publication.commitSha],cwd:workspace,taskId:task.id,allowed:['BUILD']});
+    rebasedCommitSha=publication.commitSha;
+    await audit.record({actor:owner,action:'execution.rebase.already_published',projectId:project.id,taskId:task.id,input:{jobId:input.job.id,sourceCommitSha:rebase.sourceCommitSha,targetBaseCommit},result:{rebaseBranch:branch,rebasedCommitSha},reason:'Origin already carries this exact transfer for the same target base; the published commit is adopted unchanged',correlationId:input.job.operationId});
   }
   const preserved=await assertBaseChangesPreserved(git,{originalBaseCommit:rebase.originalBaseCommit,targetBaseCommit,rebasedCommitSha,taskPaths});
   const diff=await checked(commands,{command:'git',args:['diff',targetBaseCommit,rebasedCommitSha,'--'],cwd:workspace,taskId:task.id,allowed:['READ']});
@@ -205,7 +248,18 @@ async function performRebase(input:{workspace:string;job:ExecutionJob;commands:C
   const changedFiles=changed.stdout.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
   if(!changedFiles.length)throw new ExecutionFailed('Transfer produced no change against the target base');
   await audit.record({actor:owner,action:'execution.rebase.transferred',projectId:project.id,taskId:task.id,input:{jobId:input.job.id,method:transfer.method,sourceCommitSha:rebase.sourceCommitSha,originalBaseCommit:rebase.originalBaseCommit,targetBaseCommit},result:{rebaseBranch:branch,rebasedCommitSha,replayed:transfer.replayedCommits.length,conflicts:transfer.conflicts.map(value=>value.path),resolvedPaths:resolved.map(value=>value.path),basePathsVerified:preserved.verifiedPaths,changedFiles:changedFiles.length},reason:'Verified task work replayed onto the current base with a 3-way cherry-pick',correlationId:input.job.operationId});
-  return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:false as const,report:{...report,resolutions:resolved,basePathsVerified:preserved.verifiedPaths,changedFiles},result:{baseCommit:targetBaseCommit,branch,commitSha:rebasedCommitSha,diff:diff.stdout,changedFiles,completedAt:systemClock.now()}};
+  return {targetBaseBranch,targetBaseCommit,alreadyIntegrated:false as const,lease:publication.action==='REPLACE'?publication.lease:undefined,report:{...report,resolutions:resolved,basePathsVerified:preserved.verifiedPaths,changedFiles},result:{baseCommit:targetBaseCommit,branch,commitSha:rebasedCommitSha,diff:diff.stdout,changedFiles,completedAt:systemClock.now()}};
+}
+
+// Content plus parentage -- the two things that make one transfer the same transfer as another,
+// and the two things a commit SHA deliberately does not capture, since commit identity also
+// includes the moment it was authored.
+async function commitIdentity(commands:CommandRunner,workspace:string,taskId:string,sha:string|undefined):Promise<RebaseCommitIdentity|undefined>{
+  if(!sha)return undefined;
+  const tree=await commands.run({command:'git',args:['rev-parse',`${sha}^{tree}`],cwd:workspace,taskId,allowed:['READ']});
+  const parent=await commands.run({command:'git',args:['rev-parse',`${sha}^`],cwd:workspace,taskId,allowed:['READ']});
+  if(tree.record.exitCode!==0||parent.record.exitCode!==0)return undefined;
+  return {tree:tree.stdout.trim(),parent:parent.stdout.trim()};
 }
 
 async function defaultBranch(repository:string,token:string){

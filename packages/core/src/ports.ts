@@ -102,8 +102,16 @@ export interface StateStore {
   latestArtifactOfKind(projectId:string,kind:string):Promise<Artifact|undefined>;
   saveRun(run:Run):Promise<Run>; updateRun(run:Run):Promise<Run>; getRun(projectId:string,id:string):Promise<Run|undefined>; findRunByOperation(projectId:string,operationId:string):Promise<Run|undefined>; listRuns(projectId:string,taskId?:string):Promise<Run[]>;
   createExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; updateExecutionJob(job:ExecutionJob):Promise<ExecutionJob>; getExecutionJob(projectId:string,id:string):Promise<ExecutionJob|undefined>; getExecutionJobById(id:string):Promise<ExecutionJob|undefined>; findExecutionJobByOperation(projectId:string,operationId:string):Promise<ExecutionJob|undefined>; listExecutionJobs(projectId:string,taskId?:string):Promise<ExecutionJob[]>;
-  /** Statuses without payloads. See ExecutionJobSummary for why listing full jobs is not viable. */
-  listExecutionJobSummaries(projectId:string,taskId?:string):Promise<ExecutionJobSummary[]>;
+  /**
+   * Statuses without payloads. See ExecutionJobSummary for why listing full jobs is not viable.
+   *
+   * `statuses` narrows the read in the store rather than in the caller. Without it the cost of a
+   * poll is proportional to everything that ever ran, which is how the scheduled reconciler came to
+   * spend a month's egress allowance re-reading terminal jobs nobody will ever act on again. With
+   * it the cost tracks the handful of jobs that are actually in flight, so the poll stays cheap as
+   * history grows. `execution_jobs_status_idx` backs the filter.
+   */
+  listExecutionJobSummaries(projectId:string,taskId?:string,statuses?:readonly string[]):Promise<ExecutionJobSummary[]>;
   claimExecutionJob(projectId:string,id:string,leaseOwner:string,leaseExpiresAt:string,now:string):Promise<ExecutionJob|undefined>;
   transitionTask(task:Task,transition:Transition):Promise<Task>;
   appendTransition(transition:Transition):Promise<void>; listTransitions(taskId:string):Promise<Transition[]>;
