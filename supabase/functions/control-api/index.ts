@@ -41,20 +41,10 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
   if(parts[1]==='projects'&&parts[3]==='runs'&&request.method==='GET')return json(await runtime.service.runList(projectId!,url.searchParams.get('taskId')??undefined),200,cors);
   if(parts[1]==='projects'&&parts[3]==='runs'&&parts[4]&&request.method==='GET')return json(await runtime.service.runGet(projectId!,parts[4]),200,cors);
   if(parts[1]==='projects'&&parts[3]==='audit'&&request.method==='GET')return json(await runtime.store.listAudit(projectId!),200,cors);
-  // Epic-level verification, published on the same authenticated surface as everything else it
-  // aggregates. Verify is a read: it evaluates evidence, it never runs anything, so a plain
-  // operator may ask what the epic still owes. Recording evidence is a write and carries the
-  // operator's own identity into the provenance, which is what keeps OPERATOR distinguishable
-  // from TRUSTED_CI.
   if(parts[1]==='projects'&&parts[3]==='epic'&&parts[4]==='verify'&&request.method==='POST')
     return json(await runtime.service.epicVerification({...await body() as object,projectId},`edge-operator:${viewer.id}`),200,cors);
   if(parts[1]==='projects'&&parts[3]==='epic'&&parts[4]==='evidence'&&request.method==='POST')
     return json(await runtime.service.epicEvidenceRecord({...await body() as object,projectId},`edge-operator:${viewer.id}`),201,cors);
-  // Canonical development repository, repository export and developer handover, on the same
-  // authenticated surface as everything else. Every route delegates to the SAME
-  // SuperadminService methods the MCP tools call, so the Control API cannot acquire its own
-  // business logic or skip a gate; a non-SUPERADMIN operator gets an explicit policy error
-  // from the service rather than a second, weaker code path.
   if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts.length===4&&request.method==='GET')
     return json(await runtime.superadmin.canonicalRepositoryGet(consolePrincipal(viewer),projectId!),200,cors);
   if(parts[1]==='projects'&&parts[3]==='canonical-repository'&&parts[4]==='plan'&&request.method==='POST'){
@@ -102,12 +92,6 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
   if(parts[1]==='console'&&parts[2]==='projects'&&parts.length===4&&request.method==='GET')return json(await projectView(runtime,parts[3]),200,cors);
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='delivery'&&request.method==='GET'){const snapshot=await runtime.service.projectSnapshot(parts[3]!);return json({project:{id:snapshot.project.id,name:snapshot.project.name},...deliveryForProject({tasks:snapshot.tasks,runs:snapshot.runs,artifacts:snapshot.artifacts,jobs:await runtime.asyncExecution.list(parts[3]!),audit:snapshot.audit})},200,cors);}
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='tasks'&&parts[5]&&request.method==='GET')return json(await taskView(runtime,parts[3],parts[5]),200,cors);
-  // Validation + scenarios. These four routes existed only on the node dev server, so on the
-  // deployed console every one of them 404'd: history stayed permanently empty (the UI swallows a
-  // failed GET) and both action buttons reported "Edge Control API route not found". The write
-  // paths delegate to the same SuperadminService methods the MCP function already runs on this
-  // runtime, so no new execution or auth surface is introduced -- a non-SUPERADMIN operator now
-  // gets an explicit policy error instead of a misleading 404.
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='validation'&&request.method==='GET')
     return json(validationHistoryView(await runtime.store.listArtifacts(parts[3]!,url.searchParams.get('taskId')??undefined)),200,cors);
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='validation'&&request.method==='POST'){
@@ -121,7 +105,6 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
     return json({report:outcome.value,idempotentReplay:outcome.idempotentReplay},200,cors);
   }
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='scenarios'&&parts[5]==='run'&&request.method==='POST'){
-    // The console names the field scenarioArtifactId; the service takes scenarioId. Same artifact.
     const value=await body() as {scenarioArtifactId?:string;scenarioId?:string;operationId:string};
     const scenarioId=value.scenarioId??value.scenarioArtifactId;
     if(!scenarioId)throw new NotFound('A scenario identifier is required');
@@ -131,16 +114,6 @@ async function route(request:Request,cors:HeadersInit){const runtime=createEdgeR
   if(parts[1]==='console'&&parts[2]==='projects'&&parts[4]==='api-request'&&request.method==='POST')return json(await apiRequest(runtime,parts[3],await body()),200,cors);
   throw new NotFound('Edge Control API route not found');}
 
-// The console dashboard polls this endpoint continuously from every open tab, so its cost is
-// multiplied by tab-seconds, not by operator actions. It used to build each card from
-// `projectSnapshot`, which lists every artifact WITH its inline content and the project's entire
-// audit trail -- then used only per-task artifact counts, the newest CI report, and the last five
-// events. That discarded almost everything it transferred, on a loop, and was the dominant
-// consumer of the Supabase egress allowance that the old project ultimately exceeded.
-//
-// The reads below are each bounded by what the card actually renders: identity-only artifact
-// digests for the counts, one artifact for the CI badge, five audit events for the activity feed.
-// A project's recorded output can now grow without changing this response's size.
 async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awaited<ReturnType<typeof authenticatedControlOperator>>){
   const allProjects=await runtime.service.projectList();
   let projects=allProjects;
@@ -156,13 +129,10 @@ async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awai
       runtime.store.listRuns(project.id),
       runtime.store.listArtifactDigests(project.id),
       runtime.store.latestArtifactOfKind(project.id,'CI_REPORT'),
-      // Already newest-first from the store, which is the order the feed renders in.
       runtime.store.listRecentAuditDigests(project.id,5),
     ]);
     const repository=resources.find(value=>value.type==='GITHUB_REPOSITORY');
     const database=resources.find(value=>value.type==='DATABASE');
-    // An externalized CI report has no inline content to show; the card renders the badge from
-    // whatever is present, exactly as it did when the artifact arrived via the snapshot.
     const latestCi=latestCiArtifact?.content;
     return {
       id:project.id,name:project.name,environment:project.environment,autonomyMode:project.autonomyMode,status:project.status,
@@ -180,13 +150,7 @@ async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awai
   return {generatedAt:new Date().toISOString(),summary:{projects:cards.length,activeTasks:tasks.filter(value=>!['READY','FAILED','BLOCKED'].includes(value.state)).length,blocked:tasks.filter(value=>value.state==='BLOCKED').length,failed:tasks.filter(value=>value.state==='FAILED').length,ready:tasks.filter(value=>value.state==='READY').length,runningRuns:runs.filter(value=>value.status==='RUNNING').length,warnings:cards.reduce((sum,value)=>sum+value.warningCount,0)},projects:cards,events};
 }
 
-// Maps an authenticated console operator onto the principal SuperadminService expects. Role is
-// carried through unchanged, so the service's own SUPERADMIN gate still decides what is allowed.
-function consolePrincipal(viewer:Awaited<ReturnType<typeof authenticatedOperator>>):SuperadminPrincipal{
-  // The auth layer and the domain use different names for the same non-superadmin role
-  // ('OPERATOR' vs PrincipalRole's 'PROJECT_OPERATOR'), so translate rather than widen the domain
-  // type. Behaviour is unchanged either way -- SuperadminService gates on role === 'SUPERADMIN' --
-  // but leaving the mismatch in place made this a value TypeScript could not check.
+function consolePrincipal(viewer:Awaited<ReturnType<typeof authenticatedControlOperator>>):SuperadminPrincipal{
   return {actor:viewer.email??viewer.id,role:viewer.role==='SUPERADMIN'?'SUPERADMIN':'PROJECT_OPERATOR',authMethod:'OAUTH'};
 }
 
@@ -197,8 +161,6 @@ async function projectView(runtime:ReturnType<typeof createEdgeRuntime>,projectI
     project:snapshot.project,
     resources:snapshot.resources.map(safeResource),
     context:snapshot.context,
-    // Enriched from the snapshot already in hand -- never one taskStatus call per task, which on
-    // PostgREST would be three HTTP round-trips per task on every five-second console poll.
     tasks:snapshot.tasks.map(task=>taskSummaryFrom({task,artifacts:snapshot.artifacts,runs:snapshot.runs})),
     runs:snapshot.runs,
     artifacts:snapshot.artifacts,
@@ -233,8 +195,6 @@ async function taskView(runtime:ReturnType<typeof createEdgeRuntime>,projectId:s
     repairHistory:status.runs.slice(1),
     finalManifest:latest('FINAL_CHANGE_MANIFEST'),
     artifacts,
-    // Merged transitions+runs, every event carrying a `status`. Handing the console raw Transition
-    // rows (which have from/to but no status) made tone(event.status) throw and blanked the page.
     timeline:taskTimeline(status.transitions,status.runs),
     validation:validationHistoryView(artifacts),
     jobs:await runtime.asyncExecution.list(projectId,taskId),
