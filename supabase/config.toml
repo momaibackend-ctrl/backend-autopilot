@@ -32,7 +32,8 @@ authorization_url_path = "/../oauth-consent/"
 allow_dynamic_registration = true
 
 [functions.control-api]
-verify_jwt = true
+# Control API validates the console-only signed bearer itself.
+verify_jwt = false
 
 [functions.mcp]
 verify_jwt = false

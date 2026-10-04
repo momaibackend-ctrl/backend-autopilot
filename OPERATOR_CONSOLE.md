@@ -1,6 +1,6 @@
 # Operator Console contract
 
-The browser is served locally at `http://localhost:3000` or remotely at the configured public HTTPS domain. All data and mutations go through same-origin `/api/control/v1/console`, proxied server-side to Fastify. The public deployment requires server-side Basic Auth; provider secrets never enter the browser. Responses are JSON; inputs are validated with Zod.
+The browser is served locally at `http://localhost:3000` or remotely at the configured public HTTPS domain. Local development uses same-origin `/api/control`; the public static deployment calls the HTTPS Edge Control API directly. Normal public Console access uses login `annet` and a server-only password; the browser stores only a short-lived signed session and never stores the password. The separate `/oauth-consent` route keeps Supabase Auth exclusively for ChatGPT MCP authorization. Provider secrets never enter the browser.
 
 ## Read routes
 
@@ -42,4 +42,4 @@ Later steps may interpolate non-secret values as `{{user_id}}`. Sensitive values
 
 ## UI trust boundary
 
-Task source, repository content, descriptions, OpenAPI, diffs, SQL and artifacts are untrusted data. React renders them as escaped text or JSON. The console does not use raw HTML/Markdown and never receives secret values, `.env`, provider SDK credentials, or database connection strings. The OAuth consent route (`/oauth-consent`) follows the same rule: requesting-client name/scope are rendered as escaped text, it only ever handles the signed-in operator's own Supabase Auth session, and it never has access to the static MCP superadmin token.
+Task source, repository content, descriptions, OpenAPI, diffs, SQL and artifacts are untrusted data. React renders them as escaped text or JSON. The console does not use raw HTML/Markdown and never receives secret values, `.env`, provider SDK credentials, or database connection strings. The OAuth consent route (`/oauth-consent`) follows the same rule: requesting-client name/scope are rendered as escaped text, it only ever handles the signed-in operator's own Supabase Auth session, and it never has access to the static MCP superadmin token. Normal Console pages use a separate console-only session.
