@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.32.1",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "bootstrap": "pnpm install && pnpm exec playwright install chromium && pnpm autopilot health",
     "dev": "concurrently -k -n api,console -c blue,green \"pnpm dev:api\" \"pnpm dev:console\"",
@@ -42,7 +44,8 @@
     "console:e2e:seed": "tsx scripts/seed-console-e2e.ts",
     "test:browser": "pnpm console:e2e:seed && playwright test",
     "check": "pnpm lint && pnpm typecheck && pnpm typecheck:edge && pnpm test && pnpm build && pnpm test:browser",
-    "typecheck:edge": "deno check --no-lock --config supabase/functions/mcp/deno.json supabase/functions/mcp/index.ts && deno check --no-lock --config supabase/functions/control-api/deno.json supabase/functions/control-api/index.ts && deno check --no-lock --config supabase/functions/reconcile/deno.json supabase/functions/reconcile/index.ts"
+    "typecheck:edge": "deno check --no-lock --config supabase/functions/mcp/deno.json supabase/functions/mcp/index.ts && deno check --no-lock --config supabase/functions/control-api/deno.json supabase/functions/control-api/index.ts && deno check --no-lock --config supabase/functions/reconcile/deno.json supabase/functions/reconcile/index.ts",
+    "test:property": "tsx scripts/console-auth-properties.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.3",
@@ -67,5 +70,9 @@
     "typescript-eslint": "^8.41.0",
     "vitest": "^3.2.4"
   },
-  "workspaces": ["apps/*", "packages/*", "packages/adapters/*"]
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "packages/adapters/*"
+  ]
 }

@@ -9,6 +9,7 @@ import { UnsupportedOperation } from '../../../packages/core/src/errors.ts';
 import { systemClock, uuidGenerator } from '../../../packages/core/src/ports.ts';
 import { PostgrestStateStore } from '../../../packages/project-registry/src/postgrest-store.ts';
 import { SuperadminService } from '../../../packages/superadmin/src/index.ts';
+import { issueConsoleToken, slowSecretEqual, verifyConsoleToken } from '../../../packages/operator-console/src/console-auth.ts';
 
 export function createEdgeRuntime(){
   // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY remain required unconditionally: they back the
@@ -27,6 +28,36 @@ export function createEdgeRuntime(){
 // caller) from the function's own environment. The name shape is re-validated here so a
 // tampered resource row can never read an unrelated Edge environment variable.
 export const edgeSecretResolver={async get(reference:string,_projectId:string){if(!/^[A-Z][A-Z0-9_]{2,127}$/.test(reference))throw new Error('Invalid secret reference name');const value=Deno.env.get(reference);if(!value)throw new Error('Secret reference is not configured');return value;}};
+
+
+const consoleUsername='annet';
+const consoleEmail='annetdenr@gmail.com';
+const consoleSessionTtlSeconds=12*60*60;
+
+export async function issueConsoleSession(username:string,password:string){
+  const configured=required('AUTOPILOT_CONSOLE_PASSWORD');
+  const validUsername=username===consoleUsername;
+  const validPassword=await slowSecretEqual(password,configured);
+  if(!validUsername||!validPassword){
+    await new Promise(resolve=>setTimeout(resolve,450));
+    throw new EdgeHttpError(401,'INVALID_CREDENTIALS','Invalid login or password');
+  }
+  const now=Math.floor(Date.now()/1000);
+  const signingMaterial=required('AUTOPILOT_SUPERADMIN_MCP_TOKEN');
+  const token=await issueConsoleToken({subject:consoleEmail,nowSeconds:now,ttlSeconds:consoleSessionTtlSeconds,signingMaterial});
+  return {token,expiresAt:new Date((now+consoleSessionTtlSeconds)*1000).toISOString(),user:{login:consoleUsername,role:'SUPERADMIN'}};
+}
+
+export async function authenticatedControlOperator(request:Request,projectId?:string){
+  const supplied=request.headers.get('authorization')?.replace(/^Bearer\s+/i,'')??'';
+  if(!supplied.startsWith('bac1.'))throw new EdgeHttpError(401,'AUTH_REQUIRED','Console authentication is required');
+  const claims=await verifyConsoleToken(supplied,{subject:consoleEmail,nowSeconds:Math.floor(Date.now()/1000),maxTtlSeconds:consoleSessionTtlSeconds,signingMaterial:required('AUTOPILOT_SUPERADMIN_MCP_TOKEN')});
+  if(!claims)throw new EdgeHttpError(401,'INVALID_SESSION','Console session is invalid or expired');
+  const url=required('SUPABASE_URL'),key=required('SUPABASE_SERVICE_ROLE_KEY');
+  const operator=await adminRows<{user_id:string;status:string;role:string}>(url,key,`autopilot_operators?select=user_id,status,role&email=eq.${encodeURIComponent(claims.sub)}&limit=1`);
+  if(!operator[0]||operator[0].status!=='ACTIVE'||operator[0].role!=='SUPERADMIN')throw new EdgeHttpError(403,'OPERATOR_DISABLED','Console operator is not an active SUPERADMIN');
+  return {id:operator[0].user_id,email:claims.sub,role:'SUPERADMIN' as const};
+}
 
 export async function authenticatedOperator(request:Request,projectId?:string){
   const authorization=request.headers.get('authorization');if(!authorization?.startsWith('Bearer '))throw new EdgeHttpError(401,'AUTHENTICATION_REQUIRED','Supabase Auth session is required');const url=required('SUPABASE_URL'),publishable=Deno.env.get('SUPABASE_ANON_KEY')??required('SUPABASE_PUBLISHABLE_KEY');const userResponse=await fetch(`${url}/auth/v1/user`,{headers:{authorization,apikey:publishable}});if(!userResponse.ok)throw new EdgeHttpError(401,'INVALID_SESSION','Supabase Auth session is invalid');const user=await userResponse.json() as {id:string;email?:string};if(!user.id||!user.email)throw new EdgeHttpError(403,'OPERATOR_REQUIRED','Authenticated user has no operator email');const key=required('SUPABASE_SERVICE_ROLE_KEY');let operator=await adminRows<{user_id:string;status:string;role:string}>(url,key,`autopilot_operators?select=user_id,status,role&user_id=eq.${user.id}&limit=1`);const superadmins=csv(Deno.env.get('AUTOPILOT_SUPERADMIN_EMAILS')??'').map(value=>value.toLowerCase());const desiredRole=superadmins.includes(user.email.toLowerCase())?'SUPERADMIN':'OPERATOR';

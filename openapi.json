@@ -3,7 +3,7 @@
   "info": {
     "title": "Backend Autopilot -- Deterministic Task Execution Contract",
     "version": "0.5.0",
-    "description": "Machine-readable contract for the deterministic execution response returned by superadmin_task_execute (and superadmin_task_rebase_onto_current_base) over the Superadmin MCP JSON-RPC endpoint. A caller issuing 'realize task X' must receive either exactly one durable jobId/runId pair, or a structured blocking reason -- never partial or pseudo-progress. This document is deliberately scoped to that response contract, not the full MCP tool surface."
+    "description": "Machine-readable contracts for Backend Autopilot deterministic task execution and Operator Console authentication."
   },
   "paths": {
     "/functions/v1/mcp": {
@@ -14,7 +14,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ToolCallRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ToolCallRequest"
+              }
             }
           }
         },
@@ -25,12 +27,67 @@
               "application/json": {
                 "schema": {
                   "oneOf": [
-                    { "$ref": "#/components/schemas/DeterministicExecutionToolResult" },
-                    { "$ref": "#/components/schemas/DomainErrorToolResult" }
+                    {
+                      "$ref": "#/components/schemas/DeterministicExecutionToolResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DomainErrorToolResult"
+                    }
                   ]
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/functions/v1/control-api/v1/auth/login": {
+      "post": {
+        "summary": "Create an Operator Console session",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsoleLoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed console-only session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsoleSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials"
+          }
+        }
+      }
+    },
+    "/functions/v1/control-api/v1/auth/session": {
+      "get": {
+        "summary": "Validate an Operator Console session",
+        "security": [
+          {
+            "ConsoleBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active session"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Operator disabled"
           }
         }
       }
@@ -40,19 +97,49 @@
     "schemas": {
       "ToolCallRequest": {
         "type": "object",
-        "required": ["jsonrpc", "method", "params"],
+        "required": [
+          "jsonrpc",
+          "method",
+          "params"
+        ],
         "properties": {
-          "jsonrpc": { "type": "string", "enum": ["2.0"] },
-          "id": { "type": "string" },
-          "method": { "type": "string", "enum": ["tools/call"] },
+          "jsonrpc": {
+            "type": "string",
+            "enum": [
+              "2.0"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "tools/call"
+            ]
+          },
           "params": {
             "type": "object",
-            "required": ["name", "arguments"],
+            "required": [
+              "name",
+              "arguments"
+            ],
             "properties": {
-              "name": { "type": "string", "enum": ["superadmin_task_execute"] },
+              "name": {
+                "type": "string",
+                "enum": [
+                  "superadmin_task_execute"
+                ]
+              },
               "arguments": {
                 "type": "object",
-                "required": ["operationId", "projectId", "taskId", "resourceId", "changes"],
+                "required": [
+                  "operationId",
+                  "projectId",
+                  "taskId",
+                  "resourceId",
+                  "changes"
+                ],
                 "properties": {
                   "operationId": {
                     "type": "string",
@@ -60,8 +147,14 @@
                     "maxLength": 200,
                     "description": "Mandatory, globally replay-safe within (actor, tool, projectId): identical operationId always returns the original execution's status rather than redispatching."
                   },
-                  "projectId": { "type": "string", "format": "uuid" },
-                  "taskId": { "type": "string", "format": "uuid" },
+                  "projectId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "taskId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
                   "resourceId": {
                     "type": "string",
                     "format": "uuid",
@@ -72,10 +165,17 @@
                     "minItems": 1,
                     "items": {
                       "type": "object",
-                      "required": ["path", "content"],
+                      "required": [
+                        "path",
+                        "content"
+                      ],
                       "properties": {
-                        "path": { "type": "string" },
-                        "content": { "type": "string" }
+                        "path": {
+                          "type": "string"
+                        },
+                        "content": {
+                          "type": "string"
+                        }
                       }
                     }
                   }
@@ -88,52 +188,129 @@
       "DeterministicExecutionResult": {
         "type": "object",
         "description": "The only shape a caller may treat as accepted progress. A response missing jobId or runId is never valid -- resolveMergeableCommit-style callers, and the coordinator itself, treat that as EXECUTION_IDENTITY_MISSING instead of silently succeeding.",
-        "required": ["status", "jobId", "runId", "mode", "job", "run", "idempotentReplay"],
+        "required": [
+          "status",
+          "jobId",
+          "runId",
+          "mode",
+          "job",
+          "run",
+          "idempotentReplay"
+        ],
         "properties": {
-          "status": { "type": "string", "enum": ["EXECUTION_ACCEPTED"] },
-          "jobId": { "type": "string", "format": "uuid", "description": "Always equal to job.id; never empty." },
-          "runId": { "type": "string", "format": "uuid", "description": "Always equal to run.id; never empty." },
+          "status": {
+            "type": "string",
+            "enum": [
+              "EXECUTION_ACCEPTED"
+            ]
+          },
+          "jobId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Always equal to job.id; never empty."
+          },
+          "runId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Always equal to run.id; never empty."
+          },
           "mode": {
             "type": "string",
-            "enum": ["DISPATCHED", "STATUS_ONLY"],
+            "enum": [
+              "DISPATCHED",
+              "STATUS_ONLY"
+            ],
             "description": "DISPATCHED: a new GitHub Actions execution was just queued. STATUS_ONLY: operationId was already used -- this is a replay, and nothing was redispatched."
           },
-          "job": { "$ref": "#/components/schemas/ExecutionJobSummary" },
-          "run": { "$ref": "#/components/schemas/RunSummary" },
-          "idempotentReplay": { "type": "boolean" }
+          "job": {
+            "$ref": "#/components/schemas/ExecutionJobSummary"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          "idempotentReplay": {
+            "type": "boolean"
+          }
         }
       },
       "ExecutionJobSummary": {
         "type": "object",
-        "required": ["id", "status"],
+        "required": [
+          "id",
+          "status"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "status": {
             "type": "string",
-            "enum": ["QUEUED", "DISPATCHING", "DISPATCHED", "CLAIMED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "BLOCKED"]
+            "enum": [
+              "QUEUED",
+              "DISPATCHING",
+              "DISPATCHED",
+              "CLAIMED",
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED",
+              "CANCELLED",
+              "TIMED_OUT",
+              "BLOCKED"
+            ]
           },
-          "branch": { "type": "string" }
+          "branch": {
+            "type": "string"
+          }
         }
       },
       "RunSummary": {
         "type": "object",
-        "required": ["id", "status"],
+        "required": [
+          "id",
+          "status"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"] }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED",
+              "BLOCKED",
+              "CANCELLED"
+            ]
+          }
         }
       },
       "DomainErrorToolResult": {
         "type": "object",
-        "required": ["isError", "content"],
+        "required": [
+          "isError",
+          "content"
+        ],
         "properties": {
-          "isError": { "type": "boolean", "enum": [true] },
+          "isError": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
           "content": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "type": { "type": "string", "enum": ["text"] },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text"
+                  ]
+                },
                 "text": {
                   "type": "string",
                   "description": "JSON-encoded { error: { code, message, details } }; details.blockingReport is present whenever the failure is one this contract requires to be reported as structured evidence rather than progress language."
@@ -146,21 +323,96 @@
       "BlockingReport": {
         "type": "object",
         "description": "Structured, machine-actionable evidence for why execution did not (and will not, without a fresh operationId or human action) make progress. Present in DomainError.details.blockingReport for every code below.",
-        "required": ["code", "reason", "remediation"],
+        "required": [
+          "code",
+          "reason",
+          "remediation"
+        ],
         "properties": {
           "code": {
             "type": "string",
-            "enum": ["EXECUTION_IDENTITY_MISSING", "WRITE_DISPATCH_UNAVAILABLE", "CANON_OR_API_CONFLICT"],
+            "enum": [
+              "EXECUTION_IDENTITY_MISSING",
+              "WRITE_DISPATCH_UNAVAILABLE",
+              "CANON_OR_API_CONFLICT"
+            ],
             "description": "EXECUTION_IDENTITY_MISSING: a persisted job/run pair lost its durable identity (fails closed rather than reporting pseudo-success). WRITE_DISPATCH_UNAVAILABLE: the async execution dispatcher is unreachable -- the job/run are created but immediately terminalized (job BLOCKED, run FAILED), never left implying in-flight progress. CANON_OR_API_CONFLICT: the implementation plan violates ArchitectureGuard canon/API rules and was rejected before any execution was queued."
           },
-          "reason": { "type": "string" },
-          "remediation": { "type": "string", "description": "The concrete next step -- e.g. restore the dispatcher and use a fresh operationId, or resolve the reported canon/API violation and re-plan." },
+          "reason": {
+            "type": "string"
+          },
+          "remediation": {
+            "type": "string",
+            "description": "The concrete next step -- e.g. restore the dispatcher and use a fresh operationId, or resolve the reported canon/API violation and re-plan."
+          },
           "evidence": {
             "description": "Present for CANON_OR_API_CONFLICT: the ArchitectureGuard violations that caused the rejection.",
             "type": "array",
-            "items": { "type": "object" }
+            "items": {
+              "type": "object"
+            }
           }
         }
+      },
+      "ConsoleLoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true
+          }
+        }
+      },
+      "ConsoleSession": {
+        "type": "object",
+        "required": [
+          "token",
+          "expiresAt",
+          "user"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "type": "object",
+            "required": [
+              "login",
+              "role"
+            ],
+            "properties": {
+              "login": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "SUPERADMIN"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "ConsoleBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "BackendAutopilotConsoleSession"
       }
     }
   }

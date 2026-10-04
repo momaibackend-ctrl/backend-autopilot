@@ -2,7 +2,7 @@
 
 Backend Autopilot is a standalone, provider-neutral control plane for policy-checked and reproducible backend development. It is not a specific project backend and never discovers or trusts existing external resources automatically.
 
-v0.5 adds a dedicated `SUPERADMIN` application boundary and authenticated HTTP MCP surface. A superadmin can administer every project and the server-driven Operator Console without project membership, while resource allowlisting, PolicyEngine, secret redaction and the hard production-write denial remain mandatory. The static Console uses Supabase Auth and an authenticated Edge Control API; durable state and artifacts live in Supabase; semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
+v0.5 adds a dedicated `SUPERADMIN` application boundary and authenticated HTTP MCP surface. A superadmin can administer every project and the server-driven Operator Console without project membership, while resource allowlisting, PolicyEngine, secret redaction and the hard production-write denial remain mandatory. The static Console uses local username/password login with a signed console-only session enforced by the Edge Control API. Supabase Auth remains only for the separate ChatGPT MCP OAuth consent flow; durable state and artifacts still live in Supabase, and semantic execution requests enqueue GitHub Actions jobs. Fastify remains a local-development adapter only.
 
 ## Remote deployment
 
@@ -15,7 +15,7 @@ The canonical source is the public sandbox repository `momaibackend-ctrl/backend
 
 Remote state uses project `shzdgtatfonznkprnxrz`: PostgreSQL stores envelopes and relational ownership metadata; the private `autopilot-artifacts` Storage bucket stores large blobs. Jobs have operation-id idempotency, per-task distributed claim/lease, exact branch/SHA recovery and bounded repair attempts. No persistent workspace volume or always-on application process exists.
 
-Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The browser receives only the Supabase URL and publishable key. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
+Server credentials exist only as Supabase Edge secrets and GitHub Actions secrets. The normal Console browser receives only a short-lived signed session after login; the Supabase URL and publishable key are used only by the separate OAuth-consent flow. See `SECRETS_MANIFEST.md`; no manifest contains credential values.
 
 ## Operator Console
 
