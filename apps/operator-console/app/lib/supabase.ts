@@ -32,7 +32,10 @@ export async function validateConsoleSession(){
   try{
     const response=await fetch(`${controlApi}/v1/auth/session`,{headers:{authorization:`Bearer ${token}`},cache:'no-store'});
     if(response.ok)return true;
-  }catch{}
+  }catch{
+    clearConsoleSession();
+    return false;
+  }
   clearConsoleSession();
   return false;
 }
