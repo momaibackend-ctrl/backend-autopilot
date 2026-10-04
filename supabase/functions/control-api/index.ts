@@ -151,6 +151,7 @@ async function overview(runtime:ReturnType<typeof createEdgeRuntime>,viewer:Awai
 }
 
 function consolePrincipal(viewer:Awaited<ReturnType<typeof authenticatedControlOperator>>):SuperadminPrincipal{
+  console.info(JSON.stringify({event:'edge.control.principal_resolved',role:viewer.role}));
   return {actor:viewer.email??viewer.id,role:viewer.role==='SUPERADMIN'?'SUPERADMIN':'PROJECT_OPERATOR',authMethod:'OAUTH'};
 }
 
