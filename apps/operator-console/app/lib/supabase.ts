@@ -32,7 +32,12 @@ export async function validateConsoleSession(){
   try{
     const response=await fetch(`${controlApi}/v1/auth/session`,{headers:{authorization:`Bearer ${token}`},cache:'no-store'});
     if(response.ok)return true;
-  }catch{}
+    console.warn(JSON.stringify({level:'warn',event:'console.session.validation_rejected',status:response.status}));
+  }catch(error){
+    console.warn(JSON.stringify({level:'warn',event:'console.session.validation_failed',error:error instanceof Error?error.name:'Unknown'}));
+    clearConsoleSession();
+    return false;
+  }
   clearConsoleSession();
   return false;
 }
