@@ -37,7 +37,7 @@ const relativeSpecifiers = (file: string): string[] => {
 };
 
 /** Walks a dependency graph from the entry points, following whichever specifiers `follow` accepts. */
-const reachable = (follow: (specifier: string) => string | undefined): Set<string> => {
+const reachable = (follow: (specifier: string) => string | undefined, entryPoints = functionEntryPoints): Set<string> => {
   const seen = new Set<string>();
   const visit = (file: string) => {
     const absolute = resolve(file);
@@ -50,19 +50,23 @@ const reachable = (follow: (specifier: string) => string | undefined): Set<strin
       if (existsSync(target)) visit(target);
     }
   };
-  for (const entry of functionEntryPoints) visit(resolve(root, entry));
+  for (const entry of entryPoints) visit(resolve(root, entry));
   return seen;
 };
 
 describe("edge function bundle graph", () => {
-  it("names every module the CLI asset scanner cannot reach on its own", () => {
+  // Each function is bundled on its own, so reachability is checked per entry point. A union of
+  // all three hid exactly the failure it exists to catch: collection.ts was imported with an
+  // explicit .ts specifier by the mcp entry point, which made it "visible" for the union, while
+  // reconcile reached it only through superadmin's .js import -- and its bundle failed to deploy.
+  it.each(functionEntryPoints)("names every module the CLI asset scanner cannot reach on its own from %s", (entry) => {
     // The scanner follows only specifiers that already end in .ts.
-    const scannerVisible = reachable((specifier) => (specifier.endsWith(".ts") ? specifier : undefined));
+    const scannerVisible = reachable((specifier) => (specifier.endsWith(".ts") ? specifier : undefined), [entry]);
     // The runtime graph is the same walk once the import map has rewritten .js to .ts.
     const runtime = reachable((specifier) => {
       const rewritten = specifier.replace(/\.js$/, ".ts");
       return existsSync(resolve(root, rewritten)) || rewritten !== specifier ? rewritten : specifier;
-    });
+    }, [entry]);
 
     const invisible = [...runtime]
       .filter((file) => !scannerVisible.has(file))
