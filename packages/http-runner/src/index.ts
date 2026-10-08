@@ -817,6 +817,11 @@ export class HttpScenarioRunner {
     scenarioId: string;
     operationId: string;
     actor: string;
+    /**
+     * A collection run shares one variable map across its scenarios, the way a Postman runner
+     * carries a login token from one folder into the next. Omitted, every run starts empty.
+     */
+    variables?: ScenarioVariables;
   }): Promise<ScenarioExecutionResult> {
     const { project, definition, resource, base } = await this.authorize(
       input.projectId,
@@ -825,7 +830,7 @@ export class HttpScenarioRunner {
     );
     const startedAt = this.deps.clock.now();
     const startedMs = performance.now();
-    const variables: ScenarioVariables = new Map();
+    const variables: ScenarioVariables = input.variables ?? new Map();
     const steps: ScenarioStepResult[] = [];
     const serverBearer = resource.secretRefs[0]
       ? await this.resolveSecret(resource.secretRefs[0], input.projectId)

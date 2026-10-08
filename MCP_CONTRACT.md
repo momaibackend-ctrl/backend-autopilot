@@ -166,6 +166,31 @@ audit or logs. Each run persists a redacted `VALIDATION_REPORT` artifact readabl
 
 Full contract, safety boundary and worked example: [`docs/http-validation-runner.md`](docs/http-validation-runner.md).
 
+## Whole API collection
+
+A handful of green scenarios is not evidence that an API works: seven requests against health,
+version, auth and a 404 read exactly like a whole Postman run unless something counts what they
+leave out. Three tools make the size of the claim explicit for any project:
+
+* `superadmin_collection_import({operationId, projectId, resourceId, collection, stripPathPrefix?, taskId?})`
+  imports a project's whole Postman v2.0/v2.1 collection as saved scenarios bound to its
+  registered `HTTP_API` resource -- one scenario per top-level folder in collection order, split
+  into parts of 20 steps. Every request or test-script line the runner cannot express is returned
+  in `skipped`/`warnings`; nothing is dropped silently.
+* `superadmin_api_coverage({projectId, resourceId?, openapi?})` is read-only: it compares the saved
+  scenarios with the project's whole OpenAPI inventory and returns every uncovered operation with
+  a runnable draft step.
+* `superadmin_collection_run({operationId, projectId, resourceId, scenarioIds?, openapi?})` runs every
+  saved scenario of the resource in order with variables shared across scenarios, and persists one
+  `VALIDATION_REPORT` with `suite: "COLLECTION"`. Its `verdict` is `PROVEN` only when every scenario
+  passed **and** every documented operation was exercised by a passing request; otherwise
+  `NOT_PROVEN` with `reasons` and the uncovered operations. Without an inventory (no inline
+  `openapi` and no `API_CONTRACT` artifact) it is never `PROVEN`.
+
+None of them accepts a URL or host; each scenario still runs through `superadmin_scenario_run`'s
+single runner, with the same authorization, containment, redaction and limits. Details:
+[`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).
+
 ## Deliberately absent
 
 There is no shell/subprocess proxy, SQL console, arbitrary filesystem/path tool, arbitrary HTTP fetch (the scenario runner only replays a persisted scenario against its own registered resource), arbitrary GitHub repository URL, policy bypass, production mutation or source-code editing tool. Long execution is a durable job carrying only semantic inputs and a registered resource UUID.

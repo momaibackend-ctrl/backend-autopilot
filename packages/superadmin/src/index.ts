@@ -54,6 +54,19 @@ import {
   type ScenarioExecutionResult,
   type SecretResolver,
 } from "../../http-runner/src/index.js";
+import {
+  HttpCollectionRunner,
+  boundedDocument,
+  collectionScenarios,
+  computeApiCoverage,
+  declaredRequests,
+  draftStepsFor,
+  extractApiOperations,
+  importPostmanCollection,
+  inventoryFromContractArtifact,
+  type ApiInventory,
+  type CollectionExecutionResult,
+} from "../../http-runner/src/collection.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { awaitingCaller } from "../../core/src/task-readiness.js";
 import { z } from "zod";
@@ -508,6 +521,65 @@ export class SuperadminService {
       ...(this.deps.secrets?{secrets:this.deps.secrets}:{}),
       ...(this.deps.fetchImpl?{fetchImpl:this.deps.fetchImpl}:{}),
     }).run({projectId,scenarioId:input.scenarioId,operationId:input.operationId,actor:principal.actor}));
+  }
+
+  // The whole API collection of a project. The inventory is the project's own OpenAPI contract:
+  // an inline document when the caller has one, else the latest API_CONTRACT artifact. Without
+  // either, coverage is NO_INVENTORY and a collection run can never be PROVEN.
+  private async apiInventory(projectId:string,openapi?:unknown):Promise<{inventory?:ApiInventory;source:"INLINE"|"API_CONTRACT"|"NONE"}>{
+    if(openapi!==undefined)return {inventory:extractApiOperations(boundedDocument(openapi,"OpenAPI document")),source:"INLINE"};
+    const latest=await this.deps.store.latestArtifactOfKind(projectId,"API_CONTRACT");
+    if(!latest||latest.status==="DELETED")return {source:"NONE"};
+    const inventory=inventoryFromContractArtifact((await this.artifacts.read(projectId,latest.id)).content);
+    return inventory?{inventory,source:"API_CONTRACT"}:{source:"NONE"};
+  }
+  private async requireHttpApiResource(projectId:string,resourceId:string){
+    const resource=await this.deps.store.getResource(resourceId);
+    if(!resource||resource.projectId!==projectId||resource.type!=="HTTP_API")throw new PolicyViolation("Collection requires an HTTP_API resource owned by this project",{projectId,resourceId});
+    return resource;
+  }
+
+  // Imports a Postman collection as saved scenarios in one idempotent mutation. The audit payload
+  // carries the collection's size, not its body: the scenarios themselves are the evidence.
+  collectionImport(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;taskId?:string;collection:unknown;stripPathPrefix?:string},operationId:string){
+    this.requireSuperadmin(principal);
+    const parsed=importPostmanCollection(boundedDocument(input.collection,"Postman collection"),input.stripPathPrefix?{stripPathPrefix:input.stripPathPrefix}:{});
+    return this.mutate(principal,"collection_import",projectId,operationId,{resourceId:input.resourceId,collectionName:parsed.collectionName,requestCount:parsed.requestCount,scenarios:parsed.scenarios.length},async()=>{
+      await this.requireHttpApiResource(projectId,input.resourceId);
+      const created:Array<{scenarioId:string;name:string;steps:number}>=[];
+      for(const [index,scenario] of parsed.scenarios.entries()){
+        const value=validationScenarioSaveInputSchema.parse({...scenario,resourceId:input.resourceId,...(input.taskId?{taskId:input.taskId}:{}),operationId:`${operationId}#${index}`});
+        const artifact=await this.artifacts.write(projectId,"VALIDATION_SCENARIO",{...scenarioForStorage(value),createdAt:this.clock.now(),collection:{name:parsed.collectionName,importOperationId:operationId,index}},value.taskId);
+        created.push({scenarioId:artifact.id,name:scenario.name,steps:scenario.steps.length});
+      }
+      return {collectionName:parsed.collectionName,requestCount:parsed.requestCount,importedSteps:parsed.importedSteps,scenarios:created,skipped:parsed.skipped,warnings:parsed.warnings,variables:parsed.variables};
+    });
+  }
+
+  // Runs every saved scenario of one resource as one collection and records the verdict. Each
+  // scenario still goes through HttpScenarioRunner, so authorization, containment and redaction
+  // are the single runner's, not re-implemented here.
+  async collectionRun(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;scenarioIds?:string[];openapi?:unknown;operationId:string}){
+    this.requireSuperadmin(principal);
+    const {inventory,source}=await this.apiInventory(projectId,input.openapi);
+    return this.mutate(principal,"collection_run",projectId,input.operationId,{resourceId:input.resourceId,scenarioIds:input.scenarioIds??[],inventorySource:source},():Promise<CollectionExecutionResult>=>new HttpCollectionRunner({
+      store:this.deps.store,
+      artifacts:this.artifacts,
+      clock:this.clock,
+      ...(this.deps.secrets?{secrets:this.deps.secrets}:{}),
+      ...(this.deps.fetchImpl?{fetchImpl:this.deps.fetchImpl}:{}),
+    }).run({projectId,resourceId:input.resourceId,...(input.scenarioIds?.length?{scenarioIds:input.scenarioIds}:{}),operationId:input.operationId,actor:principal.actor,...(inventory?{inventory}:{}),inventorySource:source}));
+  }
+
+  // Read-only: what the saved scenarios would cover, and a draft for everything they do not.
+  async apiCoverage(principal:SuperadminPrincipal,projectId:string,input:{resourceId?:string;openapi?:unknown}){
+    this.requireSuperadmin(principal);await this.requireProject(projectId);
+    if(input.resourceId)await this.requireHttpApiResource(projectId,input.resourceId);
+    const {inventory,source}=await this.apiInventory(projectId,input.openapi);
+    const artifacts=await this.deps.store.listArtifacts(projectId);
+    const scenarios=input.resourceId?collectionScenarios(artifacts,input.resourceId):artifacts.filter(value=>value.kind==="VALIDATION_SCENARIO"&&value.status!=="DELETED");
+    const coverage=computeApiCoverage(inventory,declaredRequests(scenarios),"DECLARED");
+    return {inventorySource:source,scenarios:scenarios.length,coverage,drafts:draftStepsFor(coverage.uncovered)};
   }
 
   // Transfers an already-verified task onto the repository's current base branch after its

@@ -162,6 +162,73 @@ request.
 * No scheduling; a run is always explicitly invoked.
 * Validation suites (`SMOKE`, `CRUD`, …) do not yet orchestrate HTTP scenarios.
 
+## Whole API collection
+
+Scenarios answer "do these requests behave?". They cannot answer "is that the whole API?" -- a
+collection of seven green requests (health, version, auth, a 404) looks exactly like a full
+end-to-end run. Copying a thin collection from an original repository into its port proves the
+same nothing twice. The collection tools close that gap for any project; they live in
+`packages/http-runner/src/collection.ts` and add no request capability of their own.
+
+### Inventory
+
+The denominator is the project's own contract: an inline `openapi` document (object or JSON
+text, OpenAPI 3.x or Swagger 2.0, at most 4 MB and 2000 operations), or else the latest
+`API_CONTRACT` artifact the execution runner recorded. `OPTIONS`/`TRACE` operations are listed as
+`excluded` because the runner cannot send them. Requests are matched to operations the way
+OpenAPI does: the most specific template wins (`/notes/search` before `/notes/{id}`), and a
+`{{variable}}` segment fills a parameter but never a literal.
+
+### Import (`superadmin_collection_import`)
+
+| Postman | Scenario |
+|---|---|
+| top-level folder / root requests | one scenario each, collection order, parts of 20 steps |
+| `{{baseUrl}}/…`, absolute host | dropped -- the target is always the registered resource |
+| `stripPathPrefix: "/api/v1"` | removed when the resource base URL already carries it |
+| `:id` path variable | its `url.variable` value, else `{{id}}` |
+| static collection variable | inlined; unquoted `{{n}}` in a raw JSON body keeps its JSON type |
+| `{{camelCase}}` | `{{camel_case}}` (scenario grammar); the mapping is returned |
+| bearer auth (`{{token}}`) on request/folder/collection | `bearerFrom` |
+| `pm.response.to.have.status(n)`, `pm.expect(pm.response.code).to.eql(n)`, `to.be.ok` | `expectedStatus` |
+| `pm.*.set("x", pm.response.json().a[0].b)` / `jsonData.a` | `extract` (secret-looking names are sensitive) |
+| `to.have.header`, `.to.exist`, `.to.eql(literal)`, `responseTime …below(n)` | assertions |
+
+Reported, never silent: form-data/urlencoded/file bodies and `OPTIONS` requests are `skipped`;
+inline credentials (a `password` field, `Cookie`, `X-Api-Key`, a literal bearer) are refused or
+dropped exactly as the runner refuses them; non-bearer auth, pre-request scripts, untranslatable
+test lines, a request with no status assertion, and a variable that no earlier request extracts
+are `warnings`.
+
+### Run (`superadmin_collection_run`)
+
+Runs every saved scenario of the resource (or `scenarioIds`, in that order) with **one variable
+map shared across scenarios**, so a token extracted in an `Auth` folder authenticates the next
+folder. Each scenario still goes through `HttpScenarioRunner` and writes its own report. A
+failing scenario does not stop the collection; scenarios not started within the 120 s collection
+budget are `SKIPPED` and named in `reasons` (run them with `scenarioIds`). At most 100 scenarios
+per run.
+
+The `VALIDATION_REPORT` (`suite: "COLLECTION"`) carries `status` (did the requests pass),
+`verdict` (`PROVEN`/`NOT_PROVEN`), `reasons`, `coverage` (covered/uncovered operations, observed
+vs. declared status codes per operation, undocumented requests) and the per-scenario report ids.
+`result` is `PASS` only for a `PROVEN` collection.
+
+### Coverage (`superadmin_api_coverage`)
+
+Read-only, no audit, no requests: DECLARED coverage of the saved scenarios plus a draft step per
+uncovered operation (`/notes/{noteId}` → `/notes/{{note_id}}`, expected status from the first
+documented 2xx, and a note on what the draft still needs: an extracted id, a body, credentials).
+
+### Flow for any project
+
+1. `superadmin_collection_import` the project's existing Postman collection.
+2. `superadmin_api_coverage` -- read what the collection misses; complete the drafts and save them
+   with `superadmin_scenario_create` (or extend the Postman collection and re-import).
+3. `superadmin_collection_run` until the verdict is `PROVEN`. For a port (e.g. a Kotlin service
+   re-implemented in Java), run the same collection against each implementation's registered
+   resource: two `PROVEN` verdicts against the same contract are the parity evidence.
+
 ## Complete flow
 
 ```jsonc
