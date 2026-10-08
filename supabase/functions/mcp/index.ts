@@ -11,6 +11,7 @@ import { PlatformVersions, autonomyModeSchema, consoleBlockSchema, contextSectio
 import type { SuperadminPrincipal } from '../../../packages/superadmin/src/index.ts';
 import { resolveMergeableCommit } from '../../../packages/superadmin/src/merge-eligibility.ts';
 import { scenarioRunToolAnnotations, scenarioRunToolDescription, scenarioRunToolInputSchema, scenarioRunToolName } from '../../../packages/http-runner/src/index.ts';
+import { apiCoverageToolAnnotations, apiCoverageToolDescription, apiCoverageToolInputSchema, apiCoverageToolName, collectionImportToolAnnotations, collectionImportToolDescription, collectionImportToolInputSchema, collectionImportToolName, collectionRunToolAnnotations, collectionRunToolDescription, collectionRunToolInputSchema, collectionRunToolName } from '../../../packages/http-runner/src/collection.ts';
 import { ArtifactStore } from '../../../packages/artifact-store/src/index.ts';
 import { systemClock, uuidGenerator } from '../../../packages/core/src/ports.ts';
 import { authenticatedOperator, createEdgeRuntime, EdgeHttpError, mcpProjectAllowed, required } from '../_shared/edge-runtime.ts';
@@ -52,7 +53,7 @@ Deno.serve(async request=>{
   // it still announced itself as the server the client had already catalogued, so connectors kept
   // serving the previous list and re-authenticating did not help. Bump this whenever a tool is
   // added, removed or renamed -- it is the only signal a client gets that its catalogue is stale.
-  const server=new McpServer({name:'backend-autopilot',version:'0.5.1'});
+  const server=new McpServer({name:'backend-autopilot',version:'0.5.2'});
   const result=(value:unknown):ToolResult=>({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:{result:value}});
   // Every list tool is paged. Before this, they returned a project's entire history in one
   // response: on the control plane's own project `artifact_list` was 19.1 MB / 26.6 s and
@@ -348,6 +349,12 @@ Deno.serve(async request=>{
   // Only the persisted scenario ID is accepted: the HTTP_API resource, base URL, steps and
   // credentials are all resolved server-side, so this can never become an arbitrary-URL fetch.
   server.registerTool(scenarioRunToolName,{description:scenarioRunToolDescription,inputSchema:scenarioRunToolInputSchema,annotations:scenarioRunToolAnnotations},safe(async({operationId,projectId,scenarioId})=>admin().scenarioRun(principal,projectId,{scenarioId,operationId})));
+  // The whole API collection: import a project's Postman collection, run every scenario of a
+  // resource as one collection, and measure it against the project's OpenAPI inventory. Like the
+  // single-scenario runner, none of these accepts a URL or host; the target is the resource.
+  server.registerTool(collectionImportToolName,{description:collectionImportToolDescription,inputSchema:collectionImportToolInputSchema,annotations:collectionImportToolAnnotations},safe(async({operationId,projectId,resourceId,taskId,collection,stripPathPrefix})=>admin().collectionImport(principal,projectId,{resourceId,collection,...(taskId?{taskId}:{}),...(stripPathPrefix?{stripPathPrefix}:{})},operationId)));
+  server.registerTool(collectionRunToolName,{description:collectionRunToolDescription,inputSchema:collectionRunToolInputSchema,annotations:collectionRunToolAnnotations},safe(async({operationId,projectId,resourceId,scenarioIds,openapi})=>admin().collectionRun(principal,projectId,{resourceId,operationId,...(scenarioIds?{scenarioIds}:{}),...(openapi===undefined?{}:{openapi})})));
+  server.registerTool(apiCoverageToolName,{description:apiCoverageToolDescription,inputSchema:apiCoverageToolInputSchema,annotations:apiCoverageToolAnnotations},safe(async({projectId,resourceId,openapi})=>admin().apiCoverage(principal,projectId,{...(resourceId?{resourceId}:{}),...(openapi===undefined?{}:{openapi})})));
   server.registerTool('superadmin_validation_list',{description:'List validation results',inputSchema:{projectId,taskId:entityId.optional()},annotations:ro},safe(async({projectId,taskId})=>admin().validationList(principal,projectId,taskId)));
   server.registerTool('superadmin_validation_get',{description:'Read one validation result',inputSchema:{projectId,validationId:entityId},annotations:ro},safe(async({projectId,validationId})=>admin().validationGet(principal,projectId,validationId)));
   server.registerTool('superadmin_validation_run',{description:'Run semantic control-state validation and persist a report',inputSchema:{operationId,projectId,taskId:entityId,suite:validationSuiteSchema},annotations:mut},safe(async value=>admin().validationRun(principal,value.projectId,value)));
