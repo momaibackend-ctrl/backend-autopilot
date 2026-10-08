@@ -12,6 +12,7 @@ import '../../../packages/audit/src/index.ts';
 import '../../../packages/artifact-store/src/index.ts';
 import '../../../packages/policy-engine/src/index.ts';
 import '../../../packages/http-runner/src/index.ts';
+import '../../../packages/http-runner/src/collection.ts';
 import '../../../packages/superadmin/src/rebase-eligibility.ts';
 import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';
