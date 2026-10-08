@@ -68,6 +68,12 @@ export class GitHubRestRepositoryProvider implements GitRepositoryProvider {
     return Array.isArray(value)?value.map(entry=>entry.path):undefined;
   }
 
+  async listTree(repository:string,commitSha:string):Promise<{files:Array<{path:string;size:number}>;truncated:boolean}>{
+    if(!/^[0-9a-f]{40}$/.test(commitSha))throw new PolicyViolation('An exact 40-character commit SHA is required');
+    const value=await this.json<{tree:Array<{path:string;type:string;size?:number}>;truncated?:boolean}>(`/repos/${this.path(repository)}/git/trees/${commitSha}?recursive=1`);
+    return {files:value.tree.filter(entry=>entry.type==='blob').map(entry=>({path:entry.path,size:entry.size??0})),truncated:Boolean(value.truncated)};
+  }
+
   async rename(repository:string,newName:string):Promise<RepositoryDescription>{
     if(!/^[A-Za-z0-9_.-]{1,100}$/.test(newName))throw new PolicyViolation('Invalid repository name',{newName});
     const current=this.path(repository);

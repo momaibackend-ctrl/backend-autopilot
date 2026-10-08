@@ -151,6 +151,10 @@ export interface ApiOperation {
   successStatus?: number;
   /** Every numeric response status the contract documents for the operation. */
   declaredStatuses: number[];
+  /** Repository path of the contract that documents the operation, when the inventory has several. */
+  contract?: string;
+  /** Other contracts documenting the same method and path. */
+  alsoIn?: string[];
 }
 export interface ApiInventory {
   title?: string;
@@ -158,6 +162,12 @@ export interface ApiInventory {
   operations: ApiOperation[];
   /** Operations the contract documents but the runner cannot exercise, with the reason. */
   excluded: Array<{ method: string; path: string; reason: string }>;
+  /**
+   * Gaps in the inventory itself: a path item behind a $ref that could not be resolved, a contract
+   * file that could not be read or parsed, a repository listing the host cut short. Operations
+   * hidden there cannot be counted, so a non-empty list keeps every verdict NOT_PROVEN.
+   */
+  incomplete?: Array<{ source: string; reason: string }>;
 }
 
 const contractMethods = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
@@ -177,9 +187,14 @@ export function extractApiOperations(document: unknown): ApiInventory {
   const operations: ApiOperation[] = [];
   const excluded: ApiInventory["excluded"] = [];
   const seen = new Set<string>();
+  const incomplete: NonNullable<ApiInventory["incomplete"]> = [];
   for (const [rawPath, item] of Object.entries(paths)) {
     if (!isRecord(item)) continue;
     const path = normalizeApiPath(rawPath);
+    if (typeof item["$ref"] === "string" && !contractMethods.some((lower) => isRecord(item[lower]))) {
+      incomplete.push({ source: path, reason: `path item is an unresolved $ref to ${String(item["$ref"]).slice(0, 200)}` });
+      continue;
+    }
     for (const lower of contractMethods) {
       const operation = item[lower];
       if (!isRecord(operation)) continue;
@@ -211,6 +226,7 @@ export function extractApiOperations(document: unknown): ApiInventory {
     ...(typeof info["version"] === "string" ? { version: info["version"] } : {}),
     operations,
     excluded,
+    ...(incomplete.length ? { incomplete } : {}),
   };
 }
 
@@ -239,6 +255,7 @@ export function inventoryFromContractArtifact(content: unknown): ApiInventory | 
       merged.operations.push(operation);
     }
     merged.excluded.push(...inventory.excluded);
+    if (inventory.incomplete?.length) merged.incomplete = [...(merged.incomplete ?? []), ...inventory.incomplete];
   }
   return merged.operations.length || merged.excluded.length ? merged : undefined;
 }
@@ -293,6 +310,15 @@ export interface ApiCoverageReport {
   undocumented: Array<{ method: string; path: string; scenario: string; step: string }>;
   responseCoverage: { declared: number; observed: number };
   excluded: ApiInventory["excluded"];
+  /** Present when the inventory spans several contracts: coverage of each one on its own. */
+  byContract?: Array<{
+    contract: string;
+    totalOperations: number;
+    coveredOperations: number;
+    coveragePercent: number;
+    status: "COMPLETE" | "INCOMPLETE";
+  }>;
+  incomplete: NonNullable<ApiInventory["incomplete"]>;
 }
 
 /**
@@ -318,6 +344,7 @@ export function computeApiCoverage(
       undocumented: requests.slice(0, collectionLimits.maxListed).map(({ method, path, scenario, step }) => ({ method, path, scenario, step })),
       responseCoverage: { declared: 0, observed: 0 },
       excluded: [],
+      incomplete: [],
     };
   const hits = new Map<ApiOperation, { by: string[]; passed: boolean; observed: Set<number> }>();
   const undocumented: ApiCoverageReport["undocumented"] = [];
@@ -351,9 +378,28 @@ export function computeApiCoverage(
     } else uncovered.push({ ...operation, reason: entry ? "NOT_PASSING" : "NOT_EXERCISED" });
   }
   const total = inventory.operations.length;
+  // An operation documented by two contracts counts toward both: each contract is a separate
+  // claim about the API, and "the check-in contract is fully covered" must be answerable alone.
+  const perContract = new Map<string, { total: number; covered: number }>();
+  const coveredKeys = new Set(covered.map((value) => `${value.method} ${value.path}`));
+  for (const operation of inventory.operations)
+    for (const contract of operation.contract ? [operation.contract, ...(operation.alsoIn ?? [])] : []) {
+      const entry = perContract.get(contract) ?? { total: 0, covered: 0 };
+      entry.total += 1;
+      if (coveredKeys.has(`${operation.method} ${operation.path}`)) entry.covered += 1;
+      perContract.set(contract, entry);
+    }
+  const byContract = [...perContract.entries()].map(([contract, entry]) => ({
+    contract,
+    totalOperations: entry.total,
+    coveredOperations: entry.covered,
+    coveragePercent: entry.total ? Math.floor((entry.covered / entry.total) * 1000) / 10 : 0,
+    status: entry.covered === entry.total ? ("COMPLETE" as const) : ("INCOMPLETE" as const),
+  }));
+  const incomplete = inventory.incomplete ?? [];
   return {
     basis,
-    status: total > 0 && uncovered.length === 0 ? "COMPLETE" : "INCOMPLETE",
+    status: total > 0 && uncovered.length === 0 && incomplete.length === 0 ? "COMPLETE" : "INCOMPLETE",
     totalOperations: total,
     coveredOperations: covered.length,
     uncoveredOperations: uncovered.length,
@@ -366,6 +412,8 @@ export function computeApiCoverage(
       observed: observedResponses,
     },
     excluded: inventory.excluded.slice(0, collectionLimits.maxListed),
+    ...(byContract.length ? { byContract } : {}),
+    incomplete: incomplete.slice(0, collectionLimits.maxListed),
   };
 }
 
@@ -390,6 +438,18 @@ export function collectionVerdict(input: {
   else if (input.coverage.uncoveredOperations > 0)
     reasons.push(
       `${input.coverage.uncoveredOperations} of ${input.coverage.totalOperations} documented operations were not exercised by a passing request`,
+    );
+  if (input.coverage.incomplete.length)
+    reasons.push(
+      `the API inventory is incomplete (${input.coverage.incomplete.length} gap(s), e.g. ${input.coverage.incomplete[0]?.source}: ${input.coverage.incomplete[0]?.reason})`,
+    );
+  const partial = (input.coverage.byContract ?? []).filter((value) => value.status === "INCOMPLETE");
+  if (partial.length)
+    reasons.push(
+      `contracts not fully covered: ${partial
+        .slice(0, 10)
+        .map((value) => `${value.contract} (${value.coveredOperations}/${value.totalOperations})`)
+        .join(", ")}`,
     );
   return { verdict: reasons.length ? "NOT_PROVEN" : "PROVEN", reasons };
 }
@@ -1019,7 +1079,9 @@ export interface CollectionExecutionResult {
     requests: number;
     passedRequests: number;
   };
-  inventorySource: "INLINE" | "API_CONTRACT" | "NONE";
+  inventorySource: "INLINE" | "REPOSITORY" | "API_CONTRACT" | "NONE";
+  /** The exact repository commit the inventory was read from, for a REPOSITORY inventory. */
+  inventoryCommitSha?: string;
   coverage: ApiCoverageReport;
   scenarios: CollectionScenarioResult[];
   resultArtifactId: string;
@@ -1052,6 +1114,7 @@ export class HttpCollectionRunner {
     actor: string;
     inventory?: ApiInventory;
     inventorySource: CollectionExecutionResult["inventorySource"];
+    inventoryCommitSha?: string;
   }): Promise<CollectionExecutionResult> {
     const project = await this.deps.store.getProject(input.projectId);
     if (!project) throw new NotFound("Project not found", { projectId: input.projectId });
@@ -1182,6 +1245,7 @@ export class HttpCollectionRunner {
       summary,
       humanSummary,
       inventorySource: input.inventorySource,
+      ...(input.inventoryCommitSha ? { inventoryCommitSha: input.inventoryCommitSha } : {}),
       coverage,
       scenarios,
     });
@@ -1199,6 +1263,7 @@ export class HttpCollectionRunner {
       durationMs,
       summary,
       inventorySource: input.inventorySource,
+      ...(input.inventoryCommitSha ? { inventoryCommitSha: input.inventoryCommitSha } : {}),
       coverage,
       scenarios,
       resultArtifactId: artifact.id,
@@ -1220,6 +1285,12 @@ export const apiCoverageToolName = "superadmin_api_coverage";
 export const apiCoverageToolDescription =
   "Read-only: compare the saved validation scenarios of a project (optionally one HTTP_API resource) with the project's whole OpenAPI inventory and list every operation no scenario exercises yet, with a runnable draft step for each, so the full collection can be completed before superadmin_collection_run.";
 
+const toolRef = z.string().min(1).max(255);
+/** Read the inventory from every contract in a registered GitHub repository at one commit. */
+const contractRepository = z
+  .object({ resourceId: z.string().uuid(), ref: toolRef.optional() })
+  .optional()
+  .describe("Build the inventory from every OpenAPI contract in this registered GitHub repository at ref (default branch when omitted)");
 const inlineDocument = z.union([z.record(z.unknown()), z.string().max(collectionLimits.maxDocumentBytes)]);
 const toolEntityId = z.string().uuid();
 const toolOperationId = z.string().min(8).max(200);
@@ -1234,7 +1305,13 @@ export const collectionImportToolInputSchema = {
   projectId: toolEntityId,
   resourceId: toolEntityId,
   taskId: toolEntityId.optional(),
-  collection: inlineDocument.describe("The Postman collection export (v2.0/v2.1), as an object or JSON text"),
+  collection: inlineDocument
+    .optional()
+    .describe("The Postman collection export (v2.0/v2.1), as an object or JSON text; or name it with collectionSource"),
+  collectionSource: z
+    .object({ resourceId: toolEntityId, ref: toolRef.optional(), path: z.string().min(1).max(500) })
+    .optional()
+    .describe("A Postman collection file in a registered GitHub repository, read at the exact commit of ref (default branch when omitted)"),
   stripPathPrefix: z
     .string()
     .regex(/^\/[A-Za-z0-9._~/-]{0,200}$/)
@@ -1257,6 +1334,7 @@ export const collectionRunToolInputSchema = {
     .max(collectionLimits.maxScenariosPerRun)
     .optional()
     .describe("Run only these saved scenarios, in this order; omitted, every scenario of the resource runs in creation order"),
+  contractRepository,
   openapi: inlineDocument
     .optional()
     .describe("The API's OpenAPI document; omitted, the project's latest API_CONTRACT artifact is the inventory"),
@@ -1270,6 +1348,7 @@ export const apiCoverageToolAnnotations = {
 export const apiCoverageToolInputSchema = {
   projectId: toolEntityId,
   resourceId: toolEntityId.optional(),
+  contractRepository,
   openapi: inlineDocument
     .optional()
     .describe("The API's OpenAPI document; omitted, the project's latest API_CONTRACT artifact is the inventory"),

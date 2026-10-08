@@ -409,7 +409,7 @@ describe("whole API collection security", () => {
     const target = await project();
     const http = await resource(target.id);
     const operator = { actor: "operator", role: "PROJECT_OPERATOR" as const };
-    expect(() => admin.collectionImport(operator, target.id, { resourceId: http.resourceId, collection: smokeCollection }, operationId())).toThrow();
+    await expect(admin.collectionImport(operator, target.id, { resourceId: http.resourceId, collection: smokeCollection }, operationId())).rejects.toThrow();
     await expect(admin.collectionRun(operator, target.id, { resourceId: http.resourceId, operationId: operationId() })).rejects.toThrow();
     await expect(admin.apiCoverage(operator, target.id, {})).rejects.toThrow();
   });

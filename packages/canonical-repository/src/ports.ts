@@ -37,6 +37,12 @@ export interface GitRepositoryProvider {
   /** Entry paths in a directory at a ref, or undefined when the directory does not exist. */
   listDirectory(repository:string,path:string,ref?:string):Promise<string[]|undefined>;
   /**
+   * Every file in the tree at an exact commit, with its size. `truncated` is the host's own
+   * statement that the listing was cut short, so a caller can say so instead of claiming it saw
+   * everything. Optional: providers that cannot list a whole tree simply do not offer it.
+   */
+  listTree?(repository:string,commitSha:string):Promise<{files:Array<{path:string;size:number}>;truncated:boolean}>;
+  /**
    * Renames the repository in place, keeping its id, history, refs, issues and pull requests.
    * Takes the new NAME only: an owner is never accepted, so a rename cannot move a repository
    * between accounts or organizations.

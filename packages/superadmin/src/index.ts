@@ -67,6 +67,11 @@ import {
   type ApiInventory,
   type CollectionExecutionResult,
 } from "../../http-runner/src/collection.js";
+import {
+  discoverRepositoryApi,
+  parseStructuredDocument,
+  type RepositoryContentSource,
+} from "../../http-runner/src/contract-discovery.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { awaitingCaller } from "../../core/src/task-readiness.js";
 import { z } from "zod";
@@ -523,15 +528,51 @@ export class SuperadminService {
     }).run({projectId,scenarioId:input.scenarioId,operationId:input.operationId,actor:principal.actor}));
   }
 
-  // The whole API collection of a project. The inventory is the project's own OpenAPI contract:
-  // an inline document when the caller has one, else the latest API_CONTRACT artifact. Without
-  // either, coverage is NO_INVENTORY and a collection run can never be PROVEN.
-  private async apiInventory(projectId:string,openapi?:unknown):Promise<{inventory?:ApiInventory;source:"INLINE"|"API_CONTRACT"|"NONE"}>{
-    if(openapi!==undefined)return {inventory:extractApiOperations(boundedDocument(openapi,"OpenAPI document")),source:"INLINE"};
+  // The whole API collection of a project. The inventory is the project's own contract set, in
+  // this order: an inline document when the caller has one; every contract in a registered GitHub
+  // repository at one exact commit; else the latest API_CONTRACT artifact. Without any of them,
+  // coverage is NO_INVENTORY and a collection run can never be PROVEN.
+  private async apiInventory(projectId:string,input:{openapi?:unknown;contractRepository?:{resourceId:string;ref?:string}}):Promise<{inventory?:ApiInventory;source:"INLINE"|"REPOSITORY"|"API_CONTRACT"|"NONE";commitSha?:string}>{
+    if(input.openapi!==undefined)return {inventory:extractApiOperations(boundedDocument(input.openapi,"OpenAPI document")),source:"INLINE"};
+    if(input.contractRepository){
+      const discovery=await discoverRepositoryApi(await this.repositoryContent(projectId,input.contractRepository.resourceId,input.contractRepository.ref));
+      return {inventory:discovery.inventory,source:"REPOSITORY",commitSha:discovery.commitSha};
+    }
     const latest=await this.deps.store.latestArtifactOfKind(projectId,"API_CONTRACT");
     if(!latest||latest.status==="DELETED")return {source:"NONE"};
     const inventory=inventoryFromContractArtifact((await this.artifacts.read(projectId,latest.id)).content);
     return inventory?{inventory,source:"API_CONTRACT"}:{source:"NONE"};
+  }
+  // A registered GitHub repository pinned to one commit. The resource is authorized here, before
+  // the provider sees it; the provider only ever receives the registered owner/name and an exact SHA.
+  private async repositoryContent(projectId:string,resourceId:string,ref?:string):Promise<RepositoryContentSource>{
+    const resource=await requireProjectGithubRepository(this.deps.store,projectId,resourceId);
+    if(resource.environment==="PRODUCTION")throw new UnsupportedOperation("Production resource access is not supported");
+    if(!resource.permissions.includes("READ"))throw new PolicyViolation("Resource permission denied",{required:"READ"});
+    const provider=this.deps.repositories;
+    if(!provider?.listTree)throw new UnsupportedOperation("Repository tree listing is not configured for this runtime");
+    const repository=resource.externalReference;
+    const commitSha=ref&&/^[0-9a-f]{40}$/.test(ref)
+      ?(await provider.commitExists(repository,ref)?ref:undefined)
+      :await provider.resolveRef(repository,ref??(await provider.describe(repository)).defaultBranch);
+    if(!commitSha)throw new NotFound("Ref not found in the registered repository",{resourceId,...(ref?{ref}:{})});
+    const listTree=provider.listTree.bind(provider);
+    return {commitSha,listFiles:()=>listTree(repository,commitSha),readFile:path=>provider.readFile(repository,path,commitSha)};
+  }
+
+  // Read-only: every contract and collection the repository holds at one commit.
+  async repositoryApiDiscovery(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;ref?:string}){
+    this.requireSuperadmin(principal);await this.requireProject(projectId);
+    const discovery=await discoverRepositoryApi(await this.repositoryContent(projectId,input.resourceId,input.ref));
+    return {
+      commitSha:discovery.commitSha,scannedFiles:discovery.scannedFiles,candidates:discovery.candidates,
+      contracts:discovery.contracts,collections:discovery.collections,
+      totalOperations:discovery.inventory.operations.length,
+      operations:discovery.inventory.operations.slice(0,500).map(operation=>({method:operation.method,path:operation.path,contract:operation.contract,...(operation.alsoIn?{alsoIn:operation.alsoIn}:{}),secured:operation.secured})),
+      excluded:discovery.inventory.excluded,
+      gaps:discovery.inventory.incomplete??[],
+      complete:!(discovery.inventory.incomplete?.length),
+    };
   }
   private async requireHttpApiResource(projectId:string,resourceId:string){
     const resource=await this.deps.store.getResource(resourceId);
@@ -541,45 +582,55 @@ export class SuperadminService {
 
   // Imports a Postman collection as saved scenarios in one idempotent mutation. The audit payload
   // carries the collection's size, not its body: the scenarios themselves are the evidence.
-  collectionImport(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;taskId?:string;collection:unknown;stripPathPrefix?:string},operationId:string){
+  async collectionImport(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;taskId?:string;collection?:unknown;collectionSource?:{resourceId:string;ref?:string;path:string};stripPathPrefix?:string},operationId:string){
     this.requireSuperadmin(principal);
-    const parsed=importPostmanCollection(boundedDocument(input.collection,"Postman collection"),input.stripPathPrefix?{stripPathPrefix:input.stripPathPrefix}:{});
-    return this.mutate(principal,"collection_import",projectId,operationId,{resourceId:input.resourceId,collectionName:parsed.collectionName,requestCount:parsed.requestCount,scenarios:parsed.scenarios.length},async()=>{
+    if((input.collection===undefined)===(input.collectionSource===undefined))throw new PolicyViolation("Supply exactly one of collection or collectionSource");
+    let document:unknown;
+    let origin:{path:string;commitSha:string}|undefined;
+    if(input.collectionSource){
+      const source=await this.repositoryContent(projectId,input.collectionSource.resourceId,input.collectionSource.ref);
+      const text=await source.readFile(input.collectionSource.path);
+      if(text===undefined)throw new NotFound("Collection file not found in the registered repository",{path:input.collectionSource.path});
+      document=boundedDocument(parseStructuredDocument(input.collectionSource.path,text),"Postman collection");
+      origin={path:input.collectionSource.path,commitSha:source.commitSha};
+    }else document=boundedDocument(input.collection,"Postman collection");
+    const parsed=importPostmanCollection(document,input.stripPathPrefix?{stripPathPrefix:input.stripPathPrefix}:{});
+    return this.mutate(principal,"collection_import",projectId,operationId,{resourceId:input.resourceId,collectionName:parsed.collectionName,requestCount:parsed.requestCount,scenarios:parsed.scenarios.length,...(origin?{origin}:{})},async()=>{
       await this.requireHttpApiResource(projectId,input.resourceId);
       const created:Array<{scenarioId:string;name:string;steps:number}>=[];
       for(const [index,scenario] of parsed.scenarios.entries()){
         const value=validationScenarioSaveInputSchema.parse({...scenario,resourceId:input.resourceId,...(input.taskId?{taskId:input.taskId}:{}),operationId:`${operationId}#${index}`});
-        const artifact=await this.artifacts.write(projectId,"VALIDATION_SCENARIO",{...scenarioForStorage(value),createdAt:this.clock.now(),collection:{name:parsed.collectionName,importOperationId:operationId,index}},value.taskId);
+        const artifact=await this.artifacts.write(projectId,"VALIDATION_SCENARIO",{...scenarioForStorage(value),createdAt:this.clock.now(),collection:{name:parsed.collectionName,importOperationId:operationId,index,...(origin?{origin}:{})}},value.taskId);
         created.push({scenarioId:artifact.id,name:scenario.name,steps:scenario.steps.length});
       }
-      return {collectionName:parsed.collectionName,requestCount:parsed.requestCount,importedSteps:parsed.importedSteps,scenarios:created,skipped:parsed.skipped,warnings:parsed.warnings,variables:parsed.variables};
+      return {collectionName:parsed.collectionName,...(origin?{origin}:{}),requestCount:parsed.requestCount,importedSteps:parsed.importedSteps,scenarios:created,skipped:parsed.skipped,warnings:parsed.warnings,variables:parsed.variables};
     });
   }
 
   // Runs every saved scenario of one resource as one collection and records the verdict. Each
   // scenario still goes through HttpScenarioRunner, so authorization, containment and redaction
   // are the single runner's, not re-implemented here.
-  async collectionRun(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;scenarioIds?:string[];openapi?:unknown;operationId:string}){
+  async collectionRun(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;scenarioIds?:string[];openapi?:unknown;contractRepository?:{resourceId:string;ref?:string};operationId:string}){
     this.requireSuperadmin(principal);
-    const {inventory,source}=await this.apiInventory(projectId,input.openapi);
-    return this.mutate(principal,"collection_run",projectId,input.operationId,{resourceId:input.resourceId,scenarioIds:input.scenarioIds??[],inventorySource:source},():Promise<CollectionExecutionResult>=>new HttpCollectionRunner({
+    const {inventory,source,commitSha}=await this.apiInventory(projectId,input);
+    return this.mutate(principal,"collection_run",projectId,input.operationId,{resourceId:input.resourceId,scenarioIds:input.scenarioIds??[],inventorySource:source,...(commitSha?{inventoryCommitSha:commitSha}:{})},():Promise<CollectionExecutionResult>=>new HttpCollectionRunner({
       store:this.deps.store,
       artifacts:this.artifacts,
       clock:this.clock,
       ...(this.deps.secrets?{secrets:this.deps.secrets}:{}),
       ...(this.deps.fetchImpl?{fetchImpl:this.deps.fetchImpl}:{}),
-    }).run({projectId,resourceId:input.resourceId,...(input.scenarioIds?.length?{scenarioIds:input.scenarioIds}:{}),operationId:input.operationId,actor:principal.actor,...(inventory?{inventory}:{}),inventorySource:source}));
+    }).run({projectId,resourceId:input.resourceId,...(input.scenarioIds?.length?{scenarioIds:input.scenarioIds}:{}),operationId:input.operationId,actor:principal.actor,...(inventory?{inventory}:{}),inventorySource:source,...(commitSha?{inventoryCommitSha:commitSha}:{})}));
   }
 
   // Read-only: what the saved scenarios would cover, and a draft for everything they do not.
-  async apiCoverage(principal:SuperadminPrincipal,projectId:string,input:{resourceId?:string;openapi?:unknown}){
+  async apiCoverage(principal:SuperadminPrincipal,projectId:string,input:{resourceId?:string;openapi?:unknown;contractRepository?:{resourceId:string;ref?:string}}){
     this.requireSuperadmin(principal);await this.requireProject(projectId);
     if(input.resourceId)await this.requireHttpApiResource(projectId,input.resourceId);
-    const {inventory,source}=await this.apiInventory(projectId,input.openapi);
+    const {inventory,source,commitSha}=await this.apiInventory(projectId,input);
     const artifacts=await this.deps.store.listArtifacts(projectId);
     const scenarios=input.resourceId?collectionScenarios(artifacts,input.resourceId):artifacts.filter(value=>value.kind==="VALIDATION_SCENARIO"&&value.status!=="DELETED");
     const coverage=computeApiCoverage(inventory,declaredRequests(scenarios),"DECLARED");
-    return {inventorySource:source,scenarios:scenarios.length,coverage,drafts:draftStepsFor(coverage.uncovered)};
+    return {inventorySource:source,...(commitSha?{inventoryCommitSha:commitSha}:{}),scenarios:scenarios.length,coverage,drafts:draftStepsFor(coverage.uncovered)};
   }
 
   // Transfers an already-verified task onto the repository's current base branch after its
