@@ -131,6 +131,8 @@ importers:
 
   packages/core: {}
 
+  packages/ephemeral-environment: {}
+
   packages/execution-engine: {}
 
   packages/http-runner: {}
