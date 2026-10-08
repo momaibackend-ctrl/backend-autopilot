@@ -187,6 +187,15 @@ leave out. Three tools make the size of the claim explicit for any project:
   `NOT_PROVEN` with `reasons` and the uncovered operations. Without an inventory (no inline
   `openapi` and no `API_CONTRACT` artifact) it is never `PROVEN`.
 
+* `superadmin_repository_api_discovery({projectId, resourceId, ref?})` is read-only: it finds every
+  OpenAPI contract and Postman collection in a registered GitHub repository at one exact commit,
+  follows path items split through `$ref`, and returns the merged inventory with the contract
+  documenting each operation and every gap. `superadmin_collection_run` and
+  `superadmin_api_coverage` take `contractRepository: {resourceId, ref?}` to use that inventory
+  (coverage is then also reported per contract), and `superadmin_collection_import` takes
+  `collectionSource: {resourceId, ref?, path}` to import a collection straight from the repository.
+  Any inventory gap keeps the verdict `NOT_PROVEN`.
+
 None of them accepts a URL or host; each scenario still runs through `superadmin_scenario_run`'s
 single runner, with the same authorization, containment, redaction and limits. Details:
 [`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).

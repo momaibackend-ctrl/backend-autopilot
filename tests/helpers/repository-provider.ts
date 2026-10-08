@@ -11,6 +11,8 @@ export interface FakeRepositoryState {
   visibility?: string;
   permissions?: Partial<RepositoryDescription["permissions"]>;
   protectedBranches?: string[];
+  /** Simulates a host that cut the recursive tree listing short. */
+  treeTruncated?: boolean;
   /** Simulates a repository the provider cannot read at all. */
   unreachable?: boolean;
   /** Identity the provider reports, when it deliberately differs from the registration. */
@@ -83,6 +85,10 @@ export class FakeRepositoryProvider implements GitRepositoryProvider {
   }
   async readFile(repository: string, path: string) {
     return this.state(repository).files?.[path];
+  }
+  async listTree(repository: string) {
+    const files = Object.entries(this.state(repository).files ?? {}).map(([path, content]) => ({ path, size: content.length }));
+    return { files, truncated: Boolean(this.state(repository).treeTruncated) };
   }
   async listDirectory(repository: string, path: string) {
     const files = Object.keys(this.state(repository).files ?? {}).filter((value) => value.startsWith(`${path}/`));

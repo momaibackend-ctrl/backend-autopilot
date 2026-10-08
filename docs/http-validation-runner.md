@@ -172,12 +172,42 @@ same nothing twice. The collection tools close that gap for any project; they li
 
 ### Inventory
 
-The denominator is the project's own contract: an inline `openapi` document (object or JSON
-text, OpenAPI 3.x or Swagger 2.0, at most 4 MB and 2000 operations), or else the latest
-`API_CONTRACT` artifact the execution runner recorded. `OPTIONS`/`TRACE` operations are listed as
+The denominator is the project's own contract set, chosen in this order:
+
+1. an inline `openapi` document (object or JSON text, OpenAPI 3.x or Swagger 2.0, at most 4 MB
+   and 2000 operations);
+2. `contractRepository: {resourceId, ref?}` -- **every** contract in a registered GitHub
+   repository at one exact commit (see *Repository discovery* below);
+3. the latest `API_CONTRACT` artifact the execution runner recorded.
+
+Without any of them the coverage is `NO_INVENTORY`. `OPTIONS`/`TRACE` operations are listed as
 `excluded` because the runner cannot send them. Requests are matched to operations the way
 OpenAPI does: the most specific template wins (`/notes/search` before `/notes/{id}`), and a
 `{{variable}}` segment fills a parameter but never a literal.
+
+### Repository discovery (`superadmin_repository_api_discovery`)
+
+Read-only. Given a registered `GITHUB_REPOSITORY` resource and an optional `ref` (branch, tag or
+exact SHA; default branch when omitted), it resolves one exact commit, lists the whole tree and
+opens every JSON/YAML file that is named like a contract or collection (`openapi`, `swagger`,
+`*.api.*`, `postman`, `collection`, …) or lives in an `api/`, `contracts/`, `openapi/`,
+`swagger/`, `spec(s)/`, `docs/`, `postman/` or `schemas/` directory. Build output, dependencies
+and configuration (`build/`, `dist/`, `target/`, `node_modules/`, `application*.yml`,
+`package.json`, …) are skipped. Content decides what a file is, not its name.
+
+* Every OpenAPI/Swagger document becomes part of one inventory; each operation records the
+  `contract` that documents it and `alsoIn` for other contracts documenting the same route.
+  A root `openapi.json` and separate check-in and onboarding contracts are therefore all in the
+  denominator, and coverage is reported **per contract** (`coverage.byContract`) as well as in total.
+* Path items split into other files are followed through `$ref` (local `#/…`, relative files,
+  `file#/pointer`), never outside the repository.
+* Postman collections are listed with their request count; import one directly with
+  `superadmin_collection_import({…, collectionSource: {resourceId, ref?, path}})`.
+
+Anything it could not see is an **inventory gap** (`gaps` / `coverage.incomplete`): a contract
+that does not parse, a `$ref` that does not resolve, a file over 4 MB, a candidate past the
+150-file read budget, or a tree listing GitHub truncated. A gap keeps every collection verdict
+`NOT_PROVEN` -- an inventory that may be missing operations cannot prove they were covered.
 
 ### Import (`superadmin_collection_import`)
 

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import * as collection from "../../packages/http-runner/src/collection.js";
+import * as discovery from "../../packages/http-runner/src/contract-discovery.js";
 import { publishedMcpTools, searchTools } from "../helpers/mcp-registry.js";
 
 const tools = [
@@ -9,21 +10,28 @@ const tools = [
     name: collection.collectionImportToolName,
     description: collection.collectionImportToolDescription,
     schema: collection.collectionImportToolInputSchema,
-    fields: ["collection", "operationId", "projectId", "resourceId", "stripPathPrefix", "taskId"],
+    fields: ["collection", "collectionSource", "operationId", "projectId", "resourceId", "stripPathPrefix", "taskId"],
   },
   {
     constant: "collectionRunToolName",
     name: collection.collectionRunToolName,
     description: collection.collectionRunToolDescription,
     schema: collection.collectionRunToolInputSchema,
-    fields: ["openapi", "operationId", "projectId", "resourceId", "scenarioIds"],
+    fields: ["contractRepository", "openapi", "operationId", "projectId", "resourceId", "scenarioIds"],
   },
   {
     constant: "apiCoverageToolName",
     name: collection.apiCoverageToolName,
     description: collection.apiCoverageToolDescription,
     schema: collection.apiCoverageToolInputSchema,
-    fields: ["openapi", "projectId", "resourceId"],
+    fields: ["contractRepository", "openapi", "projectId", "resourceId"],
+  },
+  {
+    constant: "repositoryApiDiscoveryToolName",
+    name: discovery.repositoryApiDiscoveryToolName,
+    description: discovery.repositoryApiDiscoveryToolDescription,
+    schema: discovery.repositoryApiDiscoveryToolInputSchema,
+    fields: ["projectId", "ref", "resourceId"],
   },
 ];
 
@@ -53,6 +61,8 @@ describe("whole API collection MCP contract", () => {
         expect.arrayContaining([collection.collectionImportToolName, collection.collectionRunToolName]),
       );
     expect(searchTools(published, "coverage").map((tool) => tool.name)).toContain(collection.apiCoverageToolName);
+    expect(searchTools(published, "contract").map((tool) => tool.name)).toContain(discovery.repositoryApiDiscoveryToolName);
+    expect(discovery.repositoryApiDiscoveryToolAnnotations.readOnlyHint).toBe(true);
     expect(tools.some((tool) => /(shell|sql|filesystem)/i.test(tool.name))).toBe(false);
   });
 
@@ -72,13 +82,14 @@ describe("whole API collection MCP contract", () => {
     expect(collection.collectionImportToolAnnotations.readOnlyHint).toBe(false);
     expect(collection.collectionRunToolAnnotations).toMatchObject({ readOnlyHint: false, openWorldHint: true, idempotentHint: true });
     const source = await readFile("supabase/functions/mcp/index.ts", "utf8");
-    expect(source).not.toContain("version:'0.5.1'");
+    expect(source).not.toMatch(/version:'0\.5\.[12]'/);
   });
 
   it("maps the new module in every Edge Function import map", async () => {
     for (const name of ["mcp", "control-api", "reconcile"]) {
       const map = JSON.parse(await readFile(`supabase/functions/${name}/deno.json`, "utf8")) as { imports: Record<string, string> };
       expect(map.imports["../../../packages/http-runner/src/collection.js"], name).toBe("../../../packages/http-runner/src/collection.ts");
+      expect(map.imports["../../../packages/http-runner/src/contract-discovery.js"], name).toBe("../../../packages/http-runner/src/contract-discovery.ts");
     }
   });
 });
