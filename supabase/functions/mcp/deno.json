@@ -25,6 +25,7 @@
     "../../../packages/http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../../packages/http-runner/src/collection.js": "../../../packages/http-runner/src/collection.ts",
     "../../../packages/http-runner/src/contract-discovery.js": "../../../packages/http-runner/src/contract-discovery.ts",
+    "../../../packages/ephemeral-environment/src/plan.js": "../../../packages/ephemeral-environment/src/plan.ts",
     "../../../packages/superadmin/src/rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",

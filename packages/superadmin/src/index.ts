@@ -72,6 +72,7 @@ import {
   parseStructuredDocument,
   type RepositoryContentSource,
 } from "../../http-runner/src/contract-discovery.js";
+import { planEnvironment, planIsExecutable } from "../../ephemeral-environment/src/plan.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { awaitingCaller } from "../../core/src/task-readiness.js";
 import { z } from "zod";
@@ -558,6 +559,16 @@ export class SuperadminService {
     if(!commitSha)throw new NotFound("Ref not found in the registered repository",{resourceId,...(ref?{ref}:{})});
     const listTree=provider.listTree.bind(provider);
     return {commitSha,listFiles:()=>listTree(repository,commitSha),readFile:path=>provider.readFile(repository,path,commitSha)};
+  }
+
+  // Read-only: how this commit's backend would be built, started and reached in a throwaway
+  // environment, decided from the repository itself (and .autopilot/environment.yml).
+  async environmentPlan(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;ref?:string;root?:string}){
+    this.requireSuperadmin(principal);await this.requireProject(projectId);
+    const source=await this.repositoryContent(projectId,input.resourceId,input.ref);
+    const {files}=await source.listFiles();
+    const plan=await planEnvironment({paths:files.map(file=>file.path),read:path=>source.readFile(path)},input.root===undefined?{}:{root:input.root});
+    return {commitSha:source.commitSha,executable:planIsExecutable(plan),plan};
   }
 
   // Read-only: every contract and collection the repository holds at one commit.

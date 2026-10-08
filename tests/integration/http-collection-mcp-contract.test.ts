@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import * as collection from "../../packages/http-runner/src/collection.js";
 import * as discovery from "../../packages/http-runner/src/contract-discovery.js";
+import * as environment from "../../packages/ephemeral-environment/src/plan.js";
 import { publishedMcpTools, searchTools } from "../helpers/mcp-registry.js";
 
 const tools = [
@@ -32,6 +33,13 @@ const tools = [
     description: discovery.repositoryApiDiscoveryToolDescription,
     schema: discovery.repositoryApiDiscoveryToolInputSchema,
     fields: ["projectId", "ref", "resourceId"],
+  },
+  {
+    constant: "environmentPlanToolName",
+    name: environment.environmentPlanToolName,
+    description: environment.environmentPlanToolDescription,
+    schema: environment.environmentPlanToolInputSchema,
+    fields: ["projectId", "ref", "resourceId", "root"],
   },
 ];
 
@@ -82,13 +90,14 @@ describe("whole API collection MCP contract", () => {
     expect(collection.collectionImportToolAnnotations.readOnlyHint).toBe(false);
     expect(collection.collectionRunToolAnnotations).toMatchObject({ readOnlyHint: false, openWorldHint: true, idempotentHint: true });
     const source = await readFile("supabase/functions/mcp/index.ts", "utf8");
-    expect(source).not.toMatch(/version:'0\.5\.[12]'/);
+    expect(source).not.toMatch(/version:'0\.5\.[123]'/);
   });
 
   it("maps the new module in every Edge Function import map", async () => {
     for (const name of ["mcp", "control-api", "reconcile"]) {
       const map = JSON.parse(await readFile(`supabase/functions/${name}/deno.json`, "utf8")) as { imports: Record<string, string> };
       expect(map.imports["../../../packages/http-runner/src/collection.js"], name).toBe("../../../packages/http-runner/src/collection.ts");
+      expect(map.imports["../../../packages/ephemeral-environment/src/plan.js"], name).toBe("../../../packages/ephemeral-environment/src/plan.ts");
       expect(map.imports["../../../packages/http-runner/src/contract-discovery.js"], name).toBe("../../../packages/http-runner/src/contract-discovery.ts");
     }
   });

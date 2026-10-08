@@ -200,6 +200,18 @@ None of them accepts a URL or host; each scenario still runs through `superadmin
 single runner, with the same authorization, containment, redaction and limits. Details:
 [`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).
 
+## Ephemeral verification environments
+
+`superadmin_environment_plan({projectId, resourceId, ref?, root?})` is read-only. It decides how
+the autopilot would build, start and reach a registered GitHub repository's backend in a
+throwaway environment at one exact commit. That covers the stack, base image, argv
+install/build/prepare/run commands, port, health probes and dependency containers (PostgreSQL,
+MySQL, Redis, MongoDB, with credentials only as per-run templates). It honours
+`.autopilot/environment.yml`. Anything it cannot decide is listed in `unresolved` with a
+remediation, and such a plan is never executed. The harness that executes plans in GitHub
+Actions, and the job that records its evidence, follow in the next parts. Details:
+[`docs/ephemeral-environments.md`](docs/ephemeral-environments.md).
+
 ## Deliberately absent
 
 There is no shell/subprocess proxy, SQL console, arbitrary filesystem/path tool, arbitrary HTTP fetch (the scenario runner only replays a persisted scenario against its own registered resource), arbitrary GitHub repository URL, policy bypass, production mutation or source-code editing tool. Long execution is a durable job carrying only semantic inputs and a registered resource UUID.
