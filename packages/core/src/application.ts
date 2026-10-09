@@ -51,6 +51,7 @@ import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { AuditLog } from "../../audit/src/index.js";
 import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
 import { latestHttpE2eEvidence, requiresHttpE2e, taskReadiness } from "./task-readiness.js";
+import { repairProgress } from "./repair-progress.js";
 import { classifyScope } from "./scope-classification.js";
 import { buildEpicVerification, type EpicHeadEvidence, type EpicMemberInput } from "./epic-verification.js";
 import { buildVerificationProfile, requiredSuites } from "./verification-profile.js";
@@ -85,7 +86,6 @@ export interface ServiceDependencies {
   commands: CommandJournal;
   clock?: Clock;
   ids?: IdGenerator;
-  maxAutoRepairAttempts?: number;
   artifactBlobs?: ArtifactBlobStore;
   /**
    * Recognises an actor whose evidence may be classified TRUSTED_CI. The default matches the
@@ -107,7 +107,6 @@ export class AutopilotService {
   private audit: AuditLog;
   private guard = new ArchitectureGuard();
   private reviewer: IndependentReviewer;
-  private maxRepairs: number;
   private isTrustedEvidenceActor: (actor: string) => boolean;
   constructor(private deps: ServiceDependencies) {
     this.store = deps.store;
@@ -120,7 +119,6 @@ export class AutopilotService {
     this.artifacts = new ArtifactStore(deps.store, this.ids, this.clock, deps.artifactBlobs);
     this.audit = new AuditLog(deps.store, this.ids, this.clock);
     this.reviewer = new IndependentReviewer(this.clock);
-    this.maxRepairs = deps.maxAutoRepairAttempts ?? 3;
     this.isTrustedEvidenceActor = deps.trustedEvidenceActor ?? ((actor) => /^github-actions:\d+:\d+$/.test(actor));
   }
   async systemHealth() {
@@ -595,38 +593,36 @@ export class AutopilotService {
         task.id,
       );
     if (!report.passed) {
+      // A failed run always returns to IMPLEMENTING: the task is repaired by finding the cause, not
+      // stopped by a count (ADR 022). The attempt counter stays as a statistic; whether repairs make
+      // progress is judged by the cause of each failure, and a cause that keeps coming back changes
+      // the guidance, not the state.
       const updated = { ...task, repairAttempts: task.repairAttempts + 1 };
       await this.store.updateTask(updated);
-      if (updated.repairAttempts >= this.maxRepairs) {
-        task = await this.workflow.transition(
-          updated,
-          "BLOCKED",
-          "Automatic repair attempt limit reached",
-          actor,
-          [artifact.id],
-        );
-      } else {
-        task = await this.workflow.transition(
-          updated,
-          "IMPLEMENTING",
-          "Tests failed; repair required",
-          actor,
-          [artifact.id],
-        );
-      }
+      const progress = repairProgress(await this.store.listArtifacts(projectId, taskId));
+      task = await this.workflow.transition(
+        updated,
+        "IMPLEMENTING",
+        progress.stagnating
+          ? `Tests failed with the same cause ${progress.consecutiveSameCause} times in a row; the next repair needs a new hypothesis`
+          : "Tests failed; repair required",
+        actor,
+        [artifact.id],
+      );
       await this.audit.record({
         actor,
         action: "task.test",
         projectId,
         taskId,
         input: { attempt: updated.repairAttempts },
-        result: { passed: false, state: task.state },
+        result: { passed: false, state: task.state, progress },
         reason: "Formal test gate failed",
         correlationId,
       });
       throw new TestFailed("Required tests failed", {
         state: task.state,
         report,
+        progress,
       });
     }
     task = await this.workflow.transition(
@@ -851,10 +847,6 @@ export class AutopilotService {
     const task = await this.requiredTask(projectId, taskId);
     if (task.state !== "BLOCKED" && task.state !== "FAILED")
       throw new InvalidState("Only BLOCKED or FAILED tasks may retry");
-    if (task.repairAttempts >= this.maxRepairs)
-      throw new InvalidState(
-        "Repair limit exhausted; human intervention required",
-      );
     return this.workflow.transition(
       task,
       "ANALYZING",

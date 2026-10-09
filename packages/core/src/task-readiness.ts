@@ -1,4 +1,5 @@
 import type { Artifact, ArtifactKind, ImplementationPlan, Run, Task, VerificationProfile } from "../../schemas/src/index.js";
+import { repairProgress, type RepairProgress } from "./repair-progress.js";
 import { requiresLayer } from "./verification-profile.js";
 
 // What a task still needs before it can reach READY, and what to call next to get there.
@@ -48,6 +49,11 @@ export interface TaskReadiness {
   completion: { state: "MERGED"; pullRequestUrl?: string; reason: string } | null;
   /** True only when every formal gate artifact exists; merge tools additionally require READY. */
   gateArtifactsComplete: boolean;
+  /**
+   * Whether repairs are changing the cause of failure (ADR 022). There is no attempt limit; a
+   * cause repeating STAGNATION_THRESHOLD times turns the guidance from "fix it" into "find it".
+   */
+  repair: RepairProgress;
 }
 
 /** The plan fields the gate reads. Kept narrow so callers can pass a partial persisted plan. */
@@ -221,11 +227,18 @@ export function taskReadiness(input: {
       );
   }
 
+  const repair = repairProgress(artifacts);
+  const baseAction = merged || input.executionInFlight ? null : (nextByState[input.task.state] ?? null);
+  const nextAction =
+    baseAction && repair.stagnating && (input.task.state === "IMPLEMENTING" || input.task.state === "VERIFYING")
+      ? { ...baseAction, why: `${baseAction.why} ${repair.guidance ?? ""}`.trim() }
+      : baseAction;
+
   return {
     taskId: input.task.id,
     externalKey: input.task.externalKey,
     state: input.task.state,
-    nextAction: merged || input.executionInFlight ? null : (nextByState[input.task.state] ?? null),
+    nextAction,
     blockers,
     gateArtifacts: { required, present, missing },
     verification: input.plan?.verification ?? null,
@@ -237,6 +250,7 @@ export function taskReadiness(input: {
         }
       : null,
     gateArtifactsComplete: blockers.length === 0,
+    repair,
   };
 }
 
