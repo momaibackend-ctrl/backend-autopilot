@@ -48,7 +48,7 @@ describe("verified repository registration through the superadmin MCP", () => {
     const context = await setup();
     const replay = operationId();
     const first = await register(context, "acme/backend-java", { operationId: replay });
-    expect(first.value).toMatchObject({ repository: "acme/backend-java", permissions: ["READ"], alreadyRegistered: false });
+    expect(first.value).toMatchObject({ repository: "acme/backend-java", visibility: "private", permissions: ["READ"], alreadyRegistered: false });
     const resources = await context.store.listResources(context.project.id);
     expect(resources.map((resource) => [resource.type, resource.externalReference, resource.environment])).toEqual([
       ["GITHUB_ACCOUNT", "acme", "SANDBOX"],
@@ -77,9 +77,16 @@ describe("verified repository registration through the superadmin MCP", () => {
     expect(context.dispatched).toHaveLength(1);
   });
 
-  it("refuses a public repository, one without ADMIN, an old name, a missing one and a malformed name", async () => {
+  it("accepts a public repository and names its visibility", async () => {
     const context = await setup();
-    await expect(register(context, "acme/public-repo")).rejects.toMatchObject({ code: "POLICY_VIOLATION", message: "Only private repositories can be registered" });
+    const { value } = await register(context, "acme/public-repo");
+    expect(value).toMatchObject({ repository: "acme/public-repo", visibility: "public", alreadyRegistered: false });
+    const audit = (await context.store.listAudit(context.project.id)).find((event) => event.action === "mcp.repository_register");
+    expect(JSON.stringify(audit?.result)).toContain('"visibility":"public"');
+  });
+
+  it("refuses a repository without ADMIN, an old name, a missing one and a malformed name", async () => {
+    const context = await setup();
     await expect(register(context, "acme/no-admin")).rejects.toMatchObject({ code: "POLICY_VIOLATION", details: { remediation: expect.stringContaining("Admin role") } });
     await expect(register(context, "acme/old-name")).rejects.toMatchObject({ code: "POLICY_VIOLATION", message: "The repository is now named acme/new-name; register it under its current name" });
     await expect(register(context, "acme/missing")).rejects.toMatchObject({ code: "NOT_FOUND" });

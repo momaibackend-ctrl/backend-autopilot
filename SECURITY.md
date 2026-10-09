@@ -12,7 +12,7 @@
 - Audit events are append-only in application code and protected from SQL UPDATE/DELETE by a database trigger.
 - Provider accounts must be explicitly confirmed as dedicated sandbox identities before discovery; authenticated sessions alone grant no authority.
 - GitHub authorization never logs out or overwrites existing accounts: the expected sandbox login must be explicitly switched active and matched before registration and every write.
-- An existing GitHub repository is adopted only by exact `owner/name` confirmation, active-owner match, private visibility, `ADMIN` permission, and a project-scoped registry record.
+- An existing GitHub repository is adopted only by exact `owner/name` confirmation, active-owner match, `ADMIN` permission, and a project-scoped registry record. Public repositories are accepted while every target is a sandbox; the visibility is recorded and audited with the registration (ADR 023).
 - Generated passwords are transient credentials stored by `MutableSecretProvider`; sensitive CLI argument positions are journaled as `[REDACTED]`.
 - IPv4-only sandbox hosts use the official Supavisor session pooler with encrypted `sslmode=require` semantics. CA-pinned `verify-full` remains preferred when the provider certificate is available; production autonomy remains unsupported.
 - Repository/database deletion requires a separate semantic tool plus a resource-bound confirmation object.

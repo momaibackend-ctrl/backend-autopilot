@@ -29,3 +29,14 @@ This is not the "generic Git binding" AGENTS.md rule 10 forbids. It accepts one 
 
 - A remote agent can go from "here is the repository" to a verified HTTP E2E verdict without anyone running a local script.
 - Registering a repository the identity cannot administer still needs a human: they grant the role in GitHub, and the refusal says so. The autopilot never asks for or stores a credential to work around it.
+
+## Amendment: public repositories
+
+The operator decided that public repositories may be registered while the autopilot works in sandbox
+environments only, with no production targets. The private-visibility check is removed from this
+tool, and from AGENTS.md rule 8 and SECURITY.md with it, so the rules and the code agree.
+
+Every other check stays: exact name, ADMIN for the control-plane identity, one project. Those
+protect against binding the wrong repository, not against publicity. The visibility is returned by
+the tool and recorded in the `mcp.repository_register` audit, so a public registration is always
+visible after the fact. Revisit this when any project gets a production target.

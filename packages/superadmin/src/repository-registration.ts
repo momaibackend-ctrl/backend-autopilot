@@ -11,7 +11,9 @@
 //   * GitHub's own answer for that name must BE that name -- a renamed repository answers with its
 //     new identity through a redirect, and the old name is refused with the current one named,
 //     because the autopilot must know the real name and never lean on the redirect;
-//   * the repository must be private (AGENTS.md, rule 8);
+//   * public and private repositories are both accepted while the autopilot works in sandbox
+//     environments only (operator decision, ADR 023 amendment); the visibility is returned and
+//     audited, so a public registration is never silent;
 //   * the credential the control plane actually holds must have ADMIN on it -- the same proof the
 //     local flow accepts for an organization repository, and the gate every later write needs;
 //   * a repository registered to another project is a conflict, never silently re-pointed.
@@ -39,8 +41,6 @@ export async function verifyRepositoryForRegistration(provider: GitRepositoryPro
   // Same repository, different casing, is the same name; anything else means GitHub redirected.
   if (reported.toLowerCase() !== requested.toLowerCase())
     throw new PolicyViolation(`The repository is now named ${reported}; register it under its current name`, { requested, current: reported });
-  if (description.visibility !== "private")
-    throw new PolicyViolation("Only private repositories can be registered", { repository: reported, visibility: description.visibility });
   if (!description.permissions.admin)
     throw new PolicyViolation("The control-plane identity must have ADMIN on the repository before it can be registered", {
       repository: reported,
