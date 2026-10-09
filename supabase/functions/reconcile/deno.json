@@ -8,6 +8,7 @@
     "../../../packages/core/src/ports.js": "../../../packages/core/src/ports.ts",
     "../../../packages/core/src/branch.js": "../../../packages/core/src/branch.ts",
     "../../../packages/core/src/task-readiness.js": "../../../packages/core/src/task-readiness.ts",
+    "../../../packages/core/src/repair-progress.js": "../../../packages/core/src/repair-progress.ts",
     "../../../packages/core/src/async-execution.js": "../../../packages/core/src/async-execution.ts",
     "../../../packages/core/src/execution-reconciliation.js": "../../../packages/core/src/execution-reconciliation.ts",
     "../../../packages/core/src/scope-classification.js": "../../../packages/core/src/scope-classification.ts",

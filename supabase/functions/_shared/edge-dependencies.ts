@@ -28,6 +28,7 @@ import '../../../packages/execution-engine/src/observability-evidence.ts';
 import '../../../packages/operator-console/src/delivery.ts';
 import '../../../packages/operator-console/src/projections.ts';
 import '../../../packages/core/src/task-readiness.ts';
+import '../../../packages/core/src/repair-progress.ts';
 import '../../../packages/core/src/verification-profile.ts';
 import '../../../packages/core/src/scope-classification.ts';
 import '../../../packages/core/src/epic-verification.ts';
