@@ -1,0 +1,150 @@
+name: Backend Autopilot HTTP E2E
+# Full HTTP verification of one repository commit in a throwaway environment (ADR 018).
+#
+# Three jobs, split by trust:
+#   prepare      control-plane secrets; claims the durable job, re-authorizes the repository,
+#                checks out the exact commit. Never executes project code.
+#   environment  NO secrets and no token in git config; plans, builds and starts the project in
+#                containers, runs the collection over loopback and writes evidence. The only job
+#                that runs project code, and the one with nothing worth stealing.
+#   record       control-plane secrets; validates the evidence and binds it to the commit. Never
+#                executes project code. Runs whenever prepare succeeded, so a crashed environment
+#                still ends as recorded NOT_PROVEN evidence rather than silence.
+#
+# The only input is the durable job id; repository, commit, root and scenarios come from the job
+# the control plane already authorized, never from the dispatcher.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Durable Backend Autopilot HTTP_E2E job UUID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopilot-http-e2e-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      repository: ${{ steps.prepare.outputs.repository }}
+      sha: ${{ steps.prepare.outputs.sha }}
+    env:
+      AUTOPILOT_JOB_ID: ${{ inputs.job_id }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Guard - the job id is a UUID
+        run: |
+          if ! [[ "$AUTOPILOT_JOB_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo "::error::job_id is not a UUID"; exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Claim the job and resolve the exact commit
+        id: prepare
+        run: pnpm exec tsx scripts/http-e2e-prepare.ts --job "$AUTOPILOT_JOB_ID" --out "$RUNNER_TEMP/e2e"
+      - name: Check out the project at that commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.prepare.outputs.repository }}
+          ref: ${{ steps.prepare.outputs.sha }}
+          token: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          path: e2e-source
+          persist-credentials: false
+      - name: Bundle the source without git metadata
+        run: |
+          rm -rf e2e-source/.git
+          mv e2e-source "$RUNNER_TEMP/e2e/source"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-bundle
+          path: ${{ runner.temp }}/e2e
+          include-hidden-files: true
+          retention-days: 1
+
+  environment:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # No secrets are referenced anywhere in this job, and the checkout token is not persisted.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-bundle
+          path: ${{ runner.temp }}/e2e
+      - name: Build, start and verify the project
+        run: >-
+          pnpm exec tsx scripts/run-ephemeral-environment.ts
+          --source "$RUNNER_TEMP/e2e/source"
+          --input "$RUNNER_TEMP/e2e/input.json"
+          --out "$RUNNER_TEMP/evidence.json"
+          --run-id "${{ github.run_id }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-evidence
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  record:
+    needs: [prepare, environment]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AUTOPILOT_JOB_ID: ${{ inputs.job_id }}
+      DATABASE_URL: ${{ secrets.AUTOPILOT_NEXT_DATABASE_URL }}
+      AUTOPILOT_R2_ACCOUNT_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCOUNT_ID }}
+      AUTOPILOT_R2_BUCKET_NAME: ${{ secrets.AUTOPILOT_NEXT_R2_BUCKET_NAME }}
+      AUTOPILOT_R2_ACCESS_KEY_ID: ${{ secrets.AUTOPILOT_NEXT_R2_ACCESS_KEY_ID }}
+      AUTOPILOT_R2_SECRET_ACCESS_KEY: ${{ secrets.AUTOPILOT_NEXT_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: e2e-evidence
+          path: ${{ runner.temp }}/evidence
+      - name: Validate and record the evidence against the commit
+        run: pnpm exec tsx scripts/http-e2e-record.ts --job "$AUTOPILOT_JOB_ID" --evidence "$RUNNER_TEMP/evidence/evidence.json"

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { AuditLog, redact } from "../../audit/src/index.js";
 import { ArtifactStore } from "../../artifact-store/src/index.js";
-import type { AsyncExecutionCoordinator } from "../../core/src/async-execution.js";
+import type { AsyncExecutionCoordinator, ExecutionJobDispatcher } from "../../core/src/async-execution.js";
 import type { AutopilotService } from "../../core/src/application.js";
 import {
   Conflict,
@@ -73,6 +73,7 @@ import {
   type RepositoryContentSource,
 } from "../../http-runner/src/contract-discovery.js";
 import { planEnvironment, planIsExecutable } from "../../ephemeral-environment/src/plan.js";
+import { enqueueHttpE2eJob, readHttpE2eJob, type HttpE2ePayload } from "../../ephemeral-environment/src/http-e2e-job.js";
 import { WorkflowEngine } from "../../workflow-engine/src/index.js";
 import { awaitingCaller } from "../../core/src/task-readiness.js";
 import { z } from "zod";
@@ -102,6 +103,8 @@ export interface SuperadminDependencies {
   /** Starts the fixed control-repository workflow that performs a Git-level transfer. */
   exportDispatcher?: RepositoryExportDispatcher;
   exportWorkflow?: string;
+  /** Starts the three-job HTTP E2E workflow (autopilot-http-e2e.yml) for one durable job id. */
+  httpE2eDispatcher?: ExecutionJobDispatcher;
 }
 
 const operationIdSchema = z.string().min(8).max(200);
@@ -569,6 +572,20 @@ export class SuperadminService {
     const {files}=await source.listFiles();
     const plan=await planEnvironment({paths:files.map(file=>file.path),read:path=>source.readFile(path)},input.root===undefined?{}:{root:input.root});
     return {commitSha:source.commitSha,executable:planIsExecutable(plan),plan};
+  }
+
+  // Full HTTP verification of one repository commit in a throwaway environment. The job pins the
+  // exact SHA at enqueue time; the workflow builds, starts and verifies the project with no
+  // control-plane secret where project code runs, and records classified evidence (ADR 018).
+  httpE2eRun(principal:SuperadminPrincipal,projectId:string,input:{taskId:string;repositoryResourceId:string;ref?:string;root?:string;stripPathPrefix?:string;scenarioSource:HttpE2ePayload["scenarioSource"];operationId:string}){
+    return this.mutate(principal,"http_e2e_run",projectId,input.operationId,{taskId:input.taskId,repositoryResourceId:input.repositoryResourceId,...(input.ref?{ref:input.ref}:{}),...(input.root===undefined?{}:{root:input.root}),scenarioSource:input.scenarioSource},async()=>{
+      if(!this.deps.httpE2eDispatcher)throw new UnsupportedOperation("HTTP E2E dispatch is not configured for this runtime");
+      return enqueueHttpE2eJob({store:this.deps.store,clock:this.clock,ids:this.ids,dispatcher:this.deps.httpE2eDispatcher,repositories:this.deps.repositories},{...input,projectId,actor:principal.actor});
+    });
+  }
+  async httpE2eGet(principal:SuperadminPrincipal,projectId:string,jobId:string){
+    this.requireSuperadmin(principal);await this.requireProject(projectId);
+    return readHttpE2eJob(this.deps.store,projectId,jobId);
   }
 
   // Read-only: every contract and collection the repository holds at one commit.

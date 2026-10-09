@@ -208,8 +208,20 @@ throwaway environment at one exact commit. That covers the stack, base image, ar
 install/build/prepare/run commands, port, health probes and dependency containers (PostgreSQL,
 MySQL, Redis, MongoDB, with credentials only as per-run templates). It honours
 `.autopilot/environment.yml`. Anything it cannot decide is listed in `unresolved` with a
-remediation, and such a plan is never executed. The harness that executes plans in GitHub
-Actions, and the job that records its evidence, follow in the next parts. Details:
+remediation, and such a plan is never executed.
+
+`superadmin_http_e2e_run({operationId, projectId, taskId, repositoryResourceId, ref?, root?,
+stripPathPrefix?, scenarioSource})` runs full HTTP verification of that repository at one exact
+commit, which is pinned when the job is enqueued. It starts the three-job
+`autopilot-http-e2e.yml` workflow:
+- **prepare** (secrets, no project code) claims the job and checks out the commit;
+- **environment** (no secrets) builds, starts and verifies the project in containers;
+- **record** (secrets, no project code) validates the evidence and binds it to the commit.
+
+`scenarioSource` is either the repository's own Postman collections (`REPOSITORY`) or scenarios
+saved for an `HTTP_API` resource (`SAVED`). `superadmin_http_e2e_get({projectId, jobId})` returns
+the job status and, once recorded, the verdict, classified failure, steps and coverage.
+Missing, malformed, forged or oversized evidence is recorded as `NOT_PROVEN`, never as a pass. Details:
 [`docs/ephemeral-environments.md`](docs/ephemeral-environments.md).
 
 ## Deliberately absent

@@ -2,7 +2,7 @@
 
 The autopilot builds the commit under test, starts its dependencies and the application in a throwaway environment, verifies it over real HTTP, and destroys the environment afterwards. No test server has to exist, and nobody has to supply an address. Design: [ADR 018](adr/018-ephemeral-verification-environments.md).
 
-This page covers the **environment plan** (how the autopilot decides to build and start a project) and the **executor** (how it runs that plan). The durable job that ties them to a task and records the evidence follows in the next part.
+This page covers the **environment plan** (how the autopilot decides to build and start a project), the **executor** (how it runs that plan) and the **HTTP_E2E job** that ties a run to a task and records its evidence against the commit.
 
 ## Preview a plan
 
@@ -129,3 +129,43 @@ every change to the environment code, with no secrets:
 * the same Node service with a smoke-only collection must be `NOT_PROVEN`.
 
 It also asserts that no container is left behind.
+
+## Running it: the HTTP_E2E job
+
+```jsonc
+superadmin_http_e2e_run({
+  "operationId": "verify-java-port-0001",
+  "projectId": "…",
+  "taskId": "…",                      // the task this verification is evidence for
+  "repositoryResourceId": "…",        // a registered GITHUB_REPOSITORY
+  "ref": "java-port",                 // branch, tag or exact SHA; default branch when omitted
+  "root": "services/api",             // optional, for a repository holding several applications
+  "scenarioSource": { "kind": "REPOSITORY" }   // or { "kind": "SAVED", "resourceId": "<HTTP_API>" }
+})
+// -> the job (status DISPATCHED, baseCommitSha = the exact commit that will be verified)
+
+superadmin_http_e2e_get({ "projectId": "…", "jobId": "…" })
+// -> job status and, once recorded: verdict, classified failure, steps, coverage per contract
+```
+
+The control plane resolves the commit once, when the job is enqueued, so the job verifies exactly
+that SHA even if the branch moves. Authorization uses PolicyEngine `PROVISION` with `READ` on the
+repository, so it requires `AUTONOMOUS_STAGING` and is refused for production. A task can have
+only one active job at a time.
+
+`autopilot-http-e2e.yml` runs three jobs, split by trust:
+
+| Job | Secrets | Runs project code | Does |
+|---|---|---|---|
+| prepare | control plane | no | claims the job (lease bound to this workflow run), re-authorizes the repository, checks out the exact commit, hands over `root`, path prefix and saved scenarios |
+| environment | **none** | yes, only in containers | plans, builds, starts and verifies (see above) and writes the evidence |
+| record | control plane | no | accepts evidence only from the run holding the lease, validates it, writes a `VALIDATION_REPORT` (`suite: "HTTP_E2E"`, bound to the commit) and closes the job |
+
+Outcomes:
+
+* **The verification ran to a verdict.** The job is `SUCCEEDED` and `result.verdict` is `PROVEN`
+  or `NOT_PROVEN` with the failure class. The report's `result` is `PASS` only for `PROVEN`.
+* **The verification produced no usable evidence.** This covers a missing file, malformed JSON,
+  an object that is not valid evidence (a forged `{"verdict":"PROVEN"}` included), a file over
+  8 MB, or a prepare failure. The job is `FAILED`, and the recorded evidence is `NOT_PROVEN` with
+  `INFRASTRUCTURE_UNAVAILABLE`. Nothing is ever recorded as a pass by default.

@@ -3,7 +3,10 @@
 //
 //   tsx scripts/run-ephemeral-environment.ts --source <dir> --out <evidence.json>
 //       [--root <dir>] [--openapi <file>]... [--collection <file>]... [--strip-prefix /api]
-//       [--run-id <id>] [--expect PROVEN|NOT_PROVEN]
+//       [--run-id <id>] [--expect PROVEN|NOT_PROVEN] [--input <input.json>]
+//
+// --input is what the HTTP E2E prepare job hands over: {root?, stripPathPrefix?, scenarios?}. Saved
+// scenarios in it replace the repository's own collections.
 //
 // Without --openapi/--collection the project's own contracts and Postman collections are found
 // by the same discovery the control plane uses. The exit code is 0 whatever the verdict -- the
@@ -55,7 +58,10 @@ async function main() {
   const files = await listFiles(source);
   const read = (path: string) => readFile(join(source, path), "utf8").catch(() => undefined);
   const project: ProjectFiles = { paths: files.map((file) => file.path), read };
-  const root = args.get("root")?.[0];
+  const handed = args.get("input")?.[0]
+    ? (JSON.parse(await readFile(args.get("input")?.[0] as string, "utf8")) as { root?: string; stripPathPrefix?: string; scenarios?: ImportedScenario[] })
+    : {};
+  const root = args.get("root")?.[0] ?? handed.root;
   const plan = await planEnvironment(project, root === undefined ? {} : { root });
 
   let inventory: ApiInventory | undefined;
@@ -78,8 +84,12 @@ async function main() {
       collections = await Promise.all(discovery.collections.map(async (collection) => parseStructuredDocument(collection.path, (await read(collection.path)) ?? "")));
   }
   for (const path of explicitCollections) collections.push(parseStructuredDocument(path, await readFile(path, "utf8")));
-  const stripPathPrefix = args.get("strip-prefix")?.[0];
+  const stripPathPrefix = args.get("strip-prefix")?.[0] ?? handed.stripPathPrefix;
   const scenarios: ImportedScenario[] = [];
+  if (handed.scenarios) {
+    scenarios.push(...handed.scenarios);
+    collections = [];
+  }
   const importWarnings: unknown[] = [];
   for (const collection of collections) {
     const imported = importPostmanCollection(collection, stripPathPrefix ? { stripPathPrefix } : {});
