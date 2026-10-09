@@ -105,7 +105,7 @@ describe("whole API collection MCP contract", () => {
     expect(collection.collectionImportToolAnnotations.readOnlyHint).toBe(false);
     expect(collection.collectionRunToolAnnotations).toMatchObject({ readOnlyHint: false, openWorldHint: true, idempotentHint: true });
     const source = await readFile("supabase/functions/mcp/index.ts", "utf8");
-    expect(source).not.toMatch(/version:'0\.5\.[1-5]'/);
+    expect(source).not.toMatch(/version:'0\.5\.[1-6]'/);
     expect(e2e.httpE2eGetToolAnnotations.readOnlyHint).toBe(true);
     expect(e2e.httpE2eRunToolAnnotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
   });

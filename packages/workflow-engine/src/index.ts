@@ -4,7 +4,10 @@ import type { Task, TaskState } from '../../schemas/src/index.js';
 
 const transitions:Record<TaskState,TaskState[]>={
   INGESTED:['ANALYZING','BLOCKED'],ANALYZING:['PLANNED','BLOCKED','FAILED'],BLOCKED:['ANALYZING','PLANNED','IMPLEMENTING'],PLANNED:['IMPLEMENTING','BLOCKED'],
-  IMPLEMENTING:['TESTING','FAILED','BLOCKED'],TESTING:['REVIEWING','IMPLEMENTING','BLOCKED','FAILED'],REVIEWING:['READY','IMPLEMENTING','BLOCKED','FAILED'],
+  IMPLEMENTING:['TESTING','FAILED','BLOCKED'],TESTING:['REVIEWING','IMPLEMENTING','BLOCKED','FAILED'],REVIEWING:['READY','VERIFYING','IMPLEMENTING','BLOCKED','FAILED'],
+  // VERIFYING waits for HTTP E2E evidence: READY when it is PROVEN, IMPLEMENTING to repair a
+  // NOT_PROVEN cause, BLOCKED/FAILED when the formal path stops.
+  VERIFYING:['READY','IMPLEMENTING','BLOCKED','FAILED'],
   // READY is terminal for ordinary work. The one way out is re-verification of already-verified
   // work on a newer base (a merged dependency invalidated the base it was proven against), which
   // re-enters the identical IMPLEMENTING -> TESTING -> REVIEWING -> READY gate chain. Manual

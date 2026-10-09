@@ -1776,6 +1776,7 @@ function tone(value: string) {
       "IMPLEMENTING",
       "TESTING",
       "REVIEWING",
+  "VERIFYING",
       "PARTIAL",
       "CONFIGURED",
       "SUPPORTED",

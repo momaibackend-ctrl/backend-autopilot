@@ -5,7 +5,7 @@ import 'dotenv/config';
 // Exits non-zero on any failure; the workflow then rolls back to the last known-good tag.
 const endpoint = process.env['AUTOPILOT_REMOTE_MCP_URL'] ?? `https://${required('SUPABASE_PROJECT_ID')}.supabase.co/functions/v1/mcp`;
 const token = required('AUTOPILOT_SUPERADMIN_MCP_TOKEN');
-const requiredTools = ['system_health', 'runtime_status', 'superadmin_system_overview', 'superadmin_task_execute', 'superadmin_sandbox_pull_request_merge', 'superadmin_scenario_run', 'superadmin_collection_import', 'superadmin_collection_run', 'superadmin_api_coverage', 'superadmin_repository_api_discovery', 'superadmin_environment_plan', 'superadmin_http_e2e_run', 'superadmin_http_e2e_get', 'superadmin_task_rebase_onto_current_base'];
+const requiredTools = ['system_health', 'runtime_status', 'superadmin_system_overview', 'superadmin_task_execute', 'superadmin_sandbox_pull_request_merge', 'superadmin_scenario_run', 'superadmin_collection_import', 'superadmin_collection_run', 'superadmin_api_coverage', 'superadmin_repository_api_discovery', 'superadmin_environment_plan', 'superadmin_http_e2e_run', 'superadmin_http_e2e_get', 'superadmin_task_complete_verification', 'superadmin_task_rebase_onto_current_base'];
 
 const list = await rpc<{ tools: Array<{ name: string }> }>('tools/list', {});
 const names = new Set(list.tools.map(tool => tool.name));

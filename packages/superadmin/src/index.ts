@@ -118,6 +118,7 @@ const lifecycleTargets: Record<TaskState, TaskState[]> = {
   REVIEWING: ["READY", "IMPLEMENTING", "BLOCKED", "FAILED"],
   READY: [],
   FAILED: ["ANALYZING", "IMPLEMENTING"],
+  VERIFYING: ["IMPLEMENTING", "BLOCKED"],
 };
 const administrativeArtifactKinds = new Set(["ADMIN_NOTE", "CONSOLE_SNAPSHOT"]);
 
@@ -582,6 +583,11 @@ export class SuperadminService {
       if(!this.deps.httpE2eDispatcher)throw new UnsupportedOperation("HTTP E2E dispatch is not configured for this runtime");
       return enqueueHttpE2eJob({store:this.deps.store,clock:this.clock,ids:this.ids,dispatcher:this.deps.httpE2eDispatcher,repositories:this.deps.repositories},{...input,projectId,actor:principal.actor});
     });
+  }
+  // Finishes a task resting in VERIFYING once PROVEN evidence for its latest commit is recorded.
+  // The record job does this itself; this is the recovery path when that step did not complete.
+  taskCompleteVerification(principal:SuperadminPrincipal,projectId:string,taskId:string,operationId:string){
+    return this.mutate(principal,"task_complete_verification",projectId,operationId,{taskId},()=>this.deps.service.taskCompleteVerification(projectId,taskId,principal.actor,operationId));
   }
   async httpE2eGet(principal:SuperadminPrincipal,projectId:string,jobId:string){
     this.requireSuperadmin(principal);await this.requireProject(projectId);

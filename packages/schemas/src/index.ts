@@ -150,6 +150,9 @@ export const taskStateSchema = z.enum([
   "IMPLEMENTING",
   "TESTING",
   "REVIEWING",
+  // Every formal gate passed; READY waits only for full HTTP verification of the exact commit
+  // (verification profile v2, HTTP_E2E layer). A resting state, unlike TESTING/REVIEWING.
+  "VERIFYING",
   "READY",
   "FAILED",
 ]);
@@ -228,6 +231,8 @@ export const verificationLayerSchema = z.enum([
   "REGRESSION",
   "HTTP_CONTRACT",
   "MIGRATION_MANIFEST",
+  // Full HTTP verification of the built commit in a throwaway environment (ADR 018, profile v2).
+  "HTTP_E2E",
 ]);
 export type VerificationLayer = z.infer<typeof verificationLayerSchema>;
 export const verificationStatusSchema = z.enum(["REQUIRED", "NOT_APPLICABLE"]);

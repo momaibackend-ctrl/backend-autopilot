@@ -59,7 +59,7 @@ export class AsyncExecutionCoordinator {
       const existingRun=existing.runId?await this.store.getRun(project.id,existing.runId):undefined;
       return executionResult(existing,existingRun,true);
     }
-    if(!['PLANNED','IMPLEMENTING'].includes(task.state))throw new InvalidState('Task must be PLANNED or IMPLEMENTING before remote execution');
+    if(!['PLANNED','IMPLEMENTING','VERIFYING'].includes(task.state))throw new InvalidState('Task must be PLANNED, IMPLEMENTING or VERIFYING before remote execution');
     const target=await this.resolveTarget(project.id,task.id,resourceId);
     const targetResourceId=target.resourceId;
     await this.policy.authorize({project,action:'EXECUTE',resourceId:targetResourceId,requiredPermission:'WRITE',actor});
@@ -72,6 +72,8 @@ export class AsyncExecutionCoordinator {
     const dependencyBase=await this.resolveDependencyBase(project.id,task,actor)
       ??(target.source==='ACTIVE_CANONICAL'?await this.resolveCanonicalBase(repository.externalReference):undefined);
     if(task.state==='PLANNED')task=await this.workflow.transition(task,'IMPLEMENTING','Remote execution job queued',actor);
+    // A repair after a NOT_PROVEN HTTP E2E verdict re-enters the full gate chain for the new commit.
+    if(task.state==='VERIFYING')task=await this.workflow.transition(task,'IMPLEMENTING','Repair after HTTP E2E verification; the new commit is verified again',actor);
     const now=this.clock.now();const run:Run={id:this.ids.next(),projectId:project.id,taskId:task.id,operationId:data.operationId,status:'RUNNING',platformVersion:PlatformVersions.platform,workflowVersion:PlatformVersions.workflow,policyVersion:PlatformVersions.policy,startedAt:now};
     await this.store.saveRun(run);
     // Branch continuity is a property of ONE ref: the inherited SHA only means anything as

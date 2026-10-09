@@ -20,7 +20,13 @@ import { classifyScope, clauses, type ScopeClassification } from "./scope-classi
 // the part that makes the gate trustworthy -- the refusal is recorded with its reason instead of
 // being silently skipped.
 
-export const VERIFICATION_PROFILE_VERSION = "1";
+// v2 adds the HTTP_E2E layer. Plans keep the version they were made with, so a task planned under
+// v1 never acquires the new requirement retroactively; only plans made after v2 owe HTTP_E2E.
+export const VERIFICATION_PROFILE_VERSION = "2";
+
+// A task that does not touch the public HTTP surface may still ask for full end-to-end proof in so
+// many words: a migration acceptance, a parity check, "полная интеграционная проверка".
+const endToEndRequest = /\b(e2e|end[- ]to[- ]end|full (?:http |integration )?verification|integration verification|parity|behaviou?ral equivalence)\b|полн[а-яё]* (?:интеграционн[а-яё]* |e2e |сквозн[а-яё]* )?(?:проверк[а-яё]*|тестирован[а-яё]*)|сквозн[а-яё]* (?:проверк[а-яё]*|тестирован[а-яё]*)/i;
 
 /** A named reason a task's code carries an algorithmic invariant worth generating inputs against. */
 export interface PropertyTrigger {
@@ -149,6 +155,15 @@ export function buildVerificationProfile(
         scope.api.intended
           ? scope.api.evidence.slice(0, 2).map(truncate)
           : [notAsked("a public HTTP surface", apiRefusal, scope.api.verificationOnlyEvidence[0], "the task describes no HTTP surface")],
+      ),
+      decide(
+        "HTTP_E2E",
+        scope.api.intended || endToEndRequest.test(text),
+        scope.api.intended
+          ? ["the task changes a public HTTP surface, so the built commit is verified over real HTTP against every contract before READY"]
+          : endToEndRequest.test(text)
+            ? ["the task asks for full end-to-end verification in so many words"]
+            : [notAsked("a public HTTP surface", apiRefusal, scope.api.verificationOnlyEvidence[0], "the task changes no HTTP surface and asks for no end-to-end verification")],
       ),
       decide(
         "MIGRATION_MANIFEST",
