@@ -9,7 +9,6 @@
 // blind retry, and every log that leaves the environment is tail-bounded and scrubbed of the
 // throwaway credentials generated for this run.
 import { randomBytes } from "node:crypto";
-import { z } from "zod";
 import { redact } from "../../audit/src/index.js";
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { createService } from "../../core/src/runtime.js";
@@ -23,9 +22,16 @@ import {
 import { scenarioForStorage } from "../../http-runner/src/index.js";
 import { MemoryStateStore } from "../../project-registry/src/memory-store.js";
 import { validationScenarioSaveInputSchema } from "../../schemas/src/index.js";
+import {
+  ENVIRONMENT_EVIDENCE_VERSION,
+  environmentEvidenceSchema,
+  type EnvironmentEvidence,
+  type FailureClass,
+} from "./evidence.js";
 import { planIsExecutable, type DependencyKind, type EnvironmentPlan } from "./plan.js";
 
-export const ENVIRONMENT_EVIDENCE_VERSION = "1";
+export { ENVIRONMENT_EVIDENCE_VERSION, environmentEvidenceSchema, failureClassSchema, type EnvironmentEvidence, type FailureClass } from "./evidence.js";
+
 /** Where the application is reached from the runner. Scenarios target this loopback origin. */
 export const APPLICATION_HOST_PORT = 18080;
 const LOG_TAIL_BYTES = 16 * 1024;
@@ -58,47 +64,7 @@ export interface ContainerRuntime {
   cleanup(input: { names: string[]; network: string; cacheVolume: string }): Promise<void>;
 }
 
-export const failureClassSchema = z.enum([
-  "PLAN_UNRESOLVED",
-  "INFRASTRUCTURE_UNAVAILABLE",
-  "DEPENDENCY_UNAVAILABLE",
-  "BUILD_FAILED",
-  "ENVIRONMENT_BOOT_FAILED",
-  "HEALTH_CHECK_FAILED",
-  "NO_SCENARIOS",
-  "SCENARIO_FAILED",
-  "COVERAGE_INCOMPLETE",
-  "CONTRACT_GAP",
-]);
-export type FailureClass = z.infer<typeof failureClassSchema>;
-
-const stepSchema = z.object({
-  phase: z.enum(["dependency", "install", "build", "prepare", "start", "health", "collection"]),
-  name: z.string(),
-  status: z.enum(["PASSED", "FAILED", "SKIPPED"]),
-  durationMs: z.number().int().nonnegative(),
-  exitCode: z.number().int().optional(),
-  logTail: z.string().optional(),
-});
-export const environmentEvidenceSchema = z.object({
-  evidenceVersion: z.literal(ENVIRONMENT_EVIDENCE_VERSION),
-  startedAt: z.string(),
-  completedAt: z.string(),
-  durationMs: z.number().int().nonnegative(),
-  plan: z.unknown(),
-  outcome: z.object({
-    verdict: z.enum(["PROVEN", "NOT_PROVEN"]),
-    failure: z.object({ class: failureClassSchema, step: z.string(), message: z.string() }).optional(),
-    reasons: z.array(z.string()),
-  }),
-  steps: z.array(stepSchema),
-  health: z.object({ ready: z.boolean(), path: z.string().optional(), status: z.number().int().optional(), attempts: z.number().int(), durationMs: z.number().int() }).optional(),
-  applicationLogTail: z.string().optional(),
-  collection: z.unknown().optional(),
-  scenarioReports: z.array(z.unknown()),
-});
-export type EnvironmentEvidence = z.infer<typeof environmentEvidenceSchema>;
-type Step = z.infer<typeof stepSchema>;
+type Step = EnvironmentEvidence["steps"][number];
 
 interface Credentials {
   host: string;

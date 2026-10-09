@@ -26,6 +26,8 @@
     "../../../packages/http-runner/src/collection.js": "../../../packages/http-runner/src/collection.ts",
     "../../../packages/http-runner/src/contract-discovery.js": "../../../packages/http-runner/src/contract-discovery.ts",
     "../../../packages/ephemeral-environment/src/plan.js": "../../../packages/ephemeral-environment/src/plan.ts",
+    "../../../packages/ephemeral-environment/src/http-e2e-job.js": "../../../packages/ephemeral-environment/src/http-e2e-job.ts",
+    "../../../packages/ephemeral-environment/src/evidence.js": "../../../packages/ephemeral-environment/src/evidence.ts",
     "../../../packages/superadmin/src/rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",

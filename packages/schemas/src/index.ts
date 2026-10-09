@@ -1114,6 +1114,7 @@ export const executionJobKindSchema = z.enum([
   "REPAIR",
   "RECONCILIATION",
   "REBASE",
+  "HTTP_E2E",
 ]);
 export const executionJobStatusSchema = z.enum([
   "QUEUED",

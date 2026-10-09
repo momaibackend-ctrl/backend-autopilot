@@ -19,8 +19,9 @@ export function createEdgeRuntime(){
   const service=new AutopilotService({store,execution:{execute:unavailable},tests:{run:unavailable},git:{snapshot:unavailable,branch:unavailable,stage:unavailable,diff:unavailable,commit:unavailable},commands:{drain:()=>[]},artifactBlobs:blobs});
   const dispatcher=new GitHubActionsDispatcher(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'),required('AUTOPILOT_CONTROL_REPOSITORY'),Deno.env.get('AUTOPILOT_EXECUTION_WORKFLOW')??'autopilot-execution.yml',Deno.env.get('AUTOPILOT_CONTROL_REF')??'main');
   const repositories=new GitHubRestRepositoryProvider(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'));
+  const httpE2eDispatcher=new GitHubActionsDispatcher(required('AUTOPILOT_GITHUB_DISPATCH_TOKEN'),required('AUTOPILOT_CONTROL_REPOSITORY'),Deno.env.get('AUTOPILOT_HTTP_E2E_WORKFLOW')??'autopilot-http-e2e.yml',Deno.env.get('AUTOPILOT_CONTROL_REF')??'main');
   const asyncExecution=new AsyncExecutionCoordinator(store,dispatcher,systemClock,uuidGenerator,repositories);
-  const superadmin=new SuperadminService({store,service,asyncExecution,systemProjectId:required('AUTOPILOT_SYSTEM_PROJECT_ID'),artifactBlobs:blobs,deploymentStatus,secrets:edgeSecretResolver,repositories,exportDispatcher:dispatcher,exportWorkflow:Deno.env.get('AUTOPILOT_EXPORT_WORKFLOW')??'autopilot-repository-export.yml'});
+  const superadmin=new SuperadminService({store,service,asyncExecution,systemProjectId:required('AUTOPILOT_SYSTEM_PROJECT_ID'),artifactBlobs:blobs,deploymentStatus,secrets:edgeSecretResolver,repositories,exportDispatcher:dispatcher,exportWorkflow:Deno.env.get('AUTOPILOT_EXPORT_WORKFLOW')??'autopilot-repository-export.yml',httpE2eDispatcher});
   return {store,service,asyncExecution,superadmin,dispatcher,repositories,url,serviceKey,blobs};
 }
 

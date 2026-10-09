@@ -15,6 +15,8 @@ import '../../../packages/http-runner/src/index.ts';
 import '../../../packages/http-runner/src/collection.ts';
 import '../../../packages/http-runner/src/contract-discovery.ts';
 import '../../../packages/ephemeral-environment/src/plan.ts';
+import '../../../packages/ephemeral-environment/src/http-e2e-job.ts';
+import '../../../packages/ephemeral-environment/src/evidence.ts';
 import '../../../packages/superadmin/src/rebase-eligibility.ts';
 import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';

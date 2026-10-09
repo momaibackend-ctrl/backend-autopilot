@@ -32,6 +32,8 @@ const githubToken=required('AUTOPILOT_GITHUB_TOKEN');
 if(!jobId||!z.string().uuid().safeParse(jobId).success)throw new Error('A valid --job identifier is required');
 const store=new PostgresStateStore(databaseUrl);const owner=`github-actions:${process.env['GITHUB_RUN_ID']??crypto.randomUUID()}:${process.env['GITHUB_RUN_ATTEMPT']??'1'}`;
 const initial=await store.getExecutionJobById(jobId);if(!initial)throw new Error('Execution job not found');
+// HTTP_E2E jobs belong to autopilot-http-e2e.yml, whose trust split this workflow does not have.
+if(initial.kind==='HTTP_E2E')throw new Error('HTTP_E2E jobs run only in autopilot-http-e2e.yml');
 const leaseExpiresAt=new Date(Date.now()+20*60_000).toISOString();const claimed=await store.claimExecutionJob(initial.projectId,initial.id,owner,leaseExpiresAt,systemClock.now());if(!claimed)throw new Error('Execution job is already claimed by another runner');let current:ExecutionJob=claimed;
 const commands=new CommandRunner(new CommandPolicy(),systemClock);const git=new LocalGitAdapter(commands);const tests=new StackAwareTestExecutor(commands,systemClock);const execution=new ExecutionEngine(git,systemClock);
 const blobs=createArtifactBlobStore({get:name=>process.env[name],requireCurrentSupabase:()=>({url:required('SUPABASE_URL'),serviceRoleKey:required('SUPABASE_SERVICE_ROLE_KEY')})});

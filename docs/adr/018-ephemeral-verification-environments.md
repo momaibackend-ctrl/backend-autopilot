@@ -1,6 +1,6 @@
 # ADR 018: Ephemeral verification environments
 
-Status: accepted for v0.5. Delivered in parts: 2a (environment plan, this change), 2b (GitHub Actions harness), 2c (job kind, tool, evidence).
+Status: accepted for v0.5. Delivered in three parts: 2a (environment plan), 2b (executor and Docker self-test), 2c (HTTP_E2E job, tools, three-job workflow).
 
 ## Context
 
