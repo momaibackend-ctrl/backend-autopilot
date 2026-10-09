@@ -94,8 +94,14 @@ export function latestHttpE2eEvidence(artifacts: Artifact[], latestCommit: strin
     return artifact.kind === "VALIDATION_REPORT" && content?.suite === "HTTP_E2E" && content.commitSha === latestCommit;
   });
   if (!found) return undefined;
-  const content = found.content as { verdict?: string; failure?: { class?: string; message?: string } };
-  return { artifactId: found.id, verdict: content.verdict === "PROVEN" ? ("PROVEN" as const) : ("NOT_PROVEN" as const), failureClass: content.failure?.class, failureMessage: content.failure?.message };
+  const content = found.content as { verdict?: string; failure?: { class?: string; message?: string }; diagnosis?: { area?: string; summary?: string; nextSteps?: string[]; fingerprint?: string } };
+  return {
+    artifactId: found.id,
+    verdict: content.verdict === "PROVEN" ? ("PROVEN" as const) : ("NOT_PROVEN" as const),
+    failureClass: content.failure?.class,
+    failureMessage: content.failure?.message,
+    ...(content.diagnosis ? { diagnosis: content.diagnosis } : {}),
+  };
 }
 
 /**
@@ -202,9 +208,10 @@ export function taskReadiness(input: {
         evidence
           ? {
               code: "HTTP_E2E_EVIDENCE",
-              reason: `HTTP E2E verification of ${latestCommit} is NOT_PROVEN (${evidence.failureClass ?? "unclassified"}${evidence.failureMessage ? `: ${evidence.failureMessage}` : ""}).`,
-              remediation:
-                "Read the classified failure and its logs with superadmin_http_e2e_get, fix the cause it names (in the implementation, the scenarios or .autopilot/environment.yml), then execute the repair with a NEW operationId and verify the new commit.",
+              reason: `HTTP E2E verification of ${latestCommit} is NOT_PROVEN (${evidence.failureClass ?? "unclassified"}${evidence.failureMessage ? `: ${evidence.failureMessage}` : ""}).${evidence.diagnosis?.summary ? ` Diagnosis: ${evidence.diagnosis.summary}` : ""}`,
+              remediation: evidence.diagnosis?.nextSteps?.length
+                ? `Area to change: ${evidence.diagnosis.area ?? "unknown"}. ${evidence.diagnosis.nextSteps.join(" ")} The findings and logs are in superadmin_http_e2e_get.`
+                : "Read the classified failure and its logs with superadmin_http_e2e_get, fix the cause it names (in the implementation, the scenarios or .autopilot/environment.yml), then execute the repair with a NEW operationId and verify the new commit.",
             }
           : {
               code: "HTTP_E2E_EVIDENCE",

@@ -18,6 +18,7 @@ import '../../../packages/ephemeral-environment/src/plan.ts';
 import '../../../packages/ephemeral-environment/src/http-e2e-job.ts';
 import '../../../packages/ephemeral-environment/src/evidence.ts';
 import '../../../packages/ephemeral-environment/src/parity.ts';
+import '../../../packages/ephemeral-environment/src/diagnosis.ts';
 import '../../../packages/superadmin/src/rebase-eligibility.ts';
 import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';

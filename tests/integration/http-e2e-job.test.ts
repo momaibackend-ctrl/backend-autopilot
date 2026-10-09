@@ -4,7 +4,7 @@ import type { ExecutionJobDispatcher } from "../../packages/core/src/async-execu
 import { systemClock, uuidGenerator } from "../../packages/core/src/ports.js";
 import { createService } from "../../packages/core/src/runtime.js";
 import { ENVIRONMENT_EVIDENCE_VERSION } from "../../packages/ephemeral-environment/src/evidence.js";
-import { prepareHttpE2eJob, recordHttpE2eEvidence } from "../../packages/ephemeral-environment/src/http-e2e-job.js";
+import { enqueueVerificationOfReviewedCommit, prepareHttpE2eJob, recordHttpE2eEvidence } from "../../packages/ephemeral-environment/src/http-e2e-job.js";
 import { MemoryStateStore } from "../../packages/project-registry/src/memory-store.js";
 import type { ExecutionJob, Resource } from "../../packages/schemas/src/index.js";
 import { SuperadminService } from "../../packages/superadmin/src/index.js";
@@ -205,5 +205,30 @@ describe("HTTP_E2E parity jobs", () => {
     await expect(run(context, { counterpart: { repositoryResourceId: context.writeOnly.resourceId } })).rejects.toMatchObject({ code: "POLICY_VIOLATION" });
     await expect(run(context, { counterpart: { repositoryResourceId: context.kotlin.resourceId, ref: "missing" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(context.dispatched).toEqual([]);
+  });
+});
+
+describe("HTTP_E2E diagnosis and automatic verification", () => {
+  it("records a diagnosis with every NOT_PROVEN verdict and returns it", async () => {
+    const context = await setup();
+    const { value: job } = await run(context);
+    await prepareHttpE2eJob({ store: context.store, clock: systemClock, ids: uuidGenerator, artifacts: context.artifacts }, { jobId: job.id, owner });
+    await recordHttpE2eEvidence({ store: context.store, clock: systemClock, ids: uuidGenerator, artifacts: context.artifacts }, { jobId: job.id, owner, evidenceText: evidence("NOT_PROVEN") });
+    const read = await context.admin.httpE2eGet(principal, context.project.id, job.id);
+    expect(read.evidence?.diagnosis).toMatchObject({ failureClass: "BUILD_FAILED", area: "IMPLEMENTATION" });
+  });
+
+  it("starts verification only for a task resting in VERIFYING, once per commit", async () => {
+    const context = await setup();
+    const deps = { store: context.store, clock: systemClock, ids: uuidGenerator, dispatcher: { dispatch: async (job: ExecutionJob) => (context.dispatched.push(job), {}) }, repositories: new FakeRepositoryProvider({ "acme/backend": { defaultBranch: "main", head, commits: [head] } }) };
+    const input = { projectId: context.project.id, taskId: context.task.id, repositoryResourceId: context.repository.resourceId, commitSha: head, actor: owner };
+    expect(await enqueueVerificationOfReviewedCommit(deps, input)).toBeUndefined();
+    await context.store.updateTask({ ...(await context.store.getTask(context.project.id, context.task.id))!, state: "VERIFYING" });
+    const first = await enqueueVerificationOfReviewedCommit(deps, input);
+    expect(first).toMatchObject({ kind: "HTTP_E2E", baseCommitSha: head, operationId: `auto-http-e2e:${context.task.id}:${head}` });
+    const again = await enqueueVerificationOfReviewedCommit(deps, input);
+    expect(again?.id).toBe(first?.id);
+    expect(context.dispatched).toHaveLength(1);
+    expect(await enqueueVerificationOfReviewedCommit(deps, { ...input, commitSha: "not-a-sha" })).toBeUndefined();
   });
 });
