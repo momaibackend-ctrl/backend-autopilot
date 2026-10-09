@@ -16,6 +16,9 @@ import type { StateStore } from '../packages/core/src/ports.js';
 import { CommandPolicy, CommandRunner, ExecutionEngine, StackAwareTestExecutor, applyResolutions, assertBaseChangesPreserved, assertDependencyMerged, commitTransfer, detectStack, disposeWorkspaceDirectory, ensureDisposableCleanWorkspace, provisionGradleWrapper, resolveBranchContinuity, resolveRebasePublication, taskChangedPaths, transferTaskCommits, workspaceCheckoutExists, type RebaseCommitIdentity, type RebaseGit } from '../packages/execution-engine/src/index.js';
 import { PolicyEngine } from '../packages/policy-engine/src/index.js';
 import { requireProjectGithubRepository } from '../packages/core/src/repository-guard.js';
+import { GitHubActionsDispatcher } from '../packages/adapters/github/src/actions-dispatcher.js';
+import { GitHubRestRepositoryProvider } from '../packages/adapters/github/src/repository-provider.js';
+import { enqueueVerificationOfReviewedCommit } from '../packages/ephemeral-environment/src/http-e2e-job.js';
 import { PostgresStateStore } from '../packages/project-registry/src/index.js';
 import { fileChangeSchema, rebaseConflictResolutionSchema, type ExecutionJob } from '../packages/schemas/src/index.js';
 import { rebaseBranchName } from '../packages/superadmin/src/rebase-eligibility.js';
@@ -112,6 +115,18 @@ try{
   current=await store.updateExecutionJob({...current,status:'SUCCEEDED',leaseOwner:owner,leaseExpiresAt:systemClock.now(),finishedAt:systemClock.now(),updatedAt:systemClock.now(),result:{branch:result.branch,commitSha,changedFiles:result.changedFiles}});
   await audit.record({actor:owner,action:'execution.job.succeeded',projectId:project.id,taskId:task.id,resourceId:resource.resourceId,input:{jobId:current.id},result:{runId:current.runId,branch:result.branch,commitSha},reason:'GitHub Actions execution, tests and review completed',correlationId:current.operationId});
   console.log(JSON.stringify({level:'info',event:'execution.job.succeeded',jobId:current.id,branch:result.branch,commitSha}));
+  // READY now owes PROVEN HTTP E2E evidence for this exact commit (ADR 020), so verification is
+  // started here, after this job is SUCCEEDED -- one active job per task. A failure to start it
+  // never fails the finished execution: the task rests in VERIFYING with superadmin_http_e2e_run
+  // as its next action.
+  if((await store.getTask(project.id,task.id))?.state==='VERIFYING'){
+    const controlRepository=process.env['GITHUB_REPOSITORY'];
+    try{
+      if(!controlRepository)throw new Error('GITHUB_REPOSITORY is not set');
+      const verification=await enqueueVerificationOfReviewedCommit({store,clock:systemClock,ids:uuidGenerator,dispatcher:new GitHubActionsDispatcher(githubToken,controlRepository,process.env['AUTOPILOT_HTTP_E2E_WORKFLOW']??'autopilot-http-e2e.yml',process.env['AUTOPILOT_CONTROL_REF']??'main'),repositories:new GitHubRestRepositoryProvider(githubToken)},{projectId:project.id,taskId:task.id,repositoryResourceId:resource.resourceId,commitSha,actor:owner});
+      console.log(JSON.stringify({level:'info',event:'http_e2e.auto_dispatched',taskId:task.id,commitSha,jobId:verification?.id}));
+    }catch(error){console.error(JSON.stringify({level:'warn',event:'http_e2e.auto_dispatch_failed',taskId:task.id,commitSha,message:error instanceof Error?error.message:String(error)}));}
+  }
 }catch(error){
   const task=await store.getTask(current.projectId,current.taskId);
   // TESTING and REVIEWING only exist while taskTest/taskReview are actively running; a task must

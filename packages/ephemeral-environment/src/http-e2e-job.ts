@@ -19,6 +19,7 @@ import { collectionScenarios, type ImportedScenario } from "../../http-runner/sr
 import { restoreScenarioDefinition, type ArtifactWriter } from "../../http-runner/src/index.js";
 import { PolicyEngine } from "../../policy-engine/src/index.js";
 import type { ExecutionJob, Project, Resource } from "../../schemas/src/index.js";
+import { diagnoseHttpE2e } from "./diagnosis.js";
 import { ENVIRONMENT_EVIDENCE_VERSION, environmentEvidenceSchema, type EnvironmentEvidence, type FailureClass } from "./evidence.js";
 
 export const HTTP_E2E_WORKFLOW = "autopilot-http-e2e.yml";
@@ -171,6 +172,28 @@ export async function enqueueHttpE2eJob(
   }
 }
 
+/**
+ * Starts verification of a commit as soon as its task rests in VERIFYING, so READY does not wait
+ * for anyone to remember to ask. One job per task and commit: the operationId is derived from both,
+ * so a repeated call (a retried runner, a reconciler) is a replay, never a second run.
+ */
+export async function enqueueVerificationOfReviewedCommit(
+  deps: HttpE2eDependencies & { dispatcher: ExecutionJobDispatcher; repositories: GitRepositoryProvider | undefined },
+  input: { projectId: string; taskId: string; repositoryResourceId: string; commitSha: string; actor: string },
+): Promise<ExecutionJob | undefined> {
+  const task = await deps.store.getTask(input.projectId, input.taskId);
+  if (task?.state !== "VERIFYING" || !/^[0-9a-f]{40}$/.test(input.commitSha)) return undefined;
+  return enqueueHttpE2eJob(deps, {
+    projectId: input.projectId,
+    taskId: input.taskId,
+    repositoryResourceId: input.repositoryResourceId,
+    ref: input.commitSha,
+    scenarioSource: { kind: "REPOSITORY" },
+    operationId: `auto-http-e2e:${input.taskId}:${input.commitSha}`,
+    actor: input.actor,
+  });
+}
+
 export interface PreparedHttpE2e {
   job: ExecutionJob;
   repository: string;
@@ -260,6 +283,7 @@ async function persistEvidence(
 ): Promise<string> {
   const payload = httpE2ePayloadSchema.safeParse(job.payload);
   const resource = await deps.store.getResource(job.resourceId);
+  const diagnosis = diagnoseHttpE2e(evidence);
   const artifact = await deps.artifacts.write(
     job.projectId,
     "VALIDATION_REPORT",
@@ -277,6 +301,7 @@ async function persistEvidence(
       verdict: evidence.outcome.verdict,
       ...(evidence.outcome.failure ? { failure: evidence.outcome.failure } : {}),
       reasons: evidence.outcome.reasons,
+      ...(diagnosis ? { diagnosis } : {}),
       evidence,
     },
     job.taskId,
@@ -374,6 +399,7 @@ export async function readHttpE2eJob(store: StateStore, projectId: string, jobId
         verdict?: string;
         failure?: unknown;
         reasons?: string[];
+        diagnosis?: unknown;
         commitSha?: string;
         evidence?: {
           collection?: { coverage?: unknown; summary?: unknown };
@@ -392,6 +418,7 @@ export async function readHttpE2eJob(store: StateStore, projectId: string, jobId
             verdict: content?.verdict,
             failure: content?.failure,
             reasons: content?.reasons,
+            ...(content?.diagnosis ? { diagnosis: content.diagnosis } : {}),
             commitSha: content?.commitSha,
             steps: content?.evidence?.steps,
             summary: content?.evidence?.collection?.summary,
@@ -431,6 +458,6 @@ export const httpE2eRunToolInputSchema = {
 };
 export const httpE2eGetToolName = "superadmin_http_e2e_get";
 export const httpE2eGetToolDescription =
-  "Read-only: the status of an HTTP_E2E verification job and, once recorded, its verdict (PROVEN or NOT_PROVEN), the classified failure (BUILD_FAILED, DEPENDENCY_UNAVAILABLE, ENVIRONMENT_BOOT_FAILED, HEALTH_CHECK_FAILED, SCENARIO_FAILED, COVERAGE_INCOMPLETE, ...), the steps and the coverage against every contract.";
+  "Read-only: the status of an HTTP_E2E verification job and, once recorded, its verdict (PROVEN or NOT_PROVEN), the classified failure (BUILD_FAILED, DEPENDENCY_UNAVAILABLE, ENVIRONMENT_BOOT_FAILED, HEALTH_CHECK_FAILED, SCENARIO_FAILED, COVERAGE_INCOMPLETE, ...), the steps, the coverage against every contract, and a diagnosis: the area to change (IMPLEMENTATION, SCENARIOS, ENVIRONMENT_MANIFEST, CONTRACT, INFRASTRUCTURE, REFERENCE), the findings from the logs and scenarios that point there, and the next steps.";
 export const httpE2eGetToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 export const httpE2eGetToolInputSchema = { projectId: z.string().uuid(), jobId: z.string().uuid() };

@@ -67,6 +67,11 @@ describe("READY gate with full HTTP verification", () => {
     await evidence(commit, "NOT_PROVEN");
     await expect(service.taskCompleteVerification(project.id, task.id)).rejects.toMatchObject({ code: "REVIEW_FAILED" });
     expect((await service.taskReadiness(project.id, task.id)).blockers[0]?.reason).toContain("NOT_PROVEN (SCENARIO_FAILED");
+    // The diagnosed area and first step travel into the blocker the agent reads.
+    await store.saveArtifact({ id: crypto.randomUUID(), projectId: project.id, taskId: task.id, kind: "VALIDATION_REPORT", schemaVersion: "1", content: { suite: "HTTP_E2E", commitSha: commit, verdict: "NOT_PROVEN", failure: { class: "ENVIRONMENT_BOOT_FAILED", step: "start", message: "exited" }, diagnosis: { area: "ENVIRONMENT_MANIFEST", summary: "The application expects configuration \"APP_KEY\".", nextSteps: ["Declare APP_KEY in .autopilot/environment.yml under env."], fingerprint: "deadbeef" } }, contentHash: "hash", status: "AVAILABLE", createdAt: new Date().toISOString() } as never);
+    const diagnosed = (await service.taskReadiness(project.id, task.id)).blockers[0];
+    expect(diagnosed?.reason).toContain('Diagnosis: The application expects configuration "APP_KEY".');
+    expect(diagnosed?.remediation).toMatch(/^Area to change: ENVIRONMENT_MANIFEST\. Declare APP_KEY/);
     await evidence(olderCommit, "PROVEN");
     await expect(service.taskCompleteVerification(project.id, task.id)).rejects.toMatchObject({ code: "REVIEW_FAILED" });
     await evidence(commit, "PROVEN");

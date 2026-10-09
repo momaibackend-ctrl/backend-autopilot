@@ -196,3 +196,24 @@ Otherwise the failure is one of:
   and a body that could not be compared count as differences.
 
 `superadmin_http_e2e_get` returns the parity summary and the first 100 differences.
+
+## From NOT_PROVEN to the cause
+
+When an implementation job leaves its task in `VERIFYING`, the job dispatches HTTP E2E for its own
+commit. No call is needed ([ADR 021](adr/021-http-e2e-diagnosis-and-automatic-verification.md)).
+
+Every NOT_PROVEN verdict is recorded with a **diagnosis**:
+
+```jsonc
+"diagnosis": {
+  "failureClass": "ENVIRONMENT_BOOT_FAILED",
+  "area": "ENVIRONMENT_MANIFEST",          // IMPLEMENTATION | SCENARIOS | ENVIRONMENT_MANIFEST | CONTRACT | INFRASTRUCTURE | REFERENCE
+  "summary": "The application expects configuration \"APP_JWT_ISSUER\" that the environment does not provide.",
+  "findings": [{ "kind": "missing-configuration", "detail": "APP_JWT_ISSUER" }],
+  "nextSteps": ["Declare APP_JWT_ISSUER in .autopilot/environment.yml under env ..."],
+  "fingerprint": "3fa1c09e"              // same cause -> same value across attempts
+}
+```
+
+The task's readiness blocker carries the summary, the area and the first step.
+`superadmin_http_e2e_get` returns the whole diagnosis.
