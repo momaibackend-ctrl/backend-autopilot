@@ -41,6 +41,13 @@ jobs:
             source: examples/kotlin-sandbox-base
             expect: PROVEN
             extra: --openapi tests/fixtures/environments/kotlin-ktor/openapi.json --collection tests/fixtures/environments/kotlin-ktor/collection.postman_collection.json
+          # The first real run (Momna, Java) failed with "gradlew: Permission denied": workflow
+          # artifacts dropped the executable bit. A wrapper without it must still build and pass.
+          - name: kotlin-ktor-gradlew-without-exec-bit
+            source: examples/kotlin-sandbox-base
+            expect: PROVEN
+            strip-exec: gradlew
+            extra: --openapi tests/fixtures/environments/kotlin-ktor/openapi.json --collection tests/fixtures/environments/kotlin-ktor/collection.postman_collection.json
           - name: smoke-only-is-not-proven
             source: tests/fixtures/environments/node-postgres
             expect: NOT_PROVEN
@@ -68,11 +75,19 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Bundle the source exactly as the HTTP E2E workflow does
+        # The real workflow hands the source from prepare to environment as a tar archive; running
+        # every fixture from such an archive is what makes this self-test cover that hand-over.
+        run: |
+          if [ -n "${{ matrix.strip-exec }}" ]; then chmod -x "${{ matrix.source }}/${{ matrix.strip-exec }}"; fi
+          mkdir -p "$RUNNER_TEMP/bundle"
+          tar -C "${{ matrix.source }}" -czf "$RUNNER_TEMP/source.tgz" .
+          tar -C "$RUNNER_TEMP/bundle" -xzf "$RUNNER_TEMP/source.tgz"
       - name: Plan, start and verify the fixture
         # matrix.extra is a fixed literal from this file, never caller input.
         run: >-
           pnpm exec tsx scripts/run-ephemeral-environment.ts
-          --source "${{ matrix.source }}"
+          --source "$RUNNER_TEMP/bundle"
           --out "$RUNNER_TEMP/evidence.json"
           --run-id "${{ github.run_id }}-${{ matrix.name }}"
           --expect "${{ matrix.expect }}"

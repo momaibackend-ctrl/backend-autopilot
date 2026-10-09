@@ -87,11 +87,14 @@ jobs:
             rm -rf e2e-counterpart/.git
             mv e2e-counterpart "$RUNNER_TEMP/e2e/counterpart-source"
           fi
+          # Workflow artifacts do not keep file modes: shipped loose, gradlew and every other
+          # executable arrives without its executable bit (exit 126 in the environment). A tar
+          # archive keeps them, so the environment job sees the tree exactly as checked out.
+          tar -C "$RUNNER_TEMP/e2e" -czf "$RUNNER_TEMP/e2e-bundle.tgz" .
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-bundle
-          path: ${{ runner.temp }}/e2e
-          include-hidden-files: true
+          path: ${{ runner.temp }}/e2e-bundle.tgz
           retention-days: 1
 
   environment:
@@ -114,7 +117,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: e2e-bundle
-          path: ${{ runner.temp }}/e2e
+          path: ${{ runner.temp }}/e2e-download
+      - name: Unpack the bundle with its file modes
+        run: |
+          mkdir -p "$RUNNER_TEMP/e2e"
+          tar -C "$RUNNER_TEMP/e2e" -xzf "$RUNNER_TEMP/e2e-download/e2e-bundle.tgz"
       - name: Build, start and verify the project (and the reference, for parity)
         run: |
           counterpart=()

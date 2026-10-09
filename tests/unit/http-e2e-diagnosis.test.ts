@@ -40,6 +40,22 @@ describe("HTTP E2E diagnosis", () => {
     ]);
   });
 
+  it("never blames the project for a command the environment could not execute (the Momna gradlew case)", () => {
+    const diagnosis = diagnoseHttpE2e(
+      evidence({ class: "BUILD_FAILED", step: "build: ./gradlew --no-daemon assemble -x test", message: "exited with 126" }, {
+        steps: [{ phase: "build", name: "./gradlew --no-daemon assemble -x test", status: "FAILED", durationMs: 40, exitCode: 126, logTail: "/workspace/gradlew: Permission denied" }],
+      }),
+    );
+    expect(diagnosis).toMatchObject({ area: "INFRASTRUCTURE", findings: [{ kind: "unexecutable-command", detail: "/workspace/gradlew: Permission denied" }] });
+    expect(diagnosis?.nextSteps[0]).toMatch(/do not change the project/);
+    const missingTool = diagnoseHttpE2e(
+      evidence({ class: "BUILD_FAILED", step: "install: pnpm install", message: "exited with 127" }, {
+        steps: [{ phase: "install", name: "pnpm install", status: "FAILED", durationMs: 5, exitCode: 127, logTail: "sh: 1: pnpm: not found" }],
+      }),
+    );
+    expect(missingTool?.area).toBe("INFRASTRUCTURE");
+  });
+
   it("tells a dependency download failure apart from a code error", () => {
     const diagnosis = diagnoseHttpE2e(
       evidence({ class: "BUILD_FAILED", step: "install: npm ci", message: "exited with 1" }, {

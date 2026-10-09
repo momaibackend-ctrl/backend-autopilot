@@ -37,8 +37,8 @@ describe("environment plan inference", () => {
     expect(planIsExecutable(plan)).toBe(true);
     expect(plan.stack).toEqual({ language: "KOTLIN", buildTool: "GRADLE", framework: "SPRING_BOOT", runtimeVersion: "17" });
     expect(plan.image).toBe("eclipse-temurin:17-jdk");
-    expect(plan.build).toEqual([["./gradlew", "--no-daemon", "assemble", "-x", "test"]]);
-    expect(plan.run).toEqual(["./gradlew", "--no-daemon", "bootRun"]);
+    expect(plan.build).toEqual([["sh", "./gradlew", "--no-daemon", "assemble", "-x", "test"]]);
+    expect(plan.run).toEqual(["sh", "./gradlew", "--no-daemon", "bootRun"]);
     expect(plan.health[0]).toBe("/actuator/health");
     expect(plan.dependencies.map((value) => [value.kind, value.image])).toEqual([
       ["POSTGRES", "postgres:15.4"],
@@ -76,7 +76,7 @@ describe("environment plan inference", () => {
       }),
     );
     expect(plan.stack.framework).toBe("KTOR");
-    expect(plan.run).toEqual(["./gradlew", "--no-daemon", "run"]);
+    expect(plan.run).toEqual(["sh", "./gradlew", "--no-daemon", "run"]);
     expect(plan.image).toBe("eclipse-temurin:21-jdk");
     expect(plan.evidence).toContain("no Java version declared; Java 21 assumed");
     expect(plan.env["DATABASE_URL"]).toContain("{{postgres.password}}");

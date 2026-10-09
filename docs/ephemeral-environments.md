@@ -29,6 +29,8 @@ superadmin_environment_plan({
 | Python | `pyproject.toml`, `requirements.txt`, `manage.py` | `pip install`; Django `runserver`, FastAPI via `uvicorn module:app`, Flask via `flask --app` | 8000 |
 | Go | `go.mod` | `go build` of `.` or the single `cmd/*`; run the binary | 8080 |
 
+Gradle and Maven wrappers are invoked through `sh` (`sh ./gradlew …`), so a wrapper that lost its executable bit still runs. The HTTP E2E workflow also hands the source over as a tar archive, which keeps file modes; plain workflow artifacts do not.
+
 Runtime versions are read from the project itself: the Java toolchain or compiler settings, `engines.node` or `.nvmrc`, `requires-python`, `go.mod`. A Gradle or Maven wrapper is used when it is committed.
 
 Migrations are applied the way the project applies them:

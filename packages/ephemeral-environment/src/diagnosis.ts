@@ -138,6 +138,20 @@ export function diagnoseHttpE2e(evidence: EnvironmentEvidence): Diagnosis | unde
       break;
     case "BUILD_FAILED": {
       const lines = errorLines(failedStep?.logTail, 10);
+      // 126/127 mean the shell could not execute the command at all -- a missing executable bit,
+      // a missing tool in the image, a wrong interpreter. That is the environment, not the code,
+      // and sending the project a repair for it would be exactly the wrong fix.
+      const unexecutable =
+        failedStep?.exitCode === 126 ||
+        failedStep?.exitCode === 127 ||
+        /Permission denied|command not found|: not found|exec format error|no such file or directory/i.test(failedStep?.logTail ?? "");
+      if (unexecutable) {
+        area = "INFRASTRUCTURE";
+        add("unexecutable-command", (failedStep?.logTail ?? "").split(/\r?\n/).find((line) => /Permission denied|not found|exec format error|no such file or directory/i.test(line))?.trim() ?? `exit code ${failedStep?.exitCode}`);
+        summary = `The environment could not execute "${failure.step}" (exit ${failedStep?.exitCode ?? "?"}); the project's code was never compiled.`;
+        next.push("This is the verification environment, not the project: check that the build tool exists in the image and that wrapper scripts keep their executable bit (wrappers are invoked through sh). Re-run verification once the environment is fixed; do not change the project for it.");
+        break;
+      }
       for (const line of lines) add("build-error", line);
       const network = /could not (resolve|get|download)|ENOTFOUND|ETIMEDOUT|ECONNRESET|Temporary failure in name resolution|Read timed out/i.test(failedStep?.logTail ?? "");
       area = network ? "INFRASTRUCTURE" : "IMPLEMENTATION";
