@@ -70,10 +70,23 @@ jobs:
           token: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
           path: e2e-source
           persist-credentials: false
-      - name: Bundle the source without git metadata
+      - name: Check out the reference implementation at its commit (parity runs only)
+        if: steps.prepare.outputs.counterpart_sha != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.prepare.outputs.counterpart_repository }}
+          ref: ${{ steps.prepare.outputs.counterpart_sha }}
+          token: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+          path: e2e-counterpart
+          persist-credentials: false
+      - name: Bundle the sources without git metadata
         run: |
           rm -rf e2e-source/.git
           mv e2e-source "$RUNNER_TEMP/e2e/source"
+          if [ -d e2e-counterpart ]; then
+            rm -rf e2e-counterpart/.git
+            mv e2e-counterpart "$RUNNER_TEMP/e2e/counterpart-source"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-bundle
@@ -84,7 +97,7 @@ jobs:
   environment:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     # No secrets are referenced anywhere in this job, and the checkout token is not persisted.
     steps:
       - uses: actions/checkout@v4
@@ -102,13 +115,13 @@ jobs:
         with:
           name: e2e-bundle
           path: ${{ runner.temp }}/e2e
-      - name: Build, start and verify the project
-        run: >-
-          pnpm exec tsx scripts/run-ephemeral-environment.ts
-          --source "$RUNNER_TEMP/e2e/source"
-          --input "$RUNNER_TEMP/e2e/input.json"
-          --out "$RUNNER_TEMP/evidence.json"
-          --run-id "${{ github.run_id }}"
+      - name: Build, start and verify the project (and the reference, for parity)
+        run: |
+          counterpart=()
+          if [ -d "$RUNNER_TEMP/e2e/counterpart-source" ]; then
+            counterpart=(--counterpart-source "$RUNNER_TEMP/e2e/counterpart-source")
+          fi
+          pnpm exec tsx scripts/run-ephemeral-environment.ts             --source "$RUNNER_TEMP/e2e/source"             --input "$RUNNER_TEMP/e2e/input.json"             --out "$RUNNER_TEMP/evidence.json"             --run-id "${{ github.run_id }}"             "${counterpart[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

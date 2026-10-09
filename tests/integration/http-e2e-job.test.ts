@@ -14,6 +14,7 @@ const principal = { actor: "superadmin-test", role: "SUPERADMIN" as const };
 const head = "1".repeat(40);
 const javaPort = "2".repeat(40);
 const owner = "github-actions:4242:1";
+const kotlinHead = "3".repeat(40);
 
 let counter = 0;
 const operationId = () => `http-e2e-${++counter}-${Date.now()}`;
@@ -29,9 +30,13 @@ async function setup(options: { autonomy?: "AUTONOMOUS_STAGING" | "GUARDED"; dis
     store.createResource({ resourceId: crypto.randomUUID(), type: "GITHUB_REPOSITORY", provider: "github", externalReference: reference, projectId, environment: "SANDBOX", permissions: ["READ"], status: "ACTIVE", secretRefs: [], createdAt: new Date().toISOString(), ...overrides });
   const repository = await register(project.id, "acme/backend");
   const foreign = await register(other.id, "acme/foreign");
+  const kotlin = await register(project.id, "acme/backend-kotlin");
+  const writeOnly = await register(project.id, "acme/write-only", { permissions: ["WRITE"] });
   const repositories = new FakeRepositoryProvider({
     "acme/backend": { defaultBranch: "main", head, commits: [head, javaPort], branches: [{ name: "java-port", sha: javaPort }] },
     "acme/foreign": { defaultBranch: "main", head, commits: [head] },
+    "acme/backend-kotlin": { defaultBranch: "main", head: kotlinHead, commits: [kotlinHead] },
+    "acme/write-only": { defaultBranch: "main", head, commits: [head] },
   });
   const dispatched: ExecutionJob[] = [];
   const dispatcher: ExecutionJobDispatcher = options.dispatcher === null ? (undefined as never) : options.dispatcher ?? { dispatch: async (job) => (dispatched.push(job), {}) };
@@ -39,7 +44,7 @@ async function setup(options: { autonomy?: "AUTONOMOUS_STAGING" | "GUARDED"; dis
   const task = await service.taskCreate({ projectId: project.id, externalKey: "VERIFY-1", title: "Verify the Java port end to end", description: "Run the full collection", requirements: ["full HTTP verification"], relationships: [] });
   const http = await service.resourceRegister({ projectId: project.id, type: "HTTP_API", provider: "http-e2e", externalReference: "http://127.0.0.1:18080", environment: "LOCAL", permissions: ["READ"], secretRefs: [] });
   const artifacts = new ArtifactStore(store, uuidGenerator, systemClock);
-  return { store, service, admin, project, other, repository, foreign, task, http, dispatched, artifacts };
+  return { store, service, admin, project, other, repository, foreign, kotlin, writeOnly, task, http, dispatched, artifacts };
 }
 
 async function run(context: Awaited<ReturnType<typeof setup>>, extra: Record<string, unknown> = {}) {
@@ -182,5 +187,23 @@ describe("HTTP_E2E prepare and record", () => {
     const context = await setup();
     const { value: job } = await run(context);
     await expect(context.admin.httpE2eGet(principal, context.other.id, job.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("HTTP_E2E parity jobs", () => {
+  it("pins and authorizes the reference implementation and hands it to the environment", async () => {
+    const context = await setup();
+    const { value: job } = await run(context, { ref: "java-port", counterpart: { repositoryResourceId: context.kotlin.resourceId, label: "kotlin" } });
+    expect(job.payload).toMatchObject({ commitSha: javaPort, counterpart: { repositoryResourceId: context.kotlin.resourceId, commitSha: kotlinHead, label: "kotlin" } });
+    const prepared = await prepareHttpE2eJob({ store: context.store, clock: systemClock, ids: uuidGenerator, artifacts: context.artifacts }, { jobId: job.id, owner });
+    expect(prepared.counterpart).toEqual({ repository: "acme/backend-kotlin", commitSha: kotlinHead, label: "kotlin" });
+  });
+
+  it("refuses a reference that is foreign, unreadable or at an unknown ref", async () => {
+    const context = await setup();
+    await expect(run(context, { counterpart: { repositoryResourceId: context.foreign.resourceId } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(run(context, { counterpart: { repositoryResourceId: context.writeOnly.resourceId } })).rejects.toMatchObject({ code: "POLICY_VIOLATION" });
+    await expect(run(context, { counterpart: { repositoryResourceId: context.kotlin.resourceId, ref: "missing" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(context.dispatched).toEqual([]);
   });
 });

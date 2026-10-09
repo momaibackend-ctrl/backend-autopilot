@@ -1,6 +1,7 @@
 // The evidence an environment run produces, and the failure classes it names. Kept free of Node
 // builtins so the control plane (Edge) can validate and read it without bundling the executor.
 import { z } from "zod";
+import { parityReportSchema } from "./parity.js";
 
 export const ENVIRONMENT_EVIDENCE_VERSION = "1";
 
@@ -15,6 +16,10 @@ export const failureClassSchema = z.enum([
   "SCENARIO_FAILED",
   "COVERAGE_INCOMPLETE",
   "CONTRACT_GAP",
+  // Parity runs (stage 3): the reference implementation itself was not proven, or the two
+  // implementations answered the same scenarios differently.
+  "REFERENCE_NOT_PROVEN",
+  "PARITY_MISMATCH",
 ]);
 export type FailureClass = z.infer<typeof failureClassSchema>;
 
@@ -44,5 +49,22 @@ export const environmentEvidenceSchema = z.object({
   scenarioReports: z.array(z.unknown()),
   /** What the Postman import skipped or warned about, so a thin import is visible in the evidence. */
   collectionImport: z.unknown().optional(),
+  /** Parity runs: the reference implementation's own run, summarized, and the comparison. */
+  counterpart: z
+    .object({
+      label: z.string(),
+      plan: z.unknown(),
+      outcome: z.object({
+        verdict: z.enum(["PROVEN", "NOT_PROVEN"]),
+        failure: z.object({ class: failureClassSchema, step: z.string(), message: z.string() }).optional(),
+        reasons: z.array(z.string()),
+      }),
+      steps: z.array(environmentStepSchema),
+      health: z.unknown().optional(),
+      applicationLogTail: z.string().optional(),
+      collection: z.unknown().optional(),
+    })
+    .optional(),
+  parity: parityReportSchema.optional(),
 });
 export type EnvironmentEvidence = z.infer<typeof environmentEvidenceSchema>;

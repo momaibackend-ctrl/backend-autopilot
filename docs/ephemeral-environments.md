@@ -169,3 +169,30 @@ Outcomes:
   an object that is not valid evidence (a forged `{"verdict":"PROVEN"}` included), a file over
   8 MB, or a prepare failure. The job is `FAILED`, and the recorded evidence is `NOT_PROVEN` with
   `INFRASTRUCTURE_UNAVAILABLE`. Nothing is ever recorded as a pass by default.
+
+## Parity: comparing two implementations
+
+Add `counterpart` to compare a port with the implementation it replaces ([ADR 019](adr/019-implementation-parity.md)):
+
+```jsonc
+superadmin_http_e2e_run({
+  "operationId": "parity-java-vs-kotlin-0001",
+  "projectId": "…", "taskId": "…",
+  "repositoryResourceId": "<java repository>", "ref": "main",
+  "counterpart": { "repositoryResourceId": "<kotlin repository>", "ref": "main", "label": "kotlin" }
+})
+```
+
+Both implementations run the same scenarios, each in its own fresh environment. Every response is
+compared: outcome, HTTP status, media type and normalized body. Normalization replaces generated
+ids, UUIDs, tokens and timestamp instants by their type; business data and timestamp formats are
+compared as they are.
+
+The verdict is `PROVEN` only when both implementations are `PROVEN` and there is no difference.
+Otherwise the failure is one of:
+- the subject's own failure;
+- `REFERENCE_NOT_PROVEN`;
+- `PARITY_MISMATCH`, which carries every difference with its JSON path. A step only one side ran
+  and a body that could not be compared count as differences.
+
+`superadmin_http_e2e_get` returns the parity summary and the first 100 differences.

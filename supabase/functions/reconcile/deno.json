@@ -28,6 +28,7 @@
     "../../../packages/ephemeral-environment/src/plan.js": "../../../packages/ephemeral-environment/src/plan.ts",
     "../../../packages/ephemeral-environment/src/http-e2e-job.js": "../../../packages/ephemeral-environment/src/http-e2e-job.ts",
     "../../../packages/ephemeral-environment/src/evidence.js": "../../../packages/ephemeral-environment/src/evidence.ts",
+    "../../../packages/ephemeral-environment/src/parity.js": "../../../packages/ephemeral-environment/src/parity.ts",
     "../../../packages/superadmin/src/rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",

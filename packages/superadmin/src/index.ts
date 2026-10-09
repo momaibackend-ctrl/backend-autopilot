@@ -577,8 +577,8 @@ export class SuperadminService {
   // Full HTTP verification of one repository commit in a throwaway environment. The job pins the
   // exact SHA at enqueue time; the workflow builds, starts and verifies the project with no
   // control-plane secret where project code runs, and records classified evidence (ADR 018).
-  httpE2eRun(principal:SuperadminPrincipal,projectId:string,input:{taskId:string;repositoryResourceId:string;ref?:string;root?:string;stripPathPrefix?:string;scenarioSource:HttpE2ePayload["scenarioSource"];operationId:string}){
-    return this.mutate(principal,"http_e2e_run",projectId,input.operationId,{taskId:input.taskId,repositoryResourceId:input.repositoryResourceId,...(input.ref?{ref:input.ref}:{}),...(input.root===undefined?{}:{root:input.root}),scenarioSource:input.scenarioSource},async()=>{
+  httpE2eRun(principal:SuperadminPrincipal,projectId:string,input:{taskId:string;repositoryResourceId:string;ref?:string;root?:string;stripPathPrefix?:string;scenarioSource:HttpE2ePayload["scenarioSource"];counterpart?:{repositoryResourceId:string;ref?:string;root?:string;label?:string};operationId:string}){
+    return this.mutate(principal,"http_e2e_run",projectId,input.operationId,{taskId:input.taskId,repositoryResourceId:input.repositoryResourceId,...(input.ref?{ref:input.ref}:{}),...(input.root===undefined?{}:{root:input.root}),scenarioSource:input.scenarioSource,...(input.counterpart?{counterpart:input.counterpart}:{})},async()=>{
       if(!this.deps.httpE2eDispatcher)throw new UnsupportedOperation("HTTP E2E dispatch is not configured for this runtime");
       return enqueueHttpE2eJob({store:this.deps.store,clock:this.clock,ids:this.ids,dispatcher:this.deps.httpE2eDispatcher,repositories:this.deps.repositories},{...input,projectId,actor:principal.actor});
     });

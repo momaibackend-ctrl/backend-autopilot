@@ -221,6 +221,10 @@ commit, which is pinned when the job is enqueued. It starts the three-job
 `scenarioSource` is either the repository's own Postman collections (`REPOSITORY`) or scenarios
 saved for an `HTTP_API` resource (`SAVED`). `superadmin_http_e2e_get({projectId, jobId})` returns
 the job status and, once recorded, the verdict, classified failure, steps and coverage.
+With `counterpart: {repositoryResourceId, ref?, root?, label?}`, a reference implementation runs
+the same scenarios in its own fresh environment, and every response is compared step by step.
+`PROVEN` then also requires the reference `PROVEN` and zero differences (`PARITY_MISMATCH`
+otherwise, with each difference and its JSON path).
 Missing, malformed, forged or oversized evidence is recorded as `NOT_PROVEN`, never as a pass. Details:
 [`docs/ephemeral-environments.md`](docs/ephemeral-environments.md).
 

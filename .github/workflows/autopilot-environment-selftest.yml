@@ -44,7 +44,17 @@ jobs:
           - name: smoke-only-is-not-proven
             source: tests/fixtures/environments/node-postgres
             expect: NOT_PROVEN
-            extra: --collection tests/fixtures/environments/node-postgres-smoke-only.postman_collection.json
+            extra: --collection tests/fixtures/environments/node-postgres-smoke-only.postman_collection.json --expect-failure COVERAGE_INCOMPLETE
+          # Parity: an implementation compared with itself must match; compared with a variant that
+          # adds one response field it must be NOT_PROVEN -- a comparison that always matches fails.
+          - name: parity-twin-matches
+            source: tests/fixtures/environments/node-postgres
+            expect: PROVEN
+            extra: --counterpart-source tests/fixtures/environments/node-postgres --counterpart-label twin
+          - name: parity-variant-mismatches
+            source: tests/fixtures/environments/node-postgres
+            expect: NOT_PROVEN
+            extra: --counterpart-source tests/fixtures/environments/node-postgres-variant --counterpart-label variant --expect-failure PARITY_MISMATCH
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
