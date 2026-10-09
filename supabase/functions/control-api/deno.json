@@ -33,6 +33,8 @@
     "../../../packages/ephemeral-environment/src/diagnosis.js": "../../../packages/ephemeral-environment/src/diagnosis.ts",
     "../../../packages/superadmin/src/rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
     "./rebase-eligibility.js": "../../../packages/superadmin/src/rebase-eligibility.ts",
+    "../../../packages/superadmin/src/repository-registration.js": "../../../packages/superadmin/src/repository-registration.ts",
+    "./repository-registration.js": "../../../packages/superadmin/src/repository-registration.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts",
     "../../../packages/core/src/repository-guard.js": "../../../packages/core/src/repository-guard.ts",
