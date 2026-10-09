@@ -50,7 +50,7 @@ import {
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import { AuditLog } from "../../audit/src/index.js";
 import { IndependentReviewer } from "../../execution-engine/src/reviewer.js";
-import { taskReadiness } from "./task-readiness.js";
+import { latestHttpE2eEvidence, requiresHttpE2e, taskReadiness } from "./task-readiness.js";
 import { classifyScope } from "./scope-classification.js";
 import { buildEpicVerification, type EpicHeadEvidence, type EpicMemberInput } from "./epic-verification.js";
 import { buildVerificationProfile, requiredSuites } from "./verification-profile.js";
@@ -700,13 +700,7 @@ export class AutopilotService {
         },
       });
     }
-    const requiresExternalCi = (await this.store.listResources(projectId)).some(
-      (resource) =>
-        resource.status === "ACTIVE" &&
-        (resource.type === "GITHUB_REPOSITORY" ||
-          (resource.type === "GIT_REPOSITORY" &&
-            resource.provider !== "local")),
-    );
+    const requiresExternalCi = await this.projectRequiresExternalCi(projectId);
     const runs = await this.store.listRuns(projectId, taskId);
     const finalArtifacts = await this.store.listArtifacts(projectId, taskId);
     // Same functions the readiness preflight uses, so what an agent is told beforehand and what
@@ -718,6 +712,29 @@ export class AutopilotService {
       plan,
       requiresExternalCi,
     });
+    // Full HTTP verification can only run on a commit that already exists, i.e. after this gate.
+    // When it is the one thing left, the task rests in VERIFYING -- no repair attempt is spent --
+    // and READY follows when PROVEN evidence for this exact commit is recorded.
+    if (readiness.blockers.length && readiness.blockers.every((blocker) => blocker.code === "HTTP_E2E_EVIDENCE")) {
+      task = await this.workflow.transition(
+        task,
+        "VERIFYING",
+        `Formal gates passed; awaiting PROVEN HTTP E2E evidence for ${runs.at(-1)?.commitSha ?? "the latest commit"}`,
+        actor,
+        [reviewArtifact.id],
+      );
+      await this.audit.record({
+        actor,
+        action: "task.review",
+        projectId,
+        taskId,
+        input: { artifactCount: finalArtifacts.length },
+        result: { review: review.result, state: task.state, awaiting: "HTTP_E2E" },
+        reason: "Formal gates passed; READY waits for full HTTP verification of the exact commit",
+        correlationId,
+      });
+      return { task, review, awaiting: readiness.blockers };
+    }
     if (readiness.blockers.length)
       throw new ReviewFailed("READY gate artifacts missing", {
         // Bare artifact kinds, unchanged for existing consumers; `blockers` carries the detail.
@@ -729,51 +746,106 @@ export class AutopilotService {
           remediation: readiness.blockers.map((blocker) => blocker.remediation).join(" | "),
         },
       });
-    const latestCommit = runs.at(-1)?.commitSha;
+    const manifest = await this.promoteToReady({ projectId, task, plan, runs, finalArtifacts, requiresExternalCi, reviewArtifactId: reviewArtifact.id, actor, correlationId, reviewResult: review.result });
+    return { task: manifest.task, review, manifest: manifest.manifest };
+  }
+
+  /**
+   * VERIFYING -> READY once PROVEN HTTP E2E evidence exists for the exact latest commit. The whole
+   * gate is evaluated again, not just the E2E layer: READY is never granted on a partial check.
+   */
+  async taskCompleteVerification(projectId: string, taskId: string, actor = "http-e2e-recorder", correlationId = this.ids.next()) {
+    const task = await this.requiredTask(projectId, taskId);
+    if (task.state !== "VERIFYING") throw new InvalidState("Task must be VERIFYING");
+    const plan = await this.latestPlan(projectId, taskId);
+    const requiresExternalCi = await this.projectRequiresExternalCi(projectId);
+    const runs = await this.store.listRuns(projectId, taskId);
+    const finalArtifacts = await this.store.listArtifacts(projectId, taskId);
+    const readiness = taskReadiness({ task, artifacts: finalArtifacts, runs, plan, requiresExternalCi });
+    if (readiness.blockers.length)
+      throw new ReviewFailed("READY gate evidence missing", {
+        blockers: readiness.blockers,
+        blockingReport: {
+          code: "READY_GATE_EVIDENCE_MISSING",
+          reason: readiness.blockers.map((blocker) => blocker.reason).join(" "),
+          remediation: readiness.blockers.map((blocker) => blocker.remediation).join(" | "),
+        },
+      });
+    const reviewArtifact = [...finalArtifacts].reverse().find((artifact) => artifact.kind === "REVIEW_REPORT");
+    return this.promoteToReady({ projectId, task, plan, runs, finalArtifacts, requiresExternalCi, ...(reviewArtifact ? { reviewArtifactId: reviewArtifact.id } : {}), actor, correlationId, reviewResult: "PASS" });
+  }
+
+  private async projectRequiresExternalCi(projectId: string) {
+    return (await this.store.listResources(projectId)).some(
+      (resource) =>
+        resource.status === "ACTIVE" &&
+        (resource.type === "GITHUB_REPOSITORY" ||
+          (resource.type === "GIT_REPOSITORY" &&
+            resource.provider !== "local")),
+    );
+  }
+
+  private async promoteToReady(input: {
+    projectId: string;
+    task: Task;
+    plan: ImplementationPlan;
+    runs: Run[];
+    finalArtifacts: Artifact[];
+    requiresExternalCi: boolean;
+    reviewArtifactId?: string;
+    actor: string;
+    correlationId: string;
+    reviewResult: string;
+  }) {
+    const latestCommit = input.runs.at(-1)?.commitSha;
+    const httpE2e = requiresHttpE2e(input.plan, input.requiresExternalCi) ? latestHttpE2eEvidence(input.finalArtifacts, latestCommit) : undefined;
     const manifest = await this.artifacts.write(
-      projectId,
+      input.projectId,
       "FINAL_CHANGE_MANIFEST",
       {
-        taskId,
+        taskId: input.task.id,
         planHash: (
-          await this.findArtifact(projectId, taskId, "IMPLEMENTATION_PLAN")
+          await this.findArtifact(input.projectId, input.task.id, "IMPLEMENTATION_PLAN")
         ).contentHash,
-        artifactIds: finalArtifacts.map((a) => a.id),
+        artifactIds: input.finalArtifacts.map((a) => a.id),
         gates: {
           implementation: true,
           architecture: true,
           tests: true,
-          ci: requiresExternalCi,
+          ci: input.requiresExternalCi,
           review: true,
+          ...(httpE2e ? { httpE2e: true } : {}),
         },
+        ...(httpE2e ? { httpE2eEvidenceArtifactId: httpE2e.artifactId } : {}),
         verifiedCommitSha: latestCommit,
       },
-      task.id,
+      input.task.id,
     );
-    task = await this.workflow.transition(
-      task,
+    const task = await this.workflow.transition(
+      input.task,
       "READY",
-      "All formal READY gates passed",
-      actor,
-      [reviewArtifact.id],
+      httpE2e ? "All formal READY gates passed, including PROVEN HTTP E2E verification of the exact commit" : "All formal READY gates passed",
+      input.actor,
+      input.reviewArtifactId ? [input.reviewArtifactId] : [],
       [manifest.id],
     );
     await this.audit.record({
-      actor,
+      actor: input.actor,
       action: "task.review",
-      projectId,
-      taskId,
-      input: { artifactCount: finalArtifacts.length },
+      projectId: input.projectId,
+      taskId: input.task.id,
+      input: { artifactCount: input.finalArtifacts.length },
       result: {
-        review: review.result,
+        review: input.reviewResult,
         state: task.state,
         manifestId: manifest.id,
         verifiedCommitSha: latestCommit,
+        ...(httpE2e ? { httpE2eEvidenceArtifactId: httpE2e.artifactId } : {}),
       },
       reason: "All formal readiness gates passed",
-      correlationId,
+      correlationId: input.correlationId,
     });
-    return { task, review, manifest };
+    return { task, manifest };
   }
   async taskRetry(projectId: string, taskId: string, actor = "external-agent") {
     const task = await this.requiredTask(projectId, taskId);

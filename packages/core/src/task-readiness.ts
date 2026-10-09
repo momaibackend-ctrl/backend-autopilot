@@ -78,6 +78,27 @@ export function requiredGateArtifacts(
 }
 
 /**
+ * Whether the READY gate owes full HTTP verification. Only plans made under verification profile
+ * v2 carry the layer, and only a project whose code lives in a registered remote repository can
+ * provision a throwaway environment for it.
+ */
+export function requiresHttpE2e(plan: GatePlan | undefined, requiresExternalCi: boolean) {
+  return requiresExternalCi && requiresLayer(plan?.verification, "HTTP_E2E");
+}
+
+/** The most recent HTTP E2E evidence recorded for this exact commit, if any. */
+export function latestHttpE2eEvidence(artifacts: Artifact[], latestCommit: string | undefined) {
+  if (!latestCommit) return undefined;
+  const found = [...artifacts].reverse().find((artifact) => {
+    const content = artifact.content as { suite?: string; commitSha?: string } | undefined;
+    return artifact.kind === "VALIDATION_REPORT" && content?.suite === "HTTP_E2E" && content.commitSha === latestCommit;
+  });
+  if (!found) return undefined;
+  const content = found.content as { verdict?: string; failure?: { class?: string; message?: string } };
+  return { artifactId: found.id, verdict: content.verdict === "PROVEN" ? ("PROVEN" as const) : ("NOT_PROVEN" as const), failureClass: content.failure?.class, failureMessage: content.failure?.message };
+}
+
+/**
  * A CI report only counts when it was produced for the exact commit under review; an older green
  * report from a previous attempt must never satisfy the gate for newer code.
  */
@@ -124,6 +145,7 @@ const nextByState: Record<string, { tool: string; why: string } | null> = {
   IMPLEMENTING: { tool: "superadmin_task_execute", why: "Send the repair change set with a NEW operationId; reusing one is status-only." },
   TESTING: null,
   REVIEWING: null,
+  VERIFYING: { tool: "superadmin_http_e2e_run", why: "Every formal gate passed; READY waits for PROVEN HTTP E2E evidence of the latest commit. READY follows automatically once it is recorded." },
   READY: { tool: "superadmin_sandbox_pull_request_open", why: "All gates passed; open the pull request, then superadmin_sandbox_pull_request_merge." },
   BLOCKED: { tool: "superadmin_task_analyze", why: "Re-enters the formal path from BLOCKED and regenerates the requirements snapshot." },
   FAILED: { tool: "superadmin_task_analyze", why: "Re-enters the formal path from FAILED and regenerates the requirements snapshot." },
@@ -171,6 +193,25 @@ export function taskReadiness(input: {
       remediation:
         "Re-run the execution so CI is evaluated against the current commit. A green report from an earlier attempt never satisfies this gate.",
     });
+  }
+
+  if (requiresHttpE2e(input.plan, input.requiresExternalCi)) {
+    const evidence = latestHttpE2eEvidence(artifacts, latestCommit);
+    if (evidence?.verdict !== "PROVEN")
+      blockers.push(
+        evidence
+          ? {
+              code: "HTTP_E2E_EVIDENCE",
+              reason: `HTTP E2E verification of ${latestCommit} is NOT_PROVEN (${evidence.failureClass ?? "unclassified"}${evidence.failureMessage ? `: ${evidence.failureMessage}` : ""}).`,
+              remediation:
+                "Read the classified failure and its logs with superadmin_http_e2e_get, fix the cause it names (in the implementation, the scenarios or .autopilot/environment.yml), then execute the repair with a NEW operationId and verify the new commit.",
+            }
+          : {
+              code: "HTTP_E2E_EVIDENCE",
+              reason: `The plan requires full HTTP verification and there is no PROVEN HTTP E2E evidence for the latest commit ${latestCommit ?? "(none recorded)"}.`,
+              remediation: `Run superadmin_http_e2e_run for this task with its GitHub repository and ref ${latestCommit ?? "<latest run commit>"}; READY follows automatically when the verdict is PROVEN.`,
+            },
+      );
   }
 
   return {

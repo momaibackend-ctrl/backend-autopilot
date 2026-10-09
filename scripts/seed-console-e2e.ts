@@ -318,6 +318,7 @@ const states = [
   "IMPLEMENTING",
   "TESTING",
   "REVIEWING",
+  "VERIFYING",
   "READY",
 ] as const;
 let from: "INGESTED" | (typeof states)[number] = "INGESTED";

@@ -64,7 +64,7 @@ describe("console projections", () => {
   it("keeps the rail meaningful for BLOCKED and FAILED tasks", () => {
     const ready = lifecycleRail("READY");
     expect(ready.interrupted).toBe(false);
-    expect(ready.rungs).toHaveLength(7);
+    expect(ready.rungs).toHaveLength(8);
     expect(ready.rungs.every((rung) => rung.complete)).toBe(true);
     expect(ready.rungs.filter((rung) => rung.current)).toHaveLength(1);
 

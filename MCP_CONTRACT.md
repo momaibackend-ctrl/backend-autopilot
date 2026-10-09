@@ -221,6 +221,11 @@ commit, which is pinned when the job is enqueued. It starts the three-job
 `scenarioSource` is either the repository's own Postman collections (`REPOSITORY`) or scenarios
 saved for an `HTTP_API` resource (`SAVED`). `superadmin_http_e2e_get({projectId, jobId})` returns
 the job status and, once recorded, the verdict, classified failure, steps and coverage.
+A task planned under verification profile v2 that changes a public HTTP surface, or asks for
+end-to-end verification, cannot reach `READY` without `PROVEN` evidence for its exact latest
+commit. It rests in `VERIFYING`, and the record step moves it to `READY` through the full gate.
+`superadmin_task_complete_verification({operationId, projectId, taskId})` is the recovery path if
+that step did not finish (ADR 020).
 With `counterpart: {repositoryResourceId, ref?, root?, label?}`, a reference implementation runs
 the same scenarios in its own fresh environment, and every response is compared step by step.
 `PROVEN` then also requires the reference `PROVEN` and zero differences (`PARITY_MISMATCH`

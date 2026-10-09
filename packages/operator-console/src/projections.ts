@@ -25,6 +25,7 @@ export const lifecycleStates = [
   "IMPLEMENTING",
   "TESTING",
   "REVIEWING",
+  "VERIFYING",
   "READY",
 ] as const;
 
