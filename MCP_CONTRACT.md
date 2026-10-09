@@ -200,6 +200,21 @@ None of them accepts a URL or host; each scenario still runs through `superadmin
 single runner, with the same authorization, containment, redaction and limits. Details:
 [`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).
 
+## Verified repository registration
+
+`superadmin_repository_register({operationId, projectId, repository, access})` registers an existing
+GitHub repository for a project, so every repository-based tool can use it. It is verified against
+GitHub itself:
+- the exact `owner/name` as GitHub reports it (a renamed repository is refused, and its current
+  name is given);
+- private visibility;
+- ADMIN for the control-plane identity;
+- not registered to another project.
+
+`access: READ` (the default) covers discovery, environment plans, HTTP E2E and parity. `FULL` also
+covers task execution, pull requests and merges. `superadmin_resource_create` still refuses Git
+bindings (ADR 023).
+
 ## Ephemeral verification environments
 
 `superadmin_environment_plan({projectId, resourceId, ref?, root?})` is read-only. It decides how

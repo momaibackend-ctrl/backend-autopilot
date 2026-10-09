@@ -42,6 +42,7 @@ import {
   type TaskState,
 } from "../../schemas/src/index.js";
 import { resolveRebasePlan } from "./rebase-eligibility.js";
+import { conflictForForeignProject, verifyRepositoryForRegistration } from "./repository-registration.js";
 import {
   CanonicalRepositoryService,
   type GitRepositoryProvider,
@@ -319,7 +320,7 @@ export class SuperadminService {
     const parsed = z.object({ projectId: z.string().uuid(),type:z.string() }).passthrough().parse(input);
     const projectId = parsed.projectId;
     if (["GIT_REPOSITORY","GITHUB_REPOSITORY","GITHUB_ACCOUNT"].includes(parsed.type))
-      throw new PolicyViolation("GitHub/Git bindings require the dedicated verified provider registration flow");
+      throw new PolicyViolation("GitHub/Git bindings require the dedicated verified provider registration flow: use superadmin_repository_register");
     return this.mutate(principal, "resource_create", projectId, operationId, input, () =>
       this.deps.service.resourceRegister(input, principal.actor, operationId),
     );
@@ -592,6 +593,35 @@ export class SuperadminService {
   async httpE2eGet(principal:SuperadminPrincipal,projectId:string,jobId:string){
     this.requireSuperadmin(principal);await this.requireProject(projectId);
     return readHttpE2eJob(this.deps.store,projectId,jobId);
+  }
+
+  // Verified registration of an existing private GitHub repository (ADR 023): exact owner/name as
+  // GitHub itself reports it, private, ADMIN for the control-plane identity, one project only. The
+  // namespace is registered after the repository check passes, never on its own.
+  repositoryRegister(principal:SuperadminPrincipal,projectId:string,input:{repository:string;access:"READ"|"FULL"},operationId:string){
+    return this.mutate(principal,"repository_register",projectId,operationId,input,async()=>{
+      const provider=this.deps.repositories;
+      if(!provider)throw new UnsupportedOperation("Repository verification is not configured for this runtime");
+      const verified=await verifyRepositoryForRegistration(provider,input.repository);
+      const permissions:Resource["permissions"]=input.access==="FULL"?["READ","WRITE","ADMIN"]:["READ"];
+      for(const project of await this.deps.store.listProjects()){
+        if(project.id===projectId)continue;
+        if(await this.deps.store.findResource(project.id,verified.nameWithOwner))throw conflictForForeignProject(verified.nameWithOwner,project.id);
+      }
+      const existing=await this.deps.store.findResource(projectId,verified.nameWithOwner);
+      if(existing){
+        if(existing.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("A resource with this reference already exists with another type",{resourceId:existing.resourceId,type:existing.type});
+        const missing=permissions.filter(permission=>!existing.permissions.includes(permission));
+        if(!missing.length&&existing.status==="ACTIVE")return {resourceId:existing.resourceId,repository:existing.externalReference,permissions:existing.permissions,alreadyRegistered:true};
+        const upgraded=await this.deps.store.updateResource({...existing,status:"ACTIVE",permissions:[...new Set([...existing.permissions,...permissions])]});
+        return {resourceId:upgraded.resourceId,repository:upgraded.externalReference,permissions:upgraded.permissions,alreadyRegistered:true,upgraded:true};
+      }
+      const now=this.clock.now();
+      const account=await this.deps.store.findResource(projectId,verified.owner);
+      if(!account)await this.deps.store.createResource({type:"GITHUB_ACCOUNT",provider:"github",externalReference:verified.owner,projectId,environment:"SANDBOX",permissions:["READ","WRITE","ADMIN"],status:"ACTIVE",secretRefs:[],resourceId:this.ids.next(),createdAt:now});
+      const resource=await this.deps.store.createResource({type:"GITHUB_REPOSITORY",provider:"github",externalReference:verified.nameWithOwner,projectId,environment:"SANDBOX",permissions,status:"ACTIVE",secretRefs:[],resourceId:this.ids.next(),createdAt:now});
+      return {resourceId:resource.resourceId,repository:resource.externalReference,permissions:resource.permissions,defaultBranch:verified.defaultBranch,alreadyRegistered:false};
+    });
   }
 
   // Read-only: every contract and collection the repository holds at one commit.

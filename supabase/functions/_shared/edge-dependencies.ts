@@ -20,6 +20,7 @@ import '../../../packages/ephemeral-environment/src/evidence.ts';
 import '../../../packages/ephemeral-environment/src/parity.ts';
 import '../../../packages/ephemeral-environment/src/diagnosis.ts';
 import '../../../packages/superadmin/src/rebase-eligibility.ts';
+import '../../../packages/superadmin/src/repository-registration.ts';
 import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';
 import '../../../packages/context-engine/src/index.ts';
