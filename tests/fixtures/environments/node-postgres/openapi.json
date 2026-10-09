@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Environment fixture notes", "version": "1.0.0" },
+  "paths": {
+    "/health": { "get": { "responses": { "200": { "description": "up" } } } },
+    "/notes": {
+      "get": { "responses": { "200": { "description": "list" } } },
+      "post": { "responses": { "201": { "description": "created" }, "400": { "description": "invalid" } } }
+    },
+    "/notes/{id}": {
+      "get": { "responses": { "200": { "description": "found" }, "404": { "description": "missing" } } },
+      "delete": { "responses": { "204": { "description": "deleted" }, "404": { "description": "missing" } } }
+    }
+  }
+}

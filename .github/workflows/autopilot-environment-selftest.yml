@@ -1,0 +1,83 @@
+name: Ephemeral environment self-test
+# Proves the ephemeral verification environment (ADR 018) on real Docker before any project
+# depends on it: each fixture is planned, its dependencies and application are started in
+# containers, its collection is run over loopback, and the verdict must match the expectation --
+# including a fixture that MUST come back NOT_PROVEN, so a harness that "passes" everything fails.
+#
+# It holds no secret and no token beyond the read-only checkout, exactly like the environment job
+# of the real HTTP E2E workflow: the fixture code it runs is treated as untrusted.
+on:
+  pull_request:
+    paths:
+      - packages/ephemeral-environment/**
+      - packages/http-runner/**
+      - packages/execution-engine/src/command-policy.ts
+      - scripts/run-ephemeral-environment.ts
+      - tests/fixtures/environments/**
+      - examples/kotlin-sandbox-base/**
+      - .github/workflows/autopilot-environment-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: environment-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: node-postgres
+            source: tests/fixtures/environments/node-postgres
+            expect: PROVEN
+            extra: ""
+          - name: kotlin-ktor
+            source: examples/kotlin-sandbox-base
+            expect: PROVEN
+            extra: --openapi tests/fixtures/environments/kotlin-ktor/openapi.json --collection tests/fixtures/environments/kotlin-ktor/collection.postman_collection.json
+          - name: smoke-only-is-not-proven
+            source: tests/fixtures/environments/node-postgres
+            expect: NOT_PROVEN
+            extra: --collection tests/fixtures/environments/node-postgres-smoke-only.postman_collection.json
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Plan, start and verify the fixture
+        # matrix.extra is a fixed literal from this file, never caller input.
+        run: >-
+          pnpm exec tsx scripts/run-ephemeral-environment.ts
+          --source "${{ matrix.source }}"
+          --out "$RUNNER_TEMP/evidence.json"
+          --run-id "${{ github.run_id }}-${{ matrix.name }}"
+          --expect "${{ matrix.expect }}"
+          ${{ matrix.extra }}
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.name }}
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Leftover containers must not exist
+        if: always()
+        run: |
+          leftover=$(docker ps -aq --filter "name=ap-${{ github.run_id }}" | wc -l)
+          echo "leftover containers: $leftover"
+          test "$leftover" -eq 0

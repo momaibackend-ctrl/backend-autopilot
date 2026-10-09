@@ -1,0 +1,48 @@
+{
+  "info": {
+    "name": "Environment fixture notes",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+      "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(200);"] } }]
+    },
+    {
+      "name": "Notes",
+      "item": [
+        {
+          "name": "Reject empty title",
+          "request": { "method": "POST", "url": "{{baseUrl}}/notes", "body": { "mode": "raw", "raw": "{}" } },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(400);"] } }]
+        },
+        {
+          "name": "Create",
+          "request": { "method": "POST", "url": "{{baseUrl}}/notes", "body": { "mode": "raw", "raw": "{\"title\":\"persisted\"}" } },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(201);", "pm.environment.set(\"noteId\", pm.response.json().id);"] } }]
+        },
+        {
+          "name": "List",
+          "request": { "method": "GET", "url": "{{baseUrl}}/notes" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(200);"] } }]
+        },
+        {
+          "name": "Read",
+          "request": { "method": "GET", "url": "{{baseUrl}}/notes/{{noteId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["const note = pm.response.json();", "pm.response.to.have.status(200);", "pm.expect(note.title).to.eql('persisted');"] } }]
+        },
+        {
+          "name": "Delete",
+          "request": { "method": "DELETE", "url": "{{baseUrl}}/notes/{{noteId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(204);"] } }]
+        },
+        {
+          "name": "Read deleted",
+          "request": { "method": "GET", "url": "{{baseUrl}}/notes/{{noteId}}" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.response.to.have.status(404);"] } }]
+        }
+      ]
+    }
+  ]
+}
