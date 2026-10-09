@@ -215,24 +215,26 @@ async function jvmRecipe(context: Context): Promise<Recipe> {
   let image: string;
   if (gradle) {
     const wrapper = context.has("gradlew");
-    const gradleCommand = wrapper ? "./gradlew" : "gradle";
+    // The wrapper is invoked through `sh`, so a lost executable bit (an archive or artifact that
+    // does not keep file modes, a checkout on a filesystem without them) cannot stop the build.
+    const gradleCommand = wrapper ? ["sh", "./gradlew"] : ["gradle"];
     image = wrapper ? `eclipse-temurin:${java.value}-jdk` : `gradle:8-jdk${java.value}`;
     if (!wrapper) context.notes.push("no Gradle wrapper committed; the official gradle image's Gradle is used, which may differ from the version the project expects");
-    build = [[gradleCommand, "--no-daemon", "assemble", "-x", "test"]];
+    build = [[...gradleCommand, "--no-daemon", "assemble", "-x", "test"]];
     const springModules = perFile.filter((value) => /id\s*\(?\s*["']org\.springframework\.boot["']|apply\s*\(?\s*plugin\s*[:=]\s*["']org\.springframework\.boot["']/.test(value.text));
-    if (framework === "SPRING_BOOT") run = [gradleCommand, "--no-daemon", "bootRun"];
-    else if (framework === "QUARKUS") run = [gradleCommand, "--no-daemon", "quarkusRun"];
-    else if (/\bapplication\b|mainClass/.test(text)) run = [gradleCommand, "--no-daemon", "run"];
+    if (framework === "SPRING_BOOT") run = [...gradleCommand, "--no-daemon", "bootRun"];
+    else if (framework === "QUARKUS") run = [...gradleCommand, "--no-daemon", "quarkusRun"];
+    else if (/\bapplication\b|mainClass/.test(text)) run = [...gradleCommand, "--no-daemon", "run"];
     if (framework === "SPRING_BOOT" && springModules.length > 1)
       context.notes.push(`${springModules.length} Gradle build files mention Spring Boot; bootRun starts every module that applies the plugin -- pin "run" in the manifest if that is not one application`);
   } else {
     const wrapper = context.has("mvnw");
-    const maven = wrapper ? "./mvnw" : "mvn";
+    const maven = wrapper ? ["sh", "./mvnw"] : ["mvn"];
     image = wrapper ? `eclipse-temurin:${java.value}-jdk` : `maven:3-eclipse-temurin-${java.value}`;
-    build = [[maven, "-B", "-DskipTests", "package"]];
-    if (framework === "SPRING_BOOT") run = [maven, "-B", "spring-boot:run"];
-    else if (framework === "QUARKUS") run = [maven, "-B", "quarkus:run"];
-    else if (framework === "MICRONAUT") run = [maven, "-B", "mn:run"];
+    build = [[...maven, "-B", "-DskipTests", "package"]];
+    if (framework === "SPRING_BOOT") run = [...maven, "-B", "spring-boot:run"];
+    else if (framework === "QUARKUS") run = [...maven, "-B", "quarkus:run"];
+    else if (framework === "MICRONAUT") run = [...maven, "-B", "mn:run"];
   }
   if (!run)
     context.unresolved.push({
