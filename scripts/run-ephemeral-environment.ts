@@ -4,6 +4,10 @@
 //   tsx scripts/run-ephemeral-environment.ts --source <dir> --out <evidence.json>
 //       [--root <dir>] [--openapi <file>]... [--collection <file>]... [--strip-prefix /api]
 //       [--run-id <id>] [--expect PROVEN|NOT_PROVEN] [--input <input.json>]
+//       [--counterpart-source <dir>] [--counterpart-root <dir>] [--counterpart-label <name>]
+//
+// --counterpart-source runs a parity comparison: the reference implementation in that directory
+// runs the same scenarios in its own fresh environment and every response is compared.
 //
 // --input is what the HTTP E2E prepare job hands over: {root?, stripPathPrefix?, scenarios?}. Saved
 // scenarios in it replace the repository's own collections.
@@ -15,7 +19,7 @@ import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { systemClock } from "../packages/core/src/ports.js";
 import { DockerRuntime } from "../packages/ephemeral-environment/src/docker-runtime.js";
-import { executeEnvironment } from "../packages/ephemeral-environment/src/executor.js";
+import { executeComparison, executeEnvironment } from "../packages/ephemeral-environment/src/executor.js";
 import { planEnvironment, type ProjectFiles } from "../packages/ephemeral-environment/src/plan.js";
 import { CommandPolicy } from "../packages/execution-engine/src/command-policy.js";
 import { CommandRunner } from "../packages/execution-engine/src/command-runner.js";
@@ -59,7 +63,12 @@ async function main() {
   const read = (path: string) => readFile(join(source, path), "utf8").catch(() => undefined);
   const project: ProjectFiles = { paths: files.map((file) => file.path), read };
   const handed = args.get("input")?.[0]
-    ? (JSON.parse(await readFile(args.get("input")?.[0] as string, "utf8")) as { root?: string; stripPathPrefix?: string; scenarios?: ImportedScenario[] })
+    ? (JSON.parse(await readFile(args.get("input")?.[0] as string, "utf8")) as {
+        root?: string;
+        stripPathPrefix?: string;
+        scenarios?: ImportedScenario[];
+        counterpart?: { root?: string; label?: string };
+      })
     : {};
   const root = args.get("root")?.[0] ?? handed.root;
   const plan = await planEnvironment(project, root === undefined ? {} : { root });
@@ -99,7 +108,27 @@ async function main() {
 
   const runId = args.get("run-id")?.[0] ?? process.env["GITHUB_RUN_ID"] ?? `${Date.now()}`;
   const commands = new CommandRunner(new CommandPolicy(), systemClock);
-  const evidence = await executeEnvironment({ plan, scenarios, ...(inventory ? { inventory } : {}), runtime: new DockerRuntime(commands, source, runId), runId });
+  const counterpartSource = args.get("counterpart-source")?.[0];
+  let evidence;
+  if (counterpartSource) {
+    const referenceDirectory = resolve(counterpartSource);
+    const referenceFiles = await listFiles(referenceDirectory);
+    const referenceRoot = args.get("counterpart-root")?.[0] ?? handed.counterpart?.root;
+    const referencePlan = await planEnvironment(
+      { paths: referenceFiles.map((file) => file.path), read: (path) => readFile(join(referenceDirectory, path), "utf8").catch(() => undefined) },
+      referenceRoot === undefined ? {} : { root: referenceRoot },
+    );
+    evidence = await executeComparison({
+      plan,
+      referencePlan,
+      referenceLabel: args.get("counterpart-label")?.[0] ?? handed.counterpart?.label ?? "reference",
+      scenarios,
+      ...(inventory ? { inventory } : {}),
+      runtime: new DockerRuntime(commands, source, `${runId}-sub`),
+      referenceRuntime: new DockerRuntime(commands, referenceDirectory, `${runId}-ref`),
+      runId,
+    });
+  } else evidence = await executeEnvironment({ plan, scenarios, ...(inventory ? { inventory } : {}), runtime: new DockerRuntime(commands, source, runId), runId });
   await writeFile(out, JSON.stringify({ ...evidence, collectionImport: importWarnings }, null, 2));
   const summary = {
     verdict: evidence.outcome.verdict,
@@ -107,6 +136,7 @@ async function main() {
     stack: plan.stack,
     steps: evidence.steps.map((step) => `${step.phase}:${step.status}:${step.name}`),
     coverage: (evidence.collection as { coverage?: { coveredOperations?: number; totalOperations?: number } } | undefined)?.coverage,
+    ...(evidence.parity ? { parity: { verdict: evidence.parity.verdict, compared: evidence.parity.comparedSteps, differences: evidence.parity.differences.slice(0, 20) } } : {}),
   };
   console.log(JSON.stringify(summary, null, 2));
   if (evidence.outcome.failure || evidence.outcome.verdict !== "PROVEN") {
@@ -118,6 +148,12 @@ async function main() {
   const expected = args.get("expect")?.[0];
   if (expected && expected !== evidence.outcome.verdict) {
     console.error(`Expected ${expected}, got ${evidence.outcome.verdict}: ${evidence.outcome.reasons.join("; ")}`);
+    process.exitCode = 1;
+  }
+  // A self-test that only checks "NOT_PROVEN" would pass for the wrong reason too.
+  const expectedFailure = args.get("expect-failure")?.[0];
+  if (expectedFailure && expectedFailure !== evidence.outcome.failure?.class) {
+    console.error(`Expected failure ${expectedFailure}, got ${evidence.outcome.failure?.class ?? "none"}`);
     process.exitCode = 1;
   }
 }

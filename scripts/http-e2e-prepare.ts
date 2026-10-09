@@ -28,10 +28,11 @@ const owner=`github-actions:${runId??crypto.randomUUID()}:${process.env['GITHUB_
 const workflowRunUrl=process.env['GITHUB_SERVER_URL']&&process.env['GITHUB_REPOSITORY']&&runId?`${process.env['GITHUB_SERVER_URL']}/${process.env['GITHUB_REPOSITORY']}/actions/runs/${runId}`:undefined;
 
 const prepared=await prepareHttpE2eJob({store,clock:systemClock,ids:uuidGenerator,artifacts},{jobId,owner,...(runId?{workflowRunId:runId}:{}),...(workflowRunUrl?{workflowRunUrl}:{})});
-if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(prepared.repository)||!/^[0-9a-f]{40}$/.test(prepared.commitSha))throw new Error('Prepared target failed validation');
+const validTarget=(repository:string,sha:string)=>/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)&&/^[0-9a-f]{40}$/.test(sha);
+if(!validTarget(prepared.repository,prepared.commitSha)||(prepared.counterpart&&!validTarget(prepared.counterpart.repository,prepared.counterpart.commitSha)))throw new Error('Prepared target failed validation');
 await mkdir(out,{recursive:true});
-await writeFile(join(out,'input.json'),JSON.stringify({jobId,commitSha:prepared.commitSha,...(prepared.root===undefined?{}:{root:prepared.root}),...(prepared.stripPathPrefix?{stripPathPrefix:prepared.stripPathPrefix}:{}),...(prepared.scenarios?{scenarios:prepared.scenarios}:{})}));
+await writeFile(join(out,'input.json'),JSON.stringify({jobId,commitSha:prepared.commitSha,...(prepared.root===undefined?{}:{root:prepared.root}),...(prepared.stripPathPrefix?{stripPathPrefix:prepared.stripPathPrefix}:{}),...(prepared.scenarios?{scenarios:prepared.scenarios}:{}),...(prepared.counterpart?{counterpart:{commitSha:prepared.counterpart.commitSha,label:prepared.counterpart.label,...(prepared.counterpart.root===undefined?{}:{root:prepared.counterpart.root})}}:{})}));
 const outputs=process.env['GITHUB_OUTPUT'];
-if(outputs)await appendFile(outputs,`repository=${prepared.repository}\nsha=${prepared.commitSha}\n`);
+if(outputs)await appendFile(outputs,`repository=${prepared.repository}\nsha=${prepared.commitSha}\ncounterpart_repository=${prepared.counterpart?.repository??''}\ncounterpart_sha=${prepared.counterpart?.commitSha??''}\n`);
 console.log(JSON.stringify({level:'info',event:'http_e2e.prepared',jobId,repository:prepared.repository,commitSha:prepared.commitSha,scenarioSource:prepared.scenarios?'SAVED':'REPOSITORY'}));
 await store.close();

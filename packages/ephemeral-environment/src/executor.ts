@@ -19,7 +19,7 @@ import {
   type CollectionExecutionResult,
   type ImportedScenario,
 } from "../../http-runner/src/collection.js";
-import { scenarioForStorage } from "../../http-runner/src/index.js";
+import { scenarioForStorage, scenarioHttpRunnerLimits } from "../../http-runner/src/index.js";
 import { MemoryStateStore } from "../../project-registry/src/memory-store.js";
 import { validationScenarioSaveInputSchema } from "../../schemas/src/index.js";
 import {
@@ -28,6 +28,7 @@ import {
   type EnvironmentEvidence,
   type FailureClass,
 } from "./evidence.js";
+import { compareExecutions, stepsFromReports } from "./parity.js";
 import { planIsExecutable, type DependencyKind, type EnvironmentPlan } from "./plan.js";
 
 export { ENVIRONMENT_EVIDENCE_VERSION, environmentEvidenceSchema, failureClassSchema, type EnvironmentEvidence, type FailureClass } from "./evidence.js";
@@ -384,6 +385,9 @@ export async function runCollectionLocally(
     store,
     artifacts,
     clock: systemClock,
+    // Bodies are kept up to 64 KB (not the control plane's 8 KB) so a parity run can compare
+    // them; anything larger is still truncated and is reported as UNCOMPARED, never as a match.
+    limits: { ...scenarioHttpRunnerLimits, maxEvidenceBodyBytes: 64 * 1024 },
     ...(fetchImpl ? { fetchImpl: fetchImpl as (input: URL | string, init?: RequestInit) => Promise<Response> } : {}),
   }).run({
     projectId: project.id,
@@ -397,4 +401,41 @@ export async function runCollectionLocally(
     .filter((artifact) => artifact.kind === "VALIDATION_REPORT" && (artifact.content as { suite?: string }).suite === "SCENARIO")
     .map((artifact) => artifact.content);
   return { result, reports };
+}
+
+/**
+ * Parity: the reference implementation (for example the original Kotlin service) and the subject
+ * (its Java port) each run the same scenarios in their own fresh environment -- fresh database,
+ * same loopback port, one after the other -- and every response is compared. PROVEN requires the
+ * subject PROVEN, the reference PROVEN and no difference at all.
+ */
+export async function executeComparison(
+  input: ExecuteEnvironmentInput & { referencePlan: EnvironmentPlan; referenceRuntime: ContainerRuntime; referenceLabel: string },
+): Promise<EnvironmentEvidence> {
+  // Each implementation has its own checkout, so each gets a runtime bound to that workspace.
+  const reference = await executeEnvironment({ ...input, plan: input.referencePlan, runtime: input.referenceRuntime, runId: `${input.runId}-ref` });
+  const subject = await executeEnvironment({ ...input, runId: `${input.runId}-sub` });
+  const parity = compareExecutions(stepsFromReports(reference.scenarioReports), stepsFromReports(subject.scenarioReports));
+  const reasons = [...subject.outcome.reasons];
+  let failure = subject.outcome.failure;
+  if (!failure && reference.outcome.verdict !== "PROVEN")
+    failure = { class: "REFERENCE_NOT_PROVEN", step: input.referenceLabel, message: reference.outcome.failure ? `${reference.outcome.failure.class}: ${reference.outcome.failure.message}` : "the reference implementation was not proven" };
+  if (!failure && parity.verdict !== "MATCH")
+    failure = { class: "PARITY_MISMATCH", step: "parity", message: `${parity.differenceCount} difference(s) across ${parity.comparedSteps} compared step(s); ${parity.uncomparedSteps} step(s) could not be compared` };
+  if (reference.outcome.verdict !== "PROVEN") reasons.push(...reference.outcome.reasons.map((reason) => `${input.referenceLabel}: ${reason}`));
+  if (parity.verdict !== "MATCH") reasons.push(`parity: ${parity.differenceCount} difference(s), ${parity.uncomparedSteps} uncompared step(s)`);
+  return environmentEvidenceSchema.parse({
+    ...subject,
+    outcome: { verdict: failure ? "NOT_PROVEN" : "PROVEN", ...(failure ? { failure } : {}), reasons: failure ? reasons : [] },
+    counterpart: {
+      label: input.referenceLabel,
+      plan: reference.plan,
+      outcome: reference.outcome,
+      steps: reference.steps,
+      ...(reference.health ? { health: reference.health } : {}),
+      ...(reference.applicationLogTail !== undefined ? { applicationLogTail: reference.applicationLogTail } : {}),
+      ...(reference.collection ? { collection: reference.collection } : {}),
+    },
+    parity,
+  });
 }

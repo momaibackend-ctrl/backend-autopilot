@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeEnvironment, type ContainerRuntime, type StepOutcome } from "../../packages/ephemeral-environment/src/executor.js";
+import { executeComparison, executeEnvironment, type ContainerRuntime, type StepOutcome } from "../../packages/ephemeral-environment/src/executor.js";
 import { planEnvironment, type EnvironmentPlan } from "../../packages/ephemeral-environment/src/plan.js";
 import { CommandPolicy } from "../../packages/execution-engine/src/command-policy.js";
 import { extractApiOperations, importPostmanCollection } from "../../packages/http-runner/src/collection.js";
@@ -19,7 +19,7 @@ async function fixturePlan(): Promise<EnvironmentPlan> {
 }
 
 // The application under test, in-process: the same notes API the Docker self-test starts.
-function notesApp(options: { healthStatus?: number } = {}) {
+function notesApp(options: { healthStatus?: number; extraField?: boolean } = {}) {
   const notes = new Map<number, { id: number; title: string }>();
   let next = 0;
   return createServer((request, response) => {
@@ -42,7 +42,7 @@ function notesApp(options: { healthStatus?: number } = {}) {
       }
       const match = /^\/notes\/(\d+)$/.exec(url.pathname);
       const note = match ? notes.get(Number(match[1])) : undefined;
-      if (match && request.method === "GET") return note ? send(200, note) : send(404, {});
+      if (match && request.method === "GET") return note ? send(200, options.extraField ? { ...note, archived: false } : note) : send(404, {});
       if (match && request.method === "DELETE") return note && notes.delete(note.id) ? send(204) : send(404, {});
       return send(404, {});
     });
@@ -54,6 +54,7 @@ interface FakeOptions {
   dependencyReadyAfter?: number;
   startServer?: boolean;
   healthStatus?: number;
+  extraField?: boolean;
 }
 
 const servers: Server[] = [];
@@ -75,6 +76,7 @@ function fakeRuntime(options: FakeOptions = {}) {
   let appEnv: Record<string, string> = {};
   let readinessProbes = 0;
   const cleaned: string[][] = [];
+  let ownServer: Server | undefined;
   const runtime: ContainerRuntime = {
     async prepare() {
       calls.push("prepare");
@@ -97,8 +99,9 @@ function fakeRuntime(options: FakeOptions = {}) {
       calls.push(`app:${input.argv.join(" ")}`);
       appEnv = input.env;
       if (options.startServer === false) return;
-      const server = notesApp(options.healthStatus === undefined ? {} : { healthStatus: options.healthStatus });
+      const server = notesApp({ ...(options.healthStatus === undefined ? {} : { healthStatus: options.healthStatus }), ...(options.extraField ? { extraField: true } : {}) });
       servers.push(server);
+      ownServer = server;
       await new Promise<void>((resolve) => server.listen(input.hostPort, "127.0.0.1", resolve));
     },
     async isRunning() {
@@ -110,6 +113,10 @@ function fakeRuntime(options: FakeOptions = {}) {
     },
     async cleanup(input) {
       cleaned.push(input.names);
+      // Like `docker rm -f`: the application stops, so the next environment can use the port.
+      const server = ownServer;
+      ownServer = undefined;
+      if (server?.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
   return { runtime, calls, cleaned, serviceEnv: () => serviceEnv, appEnv: () => appEnv };
@@ -201,6 +208,25 @@ describe("ephemeral environment executor", () => {
       expect(evidence.outcome.failure?.class).toBe(expected);
       expect(fake.calls).toEqual([]);
     }
+  });
+});
+
+describe("parity between two implementations", () => {
+  it("proves a twin, reports a changed response, and refuses an unproven reference", async () => {
+    const plan = await fixturePlan();
+    const port = await freePort();
+    const twin = await executeComparison({ plan, referencePlan: plan, referenceLabel: "kotlin", scenarios: fullScenarios, inventory, runtime: fakeRuntime().runtime, referenceRuntime: fakeRuntime().runtime, runId: "parity-1", hostPort: port });
+    expect(twin.outcome).toEqual({ verdict: "PROVEN", reasons: [] });
+    expect(twin.parity).toMatchObject({ verdict: "MATCH", comparedSteps: 7, matchedSteps: 7, differenceCount: 0 });
+    expect(twin.counterpart).toMatchObject({ label: "kotlin", outcome: { verdict: "PROVEN" } });
+
+    const variant = await executeComparison({ plan, referencePlan: plan, referenceLabel: "kotlin", scenarios: fullScenarios, inventory, runtime: fakeRuntime().runtime, referenceRuntime: fakeRuntime({ extraField: true }).runtime, runId: "parity-2", hostPort: port });
+    expect(variant.outcome.failure).toMatchObject({ class: "PARITY_MISMATCH", step: "parity" });
+    expect(variant.parity?.differences).toEqual([{ scenario: "Notes", step: "Read", kind: "BODY", path: "$.archived", reference: "<boolean>", subject: "<absent>" }]);
+
+    const broken = await executeComparison({ plan, referencePlan: plan, referenceLabel: "kotlin", scenarios: fullScenarios, inventory, runtime: fakeRuntime().runtime, referenceRuntime: fakeRuntime({ failStep: (phase) => (phase === "install" ? 1 : undefined) }).runtime, runId: "parity-3", hostPort: port });
+    expect(broken.outcome.failure).toMatchObject({ class: "REFERENCE_NOT_PROVEN", step: "kotlin" });
+    expect(broken.outcome.reasons.some((reason) => reason.startsWith("kotlin: BUILD_FAILED"))).toBe(true);
   });
 });
 

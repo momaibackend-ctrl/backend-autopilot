@@ -35,12 +35,22 @@ export const httpE2eScenarioSourceSchema = z.discriminatedUnion("kind", [
   // Scenarios saved in the control plane for one HTTP_API resource (imported or written there).
   z.object({ kind: z.literal("SAVED"), resourceId: z.string().uuid() }),
 ]);
+const label = z.string().regex(/^[A-Za-z0-9 ._-]{1,40}$/);
+/** Parity (stage 3): the reference implementation the subject is compared against. */
+export const httpE2eCounterpartSchema = z.object({
+  repositoryResourceId: z.string().uuid(),
+  commitSha,
+  requestedRef: z.string().min(1).max(255).optional(),
+  root: root.optional(),
+  label,
+});
 export const httpE2ePayloadSchema = z.object({
   commitSha,
   requestedRef: z.string().min(1).max(255).optional(),
   root: root.optional(),
   stripPathPrefix: pathPrefix.optional(),
   scenarioSource: httpE2eScenarioSourceSchema,
+  counterpart: httpE2eCounterpartSchema.optional(),
 });
 export type HttpE2ePayload = z.infer<typeof httpE2ePayloadSchema>;
 
@@ -81,6 +91,7 @@ export async function enqueueHttpE2eJob(
     root?: string;
     stripPathPrefix?: string;
     scenarioSource: HttpE2ePayload["scenarioSource"];
+    counterpart?: { repositoryResourceId: string; ref?: string; root?: string; label?: string };
     operationId: string;
     actor: string;
   },
@@ -97,21 +108,39 @@ export async function enqueueHttpE2eJob(
   if (existing) return existing;
   const active = await deps.store.listExecutionJobSummaries(project.id, task.id, activeStatuses);
   if (active.length) throw new Conflict("The task already has an active execution job; wait for it or cancel it first", { jobIds: active.map((job) => job.id) });
-  if (!deps.repositories) throw new UnsupportedOperation("Repository reads are not configured for this runtime");
-  const repository = resource.externalReference;
-  const sha =
-    input.ref && /^[0-9a-f]{40}$/.test(input.ref)
-      ? (await deps.repositories.commitExists(repository, input.ref))
-        ? input.ref
-        : undefined
-      : await deps.repositories.resolveRef(repository, input.ref ?? (await deps.repositories.describe(repository)).defaultBranch);
-  if (!sha) throw new NotFound("Ref not found in the registered repository", { ...(input.ref ? { ref: input.ref } : {}) });
+  const repositories = deps.repositories;
+  if (!repositories) throw new UnsupportedOperation("Repository reads are not configured for this runtime");
+  const pin = async (repository: string, ref: string | undefined) => {
+    const pinned =
+      ref && /^[0-9a-f]{40}$/.test(ref)
+        ? (await repositories.commitExists(repository, ref))
+          ? ref
+          : undefined
+        : await repositories.resolveRef(repository, ref ?? (await repositories.describe(repository)).defaultBranch);
+    if (!pinned) throw new NotFound("Ref not found in the registered repository", { repository, ...(ref ? { ref } : {}) });
+    return pinned;
+  };
+  const sha = await pin(resource.externalReference, input.ref);
+  let counterpart: HttpE2ePayload["counterpart"];
+  if (input.counterpart) {
+    // The reference implementation is authorized exactly like the subject: a project-owned,
+    // non-production GitHub repository the project may PROVISION against with READ.
+    const reference = (await authorizedTarget(deps.store, project.id, input.counterpart.repositoryResourceId, input.actor)).resource;
+    counterpart = httpE2eCounterpartSchema.parse({
+      repositoryResourceId: reference.resourceId,
+      commitSha: await pin(reference.externalReference, input.counterpart.ref),
+      ...(input.counterpart.ref ? { requestedRef: input.counterpart.ref } : {}),
+      ...(input.counterpart.root === undefined ? {} : { root: input.counterpart.root }),
+      label: input.counterpart.label ?? "reference",
+    });
+  }
   const payload = httpE2ePayloadSchema.parse({
     commitSha: sha,
     ...(input.ref ? { requestedRef: input.ref } : {}),
     ...(input.root === undefined ? {} : { root: input.root }),
     ...(input.stripPathPrefix ? { stripPathPrefix: input.stripPathPrefix } : {}),
     scenarioSource: input.scenarioSource,
+    ...(counterpart ? { counterpart } : {}),
   });
   const now = deps.clock.now();
   let job = await deps.store.createExecutionJob({
@@ -133,7 +162,7 @@ export async function enqueueHttpE2eJob(
     job = await deps.store.updateExecutionJob({ ...job, status: "DISPATCHING", updatedAt: deps.clock.now() });
     const dispatched = await deps.dispatcher.dispatch(job);
     job = await deps.store.updateExecutionJob({ ...job, status: "DISPATCHED", ...dispatched, updatedAt: deps.clock.now() });
-    await audit.record({ actor: input.actor, action: "http_e2e.job.dispatched", projectId: project.id, taskId: task.id, resourceId: resource.resourceId, input: { jobId: job.id, commitSha: sha }, result: { workflowRunId: job.workflowRunId ?? "pending" }, reason: "HTTP E2E workflow accepted the job identifier", correlationId: input.operationId });
+    await audit.record({ actor: input.actor, action: "http_e2e.job.dispatched", projectId: project.id, taskId: task.id, resourceId: resource.resourceId, input: { jobId: job.id, commitSha: sha, ...(counterpart ? { counterpartCommitSha: counterpart.commitSha } : {}) }, result: { workflowRunId: job.workflowRunId ?? "pending" }, reason: "HTTP E2E workflow accepted the job identifier", correlationId: input.operationId });
     return job;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown dispatch error";
@@ -150,6 +179,7 @@ export interface PreparedHttpE2e {
   stripPathPrefix?: string;
   /** Present for SAVED scenarios; REPOSITORY scenarios are discovered in the checkout itself. */
   scenarios?: ImportedScenario[];
+  counterpart?: { repository: string; commitSha: string; root?: string; label: string };
 }
 
 /** Claims the job for this workflow run and resolves everything the environment job needs. */
@@ -175,6 +205,14 @@ export async function prepareHttpE2eJob(
   try {
     const payload = httpE2ePayloadSchema.parse(job.payload);
     const { resource } = await authorizedTarget(deps.store, job.projectId, job.resourceId, input.owner);
+    const counterpart = payload.counterpart
+      ? {
+          repository: (await authorizedTarget(deps.store, job.projectId, payload.counterpart.repositoryResourceId, input.owner)).resource.externalReference,
+          commitSha: payload.counterpart.commitSha,
+          ...(payload.counterpart.root === undefined ? {} : { root: payload.counterpart.root }),
+          label: payload.counterpart.label,
+        }
+      : undefined;
     let scenarios: ImportedScenario[] | undefined;
     if (payload.scenarioSource.kind === "SAVED") {
       const saved = collectionScenarios(await deps.store.listArtifacts(job.projectId), payload.scenarioSource.resourceId);
@@ -190,6 +228,7 @@ export async function prepareHttpE2eJob(
       ...(payload.root === undefined ? {} : { root: payload.root }),
       ...(payload.stripPathPrefix ? { stripPathPrefix: payload.stripPathPrefix } : {}),
       ...(scenarios ? { scenarios } : {}),
+      ...(counterpart ? { counterpart } : {}),
     };
   } catch (error) {
     // The record job only sees runs that reached the environment job, so a prepare failure is
@@ -330,7 +369,20 @@ export async function readHttpE2eJob(store: StateStore, projectId: string, jobId
   const report = (await store.listArtifacts(projectId, job.taskId)).find(
     (artifact) => artifact.kind === "VALIDATION_REPORT" && (artifact.content as { jobId?: string } | undefined)?.jobId === job.id,
   );
-  const content = report?.content as { verdict?: string; failure?: unknown; reasons?: string[]; commitSha?: string; evidence?: { collection?: { coverage?: unknown; summary?: unknown }; steps?: unknown } } | undefined;
+  const content = report?.content as
+    | {
+        verdict?: string;
+        failure?: unknown;
+        reasons?: string[];
+        commitSha?: string;
+        evidence?: {
+          collection?: { coverage?: unknown; summary?: unknown };
+          steps?: unknown;
+          counterpart?: { label?: string; outcome?: unknown; steps?: unknown };
+          parity?: { verdict?: string; comparedSteps?: number; matchedSteps?: number; uncomparedSteps?: number; differenceCount?: number; differences?: unknown[] };
+        };
+      }
+    | undefined;
   return {
     job: { id: job.id, status: job.status, commitSha: job.baseCommitSha, workflowRunUrl: job.workflowRunUrl, queuedAt: job.queuedAt, finishedAt: job.finishedAt, result: job.result, error: job.error },
     ...(report
@@ -344,6 +396,10 @@ export async function readHttpE2eJob(store: StateStore, projectId: string, jobId
             steps: content?.evidence?.steps,
             summary: content?.evidence?.collection?.summary,
             coverage: content?.evidence?.collection?.coverage,
+            ...(content?.evidence?.counterpart ? { counterpart: { label: content.evidence.counterpart.label, outcome: content.evidence.counterpart.outcome, steps: content.evidence.counterpart.steps } } : {}),
+            ...(content?.evidence?.parity
+              ? { parity: { ...content.evidence.parity, differences: (content.evidence.parity.differences ?? []).slice(0, 100) } }
+              : {}),
           },
         }
       : {}),
@@ -352,7 +408,7 @@ export async function readHttpE2eJob(store: StateStore, projectId: string, jobId
 
 export const httpE2eRunToolName = "superadmin_http_e2e_run";
 export const httpE2eRunToolDescription =
-  "Run full HTTP end-to-end verification of a registered GitHub repository at one exact commit in a throwaway environment: the autopilot builds the project, starts its dependencies (PostgreSQL, MySQL, Redis, MongoDB) and the application in GitHub Actions containers, runs the whole collection (the repository's Postman collections, or scenarios saved for an HTTP_API resource) against every contract in the repository, records classified evidence bound to the commit, and destroys the environment. No test server or URL is needed. Returns the job; read the verdict with superadmin_http_e2e_get.";
+  "Run full HTTP end-to-end verification of a registered GitHub repository at one exact commit in a throwaway environment: the autopilot builds the project, starts its dependencies (PostgreSQL, MySQL, Redis, MongoDB) and the application in GitHub Actions containers, runs the whole collection (the repository's Postman collections, or scenarios saved for an HTTP_API resource) against every contract in the repository, records classified evidence bound to the commit, and destroys the environment. No test server or URL is needed. With counterpart, a reference implementation (for example the original service a port replaces) runs the same scenarios and every response is compared step by step; PROVEN then also requires zero differences. Returns the job; read the verdict with superadmin_http_e2e_get.";
 export const httpE2eRunToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 export const httpE2eRunToolInputSchema = {
   operationId: z.string().min(8).max(200),
@@ -363,6 +419,15 @@ export const httpE2eRunToolInputSchema = {
   root: root.optional().describe("The application directory, for a repository that holds several"),
   stripPathPrefix: pathPrefix.optional().describe("Path prefix to remove from collection request paths"),
   scenarioSource: httpE2eScenarioSourceSchema.default({ kind: "REPOSITORY" }),
+  counterpart: z
+    .object({
+      repositoryResourceId: z.string().uuid(),
+      ref: z.string().min(1).max(255).optional(),
+      root: root.optional(),
+      label: label.optional(),
+    })
+    .optional()
+    .describe("Parity: a reference implementation (e.g. the original Kotlin service) run on the same scenarios in its own fresh environment; every response is compared and any difference keeps the verdict NOT_PROVEN"),
 };
 export const httpE2eGetToolName = "superadmin_http_e2e_get";
 export const httpE2eGetToolDescription =
