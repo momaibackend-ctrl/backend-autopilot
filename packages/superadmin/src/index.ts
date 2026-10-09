@@ -595,8 +595,9 @@ export class SuperadminService {
     return readHttpE2eJob(this.deps.store,projectId,jobId);
   }
 
-  // Verified registration of an existing private GitHub repository (ADR 023): exact owner/name as
-  // GitHub itself reports it, private, ADMIN for the control-plane identity, one project only. The
+  // Verified registration of an existing GitHub repository (ADR 023): exact owner/name as GitHub
+  // itself reports it, ADMIN for the control-plane identity, one project only. Public and private
+  // repositories are both accepted; the visibility is part of the result and the audit record. The
   // namespace is registered after the repository check passes, never on its own.
   repositoryRegister(principal:SuperadminPrincipal,projectId:string,input:{repository:string;access:"READ"|"FULL"},operationId:string){
     return this.mutate(principal,"repository_register",projectId,operationId,input,async()=>{
@@ -612,15 +613,15 @@ export class SuperadminService {
       if(existing){
         if(existing.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("A resource with this reference already exists with another type",{resourceId:existing.resourceId,type:existing.type});
         const missing=permissions.filter(permission=>!existing.permissions.includes(permission));
-        if(!missing.length&&existing.status==="ACTIVE")return {resourceId:existing.resourceId,repository:existing.externalReference,permissions:existing.permissions,alreadyRegistered:true};
+        if(!missing.length&&existing.status==="ACTIVE")return {resourceId:existing.resourceId,repository:existing.externalReference,visibility:verified.visibility,permissions:existing.permissions,alreadyRegistered:true};
         const upgraded=await this.deps.store.updateResource({...existing,status:"ACTIVE",permissions:[...new Set([...existing.permissions,...permissions])]});
-        return {resourceId:upgraded.resourceId,repository:upgraded.externalReference,permissions:upgraded.permissions,alreadyRegistered:true,upgraded:true};
+        return {resourceId:upgraded.resourceId,repository:upgraded.externalReference,visibility:verified.visibility,permissions:upgraded.permissions,alreadyRegistered:true,upgraded:true};
       }
       const now=this.clock.now();
       const account=await this.deps.store.findResource(projectId,verified.owner);
       if(!account)await this.deps.store.createResource({type:"GITHUB_ACCOUNT",provider:"github",externalReference:verified.owner,projectId,environment:"SANDBOX",permissions:["READ","WRITE","ADMIN"],status:"ACTIVE",secretRefs:[],resourceId:this.ids.next(),createdAt:now});
       const resource=await this.deps.store.createResource({type:"GITHUB_REPOSITORY",provider:"github",externalReference:verified.nameWithOwner,projectId,environment:"SANDBOX",permissions,status:"ACTIVE",secretRefs:[],resourceId:this.ids.next(),createdAt:now});
-      return {resourceId:resource.resourceId,repository:resource.externalReference,permissions:resource.permissions,defaultBranch:verified.defaultBranch,alreadyRegistered:false};
+      return {resourceId:resource.resourceId,repository:resource.externalReference,visibility:verified.visibility,permissions:resource.permissions,defaultBranch:verified.defaultBranch,alreadyRegistered:false};
     });
   }
 

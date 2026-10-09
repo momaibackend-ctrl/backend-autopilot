@@ -13,7 +13,7 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 5. Never persist secret values. Persist environment/vault reference names only; redact logs, audit and artifacts.
 6. `AUTONOMOUS_PRODUCTION` remains a hard `NOT_SUPPORTED`. Do not add flags, hidden routes or adapter calls that bypass it.
 7. A task is not `READY` until implementation, ArchitectureGuard, required tests, IndependentReview, and mandatory artifacts all pass.
-8. Never run `gh auth logout`. Add a dedicated account through official web login, explicitly switch it active, compare it with the expected login, and register an existing repository only after exact `owner/name`, private visibility, owner, and `ADMIN` checks.
+8. Never run `gh auth logout`. Add a dedicated account through official web login, explicitly switch it active, compare it with the expected login, and register an existing repository only after exact `owner/name`, owner, and `ADMIN` checks. Public and private repositories are both accepted while the autopilot targets sandbox environments only; the visibility is recorded with the registration (ADR 023).
 9. `SUPERADMIN` skips project membership only. It never skips PolicyEngine, Resource Registry, command policy, READY gates, redaction, audit, or the production-write hard stop.
 10. Superadmin MCP additions must be semantic Zod tools backed by `SuperadminService`, use operation-ID idempotency, and emit `mcp.<tool>` audit. Do not expose SQL, shell, paths, arbitrary URLs, source editing, or generic Git binding.
 

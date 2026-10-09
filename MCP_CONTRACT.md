@@ -207,7 +207,7 @@ GitHub repository for a project, so every repository-based tool can use it. It i
 GitHub itself:
 - the exact `owner/name` as GitHub reports it (a renamed repository is refused, and its current
   name is given);
-- private visibility;
+- public or private (the result names the visibility);
 - ADMIN for the control-plane identity;
 - not registered to another project.
 
