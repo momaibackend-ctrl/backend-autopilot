@@ -1,0 +1,51 @@
+name: Migrations re-apply self-test
+# Every deploy re-applies every migration. This applies them twice to a fresh PostgreSQL, inserts a
+# job of every kind (including the newest), applies them a third time and checks nothing was
+# narrowed -- the exact sequence that failed the deploy once the first HTTP_E2E job existed.
+# A disposable service container, no secrets.
+on:
+  pull_request:
+    paths:
+      - packages/project-registry/migrations/**
+      - scripts/migrate.ts
+      - scripts/migrations-reapply-check.ts
+      - .github/workflows/autopilot-migrations-selftest.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reapply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autopilot
+          POSTGRES_PASSWORD: autopilot
+          POSTGRES_DB: autopilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U autopilot"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://autopilot:autopilot@localhost:5432/autopilot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply, apply again, insert every job kind, apply once more
+        run: pnpm exec tsx scripts/migrations-reapply-check.ts
