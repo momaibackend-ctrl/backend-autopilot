@@ -98,10 +98,10 @@ describe("environment plan inference", () => {
       }),
     );
     expect(plan.stack).toEqual({ language: "TYPESCRIPT", buildTool: "PNPM", framework: "NESTJS", runtimeVersion: "20" });
-    expect(plan.install).toEqual([["corepack", "enable"], ["pnpm", "install", "--frozen-lockfile"]]);
-    expect(plan.build).toEqual([["pnpm", "run", "build"]]);
+    expect(plan.install).toEqual([["corepack", "pnpm", "install", "--frozen-lockfile"]]);
+    expect(plan.build).toEqual([["corepack", "pnpm", "run", "build"]]);
     expect(plan.prepare).toEqual([["npx", "prisma", "migrate", "deploy"]]);
-    expect(plan.run).toEqual(["pnpm", "run", "start"]);
+    expect(plan.run).toEqual(["corepack", "pnpm", "run", "start"]);
     expect(plan.port).toBe(3000);
     expect(plan.dependencies.map((value) => value.kind)).toEqual(["POSTGRES"]);
   });
@@ -127,7 +127,8 @@ describe("environment plan inference", () => {
     expect(django.prepare).toEqual([["python", "manage.py", "migrate", "--noinput"]]);
     expect(django.dependencies.map((value) => value.kind)).toEqual(["POSTGRES"]);
     const go = await planEnvironment(repo({ "go.mod": "module x\n\ngo 1.23\n", "cmd/api/main.go": "package main", "internal/x.go": "" }));
-    expect(go.build).toEqual([["go", "build", "-o", "/tmp/autopilot-app", "./cmd/api"]]);
+    expect(go.build).toEqual([["go", "build", "-o", ".autopilot/bin/app", "./cmd/api"]]);
+    expect(go.run).toEqual(["./.autopilot/bin/app"]);
     expect(go.image).toBe("golang:1.23");
     expect(planIsExecutable(go)).toBe(true);
   });

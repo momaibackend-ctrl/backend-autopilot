@@ -349,6 +349,8 @@ export const commandCategorySchema = z.enum([
   "TEST",
   "MIGRATION",
   "NETWORK",
+  // Throwaway verification environments: dependency and application containers (ADR 018).
+  "ENVIRONMENT",
   "DESTRUCTIVE",
   "UNKNOWN",
 ]);

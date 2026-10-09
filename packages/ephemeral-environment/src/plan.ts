@@ -268,16 +268,17 @@ async function nodeRecipe(context: Context): Promise<Recipe> {
   const node = majorVersion(`${manifest.engines?.node ?? ""} ${nvmrc ?? ""}`, [/(\d{2})/], "22");
   const framework = deps["@nestjs/core"] ? "NESTJS" : deps["fastify"] ? "FASTIFY" : deps["express"] ? "EXPRESS" : deps["koa"] ? "KOA" : deps["hono"] ? "HONO" : undefined;
   context.evidence.push(`Node.js package with ${manager}${framework ? ` and ${framework}` : ""}`, node.found ? `Node ${node.value} from engines/.nvmrc` : "no Node version declared; Node 22 assumed");
+  // Every step runs in a fresh container that shares only the mounted workspace, so pnpm and yarn
+  // are invoked through corepack each time: a `corepack enable` in one step is gone in the next.
+  const pm = manager === "npm" ? ["npm"] : ["corepack", manager];
   const install =
-    manager === "pnpm"
-      ? [["corepack", "enable"], ["pnpm", "install", "--frozen-lockfile"]]
-      : manager === "yarn"
-        ? [["corepack", "enable"], ["yarn", "install", "--frozen-lockfile"]]
-        : [["npm", context.has("package-lock.json") ? "ci" : "install"]];
-  const build = manifest.scripts?.["build"] ? [[manager, "run", "build"]] : [];
+    manager === "npm"
+      ? [["npm", context.has("package-lock.json") ? "ci" : "install"]]
+      : [[...pm, "install", "--frozen-lockfile"]];
+  const build = manifest.scripts?.["build"] ? [[...pm, "run", "build"]] : [];
   const prepare = deps["prisma"] || deps["@prisma/client"] ? [["npx", "prisma", "migrate", "deploy"]] : [];
   if (prepare.length) context.evidence.push("Prisma migrations are applied before start");
-  const run = manifest.scripts?.["start"] ? [manager, "run", "start"] : manifest.main ? ["node", manifest.main] : undefined;
+  const run = manifest.scripts?.["start"] ? [...pm, "run", "start"] : manifest.main ? ["node", manifest.main] : undefined;
   if (!run)
     context.unresolved.push({ field: "run", reason: 'package.json has neither a "start" script nor "main"', remediation: 'add a "start" script or declare "run" in .autopilot/environment.yml' });
   const port = 3000;
@@ -369,9 +370,10 @@ async function goRecipe(context: Context): Promise<Recipe> {
     stack: { language: "GO", buildTool: "GO", runtimeVersion: go.value },
     image: `golang:${go.value}`,
     install: [["go", "mod", "download"]],
-    build: target ? [["go", "build", "-o", "/tmp/autopilot-app", target]] : [],
+    // Built into the workspace, not /tmp: the run step is a new container that only shares it.
+    build: target ? [["go", "build", "-o", ".autopilot/bin/app", target]] : [],
     prepare: [],
-    ...(target ? { run: ["/tmp/autopilot-app"] } : {}),
+    ...(target ? { run: ["./.autopilot/bin/app"] } : {}),
     port,
     health: ["/health", "/healthz", "/"],
     startupTimeoutSeconds: 120,

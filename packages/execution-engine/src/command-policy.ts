@@ -3,6 +3,28 @@ import type { CommandCategory } from '../../schemas/src/index.js';
 
 const destructive=new Set(['rm','rmdir','del','format','mkfs','shutdown','reboot']);
 const allowed:Record<string,CommandCategory>={node:'TEST',pnpm:'BUILD',npm:'BUILD',npx:'BUILD',tsc:'BUILD',vitest:'TEST',git:'READ',supabase:'MIGRATION',gh:'NETWORK'};
+// Throwaway environments run the project's own code in containers. The container may do anything
+// inside itself; what it may never get is the host: no privileged mode, no host namespaces, no
+// added capabilities or devices, no Docker socket and no bind of a host system directory.
+const dockerSubcommands=new Set(['run','exec','logs','rm','inspect','pull','version']);
+const dockerResourceSubcommands:Record<string,Set<string>>={network:new Set(['create','rm']),volume:new Set(['create','rm'])};
+const dockerForbiddenFlag=/^(--privileged|--pid|--ipc|--uts|--userns|--cgroupns|--cap-add|--device|--security-opt|--volumes-from|--add-host)(=|$)/;
+const hostSystemPath=/(^|[\s=,])(source=)?\/(proc|sys|dev|etc|root|boot|var\/run|run|var\/lib\/docker)?(\/|:|,|$)/;
+function dockerCategory(args:string[]):CommandCategory{
+  const [sub='',action='']=args;
+  if(!(dockerSubcommands.has(sub)||dockerResourceSubcommands[sub]?.has(action)))return 'UNKNOWN';
+  for(const [index,arg] of args.entries()){
+    if(dockerForbiddenFlag.test(arg))return 'UNKNOWN';
+    if(/docker\.sock/.test(arg))return 'UNKNOWN';
+    const previous=args[index-1]??'';
+    if((previous==='--network'||previous==='--net')&&arg==='host')return 'UNKNOWN';
+    if(/^--(network|net)=host$/.test(arg))return 'UNKNOWN';
+    const mount=previous==='-v'||previous==='--volume'||previous==='--mount'?arg:/^--(volume|mount)=/.test(arg)?arg.slice(arg.indexOf('=')+1):undefined;
+    // A bind of `/` or of a host system directory; a named volume or a workspace path is fine.
+    if(mount!==undefined&&hostSystemPath.test(` ${mount}`))return 'UNKNOWN';
+  }
+  return 'ENVIRONMENT';
+}
 const gradleTaskIsTest=(task:string)=>task==='test'||task==='check'||/test$/i.test(task);
 export class CommandPolicy {
   classify(command:string,args:string[]):CommandCategory{
@@ -25,6 +47,7 @@ export class CommandPolicy {
     if(name==='git'&&args[0]==='branch'&&args[1]==='--show-current')return 'READ';
     if(name==='git'&&['checkout','switch','branch','add','commit','cherry-pick','merge','restore'].includes(args[0]??''))return 'BUILD';
     if(name==='pnpm'||name==='npm'||name==='npx')return (args[0]==='test'||(args[0]??'').startsWith('test:')||args.includes('vitest'))?'TEST':'BUILD';
+    if(name==='docker')return dockerCategory(args);
     if(name==='gradlew'||name==='gradle')return args.some(gradleTaskIsTest)?'TEST':'BUILD';
     return allowed[name]??'UNKNOWN';
   }
