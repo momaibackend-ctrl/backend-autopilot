@@ -80,10 +80,16 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Several JDKs, 21 last so it is the default that runs Gradle. setup-java registers every one
+      # in ~/.m2/toolchains.xml, which Gradle's toolchain detection reads, so a project whose
+      # toolchain asks for 17 or 25 finds it instead of failing on the runner's single JDK.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: |
+            17
+            25
+            21
       - run: pnpm install --frozen-lockfile
       - name: Execute durable job
         run: pnpm execution:job -- --job "$AUTOPILOT_JOB_ID"

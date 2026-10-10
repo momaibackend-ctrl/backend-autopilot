@@ -58,7 +58,11 @@ describe("canonical execution workflow is bound to the next control plane", () =
     expect(source).toContain("group: autopilot-execution-${{ inputs.job_id }}");
     expect(source).toContain("cancel-in-progress: false");
     expect(source).toContain("timeout-minutes: 60");
-    expect(source).toContain("java-version: '21'");
+    // JDK 21 stays the default that runs Gradle (listed last); 17 and 25 are installed alongside as
+    // toolchains for projects that ask for them.
+    const versions = /java-version: \|\r?\n((?:[ \t]+\d+\r?\n)+)/.exec(source)?.[1]?.trim().split(/\s+/);
+    expect(versions?.at(-1)).toBe("21");
+    expect(versions).toEqual(expect.arrayContaining(["17", "25", "21"]));
     // The dispatch surface stays exactly one opaque identifier.
     expect(source.match(/^ {6}\w+:$/gm)).toEqual(["      job_id:"]);
     expect(source).toContain("AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}");

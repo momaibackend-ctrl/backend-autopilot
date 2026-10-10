@@ -321,15 +321,16 @@ async function installTargetDependencies(workspace:string,job:ExecutionJob,comma
   if(stack==='KOTLIN_GRADLE')return;
   try{await access(join(workspace,'package.json'));}catch{return;}let frozen=false;try{await access(join(workspace,'pnpm-lock.yaml'));frozen=true;}catch{/* install without mutating an untracked lockfile */}await checked(commands,{command:'pnpm',args:['install',...(frozen?['--frozen-lockfile']:['--lockfile=false'])],cwd:workspace,taskId:job.taskId,allowed:['BUILD']});
 }
-// Delegates the actual wrapper-file provisioning (the part covered by the MOMNA-990 EACCES
-// regression test) to a pure, unit-testable module, then commits the result only if it actually
-// changed anything -- a no-op for repos that already carried the identical pinned wrapper.
+// Delegates the wrapper repair (MOMNA-990 EACCES; never overwriting the project's own wrapper or
+// Gradle version) to a pure, unit-testable module, then commits only if the tree actually changed
+// -- a no-op for a project whose wrapper is intact and already executable.
 async function commitProvisionedGradleWrapper(workspace:string,job:ExecutionJob,commands:CommandRunner,git:LocalGitAdapter):Promise<string|undefined>{
   const pinned=fileURLToPath(new URL('../examples/kotlin-sandbox-base/',import.meta.url));
-  if(!(await provisionGradleWrapper(workspace,pinned)))return undefined;
+  const replaced=await provisionGradleWrapper(workspace,pinned);
+  if(replaced===false)return undefined;
   const status=await commands.run({command:'git',args:['status','--porcelain'],cwd:workspace,taskId:job.taskId,allowed:['READ']});
   if(!status.stdout.trim())return undefined;
-  return git.commit(workspace,job.taskId,'backend-autopilot: provision pinned Gradle Wrapper');
+  return git.commit(workspace,job.taskId,replaced.length?`backend-autopilot: repair Gradle Wrapper (${replaced.join(', ')})`:'backend-autopilot: make gradlew executable');
 }
 async function gradleToolchainVersions(workspace:string,job:ExecutionJob,commands:CommandRunner){
   try{
