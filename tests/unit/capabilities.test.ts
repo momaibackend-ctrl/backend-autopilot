@@ -24,11 +24,10 @@ describe("repository capabilities", () => {
     expect(allowed(value)).toEqual(["READ_AND_PLAN", "HTTP_E2E", "EXECUTE_CHANGES", "OPEN_PULL_REQUEST", "MERGE_PULL_REQUEST", "RENAME"]);
   });
 
-  it("names the canonical repository when another one is the development target", () => {
+  it("never blocks development because another repository is canonical", () => {
     const value = repositoryCapabilities({ project: project(), runtime, resource: repo(["READ", "WRITE", "ADMIN"]), github, canonical: { resourceId: "kotlin", repository: "acme/kotlin" } });
-    expect(value.capabilities.EXECUTE_CHANGES.allowed).toBe(false);
-    expect(value.capabilities.EXECUTE_CHANGES.missing.map((value) => value.remediation).join(" ")).toMatch(/superadmin_canonical_repository_promote/);
-    expect(value.capabilities.HTTP_E2E.allowed).toBe(true);
+    expect(value.role).toBe("REGISTERED");
+    expect(allowed(value)).toEqual(["READ_AND_PLAN", "HTTP_E2E", "EXECUTE_CHANGES", "OPEN_PULL_REQUEST", "MERGE_PULL_REQUEST", "RENAME"]);
   });
 
   it("names the autonomy mode for environments and execution", () => {

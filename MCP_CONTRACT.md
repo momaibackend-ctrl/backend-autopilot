@@ -212,6 +212,11 @@ something is refused.
 Every refused superadmin mutation is audited as `mcp.<tool>.refused` with its reason, and can be
 retried with the same `operationId` after the fix (ADR 024).
 
+`superadmin_task_execute` works in any registered repository of the project. `resourceId` names the
+repository; the canonical development repository is only the default when it is omitted. An
+unplanned task (`INGESTED`, `ANALYZING`, `BLOCKED`, `FAILED`) is analyzed and planned automatically
+first (ADR 025).
+
 ## Verified repository registration
 
 `superadmin_repository_register({operationId, projectId, repository, access})` registers an existing
@@ -223,8 +228,8 @@ GitHub itself:
 - ADMIN for the control-plane identity;
 - not registered to another project.
 
-`access: READ` (the default) covers discovery, environment plans, HTTP E2E and parity. `FULL` also
-covers task execution, pull requests and merges. `superadmin_resource_create` still refuses Git
+`access: FULL` (the default) covers everything: discovery, plans, HTTP E2E, parity, task execution,
+pull requests and merges. `READ` limits a registration to verification. `superadmin_resource_create` still refuses Git
 bindings (ADR 023).
 
 ## Ephemeral verification environments

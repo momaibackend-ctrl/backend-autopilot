@@ -67,13 +67,12 @@ describe("development target resolution", () => {
     expect(job?.baseCommitSha).toBe(canonicalHead);
   });
 
-  it("does not let a caller redirect new work past the canonical binding", async () => {
-    const { coordinator, project, legacy, canonical, promote, plannedTask, changes } = await fixture();
+  it("lets a caller develop in another registered repository by naming it (canonical is only the default)", async () => {
+    const { coordinator, project, legacy, canonical, promote, plannedTask, dispatched, changes } = await fixture();
     await promote(canonical.resourceId, "canonical-target-2", canonicalHead);
     const task = await plannedTask("NEW-2");
-    await expect(
-      coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "canonical-exec-2", changes }, legacy.resourceId),
-    ).rejects.toMatchObject({ code: "POLICY_VIOLATION", details: expect.objectContaining({ blockingReport: expect.objectContaining({ code: "CANONICAL_TARGET_REQUIRED" }) }) });
+    await coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "canonical-exec-2", changes }, legacy.resourceId);
+    expect(dispatched.at(-1)?.resourceId).toBe(legacy.resourceId);
   });
 
   it("accepts a caller-supplied resourceId that merely confirms the canonical target", async () => {

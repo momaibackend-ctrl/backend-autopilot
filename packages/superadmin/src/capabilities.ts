@@ -83,11 +83,6 @@ export function repositoryCapabilities(input: {
   if (project.autonomyMode === "OBSERVE") execute.push({ requirement: "an autonomy mode that allows execution", remediation: `superadmin_project_update({operationId:"<new>", projectId:"${project.id}", autonomyMode:"AUTONOMOUS_STAGING"}).` });
   if (resource.environment !== "SANDBOX") execute.push({ requirement: "a SANDBOX repository resource", remediation: "Only SANDBOX repositories receive autonomous change sets." });
   if (!runtime.execution) execute.push({ requirement: "the execution dispatcher in this deployment", remediation: "Deploy the control plane with the execution workflow configured." });
-  if (canonical && canonical.resourceId !== resource.resourceId)
-    execute.push({
-      requirement: `this repository to be the project's development target (new work in this project executes against its canonical repository ${canonical.repository})`,
-      remediation: `Either make ${name} the canonical development repository (superadmin_canonical_repository_plan, then superadmin_canonical_repository_promote) -- all new work in this project then goes there -- or keep developing in ${canonical.repository}. Verification (HTTP E2E, parity) of ${name} works either way.`,
-    });
 
   const verdict = (missing: Requirement[]): CapabilityVerdict => ({ allowed: missing.length === 0, missing });
   return {
