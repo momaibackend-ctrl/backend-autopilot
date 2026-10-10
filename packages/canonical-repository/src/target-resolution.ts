@@ -52,16 +52,10 @@ export function resolveDevelopmentTarget(input:{
       });
     return {resourceId:input.requestedResourceId,source:'EXPLICIT_RESOURCE'};
   }
+  // The canonical repository is the DEFAULT development target, not the only one: a caller who
+  // names another registered repository of the project develops there (ADR 025). Every other check
+  // -- registration, WRITE, PolicyEngine, the READY gate -- applies to that repository unchanged.
   if(input.requestedResourceId&&input.requestedResourceId!==input.activeCanonical.resourceId)
-    throw new PolicyViolation('This project develops only in its canonical development repository',{
-      canonicalResourceId:input.activeCanonical.resourceId,
-      canonicalRepository:input.activeCanonical.repository,
-      requestedResourceId:input.requestedResourceId,
-      blockingReport:{
-        code:'CANONICAL_TARGET_REQUIRED',
-        reason:`New work in this project executes against ${input.activeCanonical.repository}, the ACTIVE canonical development repository.`,
-        remediation:'Omit resourceId to use the canonical target, or promote the intended repository as canonical first. A caller cannot redirect work past the canonical binding.',
-      },
-    });
+    return {resourceId:input.requestedResourceId,source:'EXPLICIT_RESOURCE'};
   return {resourceId:input.activeCanonical.resourceId,source:'ACTIVE_CANONICAL',canonicalBindingId:input.activeCanonical.id};
 }

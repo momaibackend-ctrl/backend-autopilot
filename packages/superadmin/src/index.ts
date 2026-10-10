@@ -498,7 +498,26 @@ export class SuperadminService {
   async runDelete(principal: SuperadminPrincipal, projectId:string,runId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="DELETE_RUN")throw new PolicyViolation("DELETE_RUN confirmation is required");return this.mutate(principal,"run_delete",projectId,data.operationId,{runId,...data},async()=>{const run=await this.runGet(principal,projectId,runId);if(run.status==="RUNNING")throw new InvalidState("Running run must be cancelled through its job");return this.deps.store.updateRun({...run,deletedAt:this.clock.now()});});}
   async jobList(principal: SuperadminPrincipal, projectId:string,taskId?:string){this.requireSuperadmin(principal);return this.deps.store.listExecutionJobs(projectId,taskId);}
   async jobGet(principal: SuperadminPrincipal,projectId:string,jobId:string){this.requireSuperadmin(principal);const value=await this.deps.store.getExecutionJob(projectId,jobId);if(!value)throw new NotFound("Execution job not found");return value;}
-  jobCreate(principal:SuperadminPrincipal,input:unknown,resourceId:string|undefined,operationId:string){if(!this.deps.asyncExecution)throw new UnsupportedOperation("Remote execution dispatcher is unavailable");const parsed=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),changes:z.array(z.unknown())}).passthrough().parse(input);return this.mutate(principal,"job_create",parsed.projectId,operationId,{taskId:parsed.taskId,resourceId},()=>this.deps.asyncExecution!.enqueueImplementation({...parsed,operationId},resourceId,principal.actor));}
+  jobCreate(principal:SuperadminPrincipal,input:unknown,resourceId:string|undefined,operationId:string){if(!this.deps.asyncExecution)throw new UnsupportedOperation("Remote execution dispatcher is unavailable");const parsed=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),changes:z.array(z.unknown())}).passthrough().parse(input);return this.mutate(principal,"job_create",parsed.projectId,operationId,{taskId:parsed.taskId,resourceId},async()=>{await this.prepareForExecution(parsed.projectId,parsed.taskId,principal.actor,operationId);return this.deps.asyncExecution!.enqueueImplementation({...parsed,operationId},resourceId,principal.actor);});}
+
+  // Executes a change set in any registered repository of the project (ADR 025): resourceId names
+  // it, the canonical repository is only the default. An unplanned task is analyzed and planned on
+  // the way -- the same calls an agent would make, with the same evidence and audit -- instead of
+  // refusing the change set.
+  taskExecute(principal:SuperadminPrincipal,input:{projectId:string;taskId:string;resourceId?:string;operationId:string;changes:Array<{path:string;operation?:string}>}){
+    return this.executeMutation(principal,"task_execute",input.projectId,input.operationId,{...input,changes:input.changes.map(change=>({path:change.path,operation:change.operation}))},async()=>{
+      if(!this.deps.asyncExecution)throw new UnsupportedOperation("Remote execution dispatcher is unavailable");
+      await this.prepareForExecution(input.projectId,input.taskId,principal.actor,input.operationId);
+      return this.deps.asyncExecution.enqueueImplementation(input,input.resourceId,principal.actor);
+    });
+  }
+  private async prepareForExecution(projectId:string,taskId:string,actor:string,correlationId:string){
+    const task=await this.deps.store.getTask(projectId,taskId);
+    if(!task)return;
+    if(task.state==="INGESTED"||task.state==="FAILED"||task.state==="BLOCKED")await this.deps.service.taskAnalyze(projectId,taskId,actor,correlationId);
+    const current=await this.deps.store.getTask(projectId,taskId);
+    if(current?.state==="ANALYZING")await this.deps.service.taskPlan(projectId,taskId,actor,correlationId);
+  }
   async jobCancel(principal:SuperadminPrincipal,projectId:string,jobId:string,input:unknown){const data=confirmedDeleteSchema.parse(input);if(data.confirmation!=="CANCEL_JOB")throw new PolicyViolation("CANCEL_JOB confirmation is required");return this.mutate(principal,"job_cancel",projectId,data.operationId,{jobId,...data},async()=>{const job=await this.jobGet(principal,projectId,jobId);if(["SUCCEEDED","FAILED","CANCELLED","TIMED_OUT","BLOCKED"].includes(job.status))return job;const updated=await this.deps.store.updateExecutionJob({...job,status:"CANCELLED",finishedAt:this.clock.now(),updatedAt:this.clock.now(),error:{code:"SUPERADMIN_CANCELLED",reason:data.reason}});if(job.runId){const run=await this.deps.store.getRun(projectId,job.runId);if(run&&run.status==="RUNNING")await this.deps.store.updateRun({...run,status:"CANCELLED",finishedAt:this.clock.now()});}return updated;});}
 
   async artifactList(principal:SuperadminPrincipal,projectId:string,taskId?:string){this.requireSuperadmin(principal);return this.deps.store.listArtifacts(projectId,taskId);}
@@ -600,12 +619,13 @@ export class SuperadminService {
   // itself reports it, ADMIN for the control-plane identity, one project only. Public and private
   // repositories are both accepted; the visibility is part of the result and the audit record. The
   // namespace is registered after the repository check passes, never on its own.
-  repositoryRegister(principal:SuperadminPrincipal,projectId:string,input:{repository:string;access:"READ"|"FULL"},operationId:string){
+  repositoryRegister(principal:SuperadminPrincipal,projectId:string,input:{repository:string;access?:"READ"|"FULL"},operationId:string){
     return this.mutate(principal,"repository_register",projectId,operationId,input,async()=>{
       const provider=this.deps.repositories;
       if(!provider)throw new UnsupportedOperation("Repository verification is not configured for this runtime");
       const verified=await verifyRepositoryForRegistration(provider,input.repository);
-      const permissions:Resource["permissions"]=input.access==="FULL"?["READ","WRITE","ADMIN"]:["READ"];
+      // FULL by default (ADR 025): a registered repository is one the agent develops in.
+      const permissions:Resource["permissions"]=input.access==="READ"?["READ"]:["READ","WRITE","ADMIN"];
       for(const project of await this.deps.store.listProjects()){
         if(project.id===projectId)continue;
         if(await this.deps.store.findResource(project.id,verified.nameWithOwner))throw conflictForForeignProject(verified.nameWithOwner,project.id);
@@ -648,7 +668,7 @@ export class SuperadminService {
       ...(active?{canonicalRepository:active.repositoryIdentity.externalReference}:{}),
       repositories,
       notes:[
-        "A task must be analyzed and planned (superadmin_task_analyze, superadmin_task_plan) before superadmin_task_execute accepts it; superadmin_task_status shows its readiness and next action.",
+        "superadmin_task_execute works in any repository listed here with EXECUTE_CHANGES allowed: name it with resourceId (the canonical repository is only the default), and an unplanned task is analyzed and planned automatically.",
         "Refused calls are audited as mcp.<tool>.refused with their reason (superadmin_audit_list).",
       ],
     };

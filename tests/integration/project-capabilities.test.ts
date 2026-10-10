@@ -34,7 +34,7 @@ async function portProject() {
 }
 
 describe("project capabilities through the superadmin service", () => {
-  it("shows the port can be verified but not developed, and why", async () => {
+  it("shows a READ registration can be verified but not developed, and why", async () => {
     const { admin, project } = await portProject();
     const capabilities = await admin.projectCapabilities(principal, project.id);
     expect(capabilities.canonicalRepository).toBe("acme/kotlin");
@@ -43,20 +43,31 @@ describe("project capabilities through the superadmin service", () => {
     expect(byName["acme/kotlin"]?.capabilities.EXECUTE_CHANGES.allowed).toBe(true);
     const java = byName["acme/java"];
     expect(java?.capabilities.HTTP_E2E.allowed).toBe(true);
-    expect(java?.capabilities.EXECUTE_CHANGES.missing.map((value) => value.requirement)).toEqual([
-      "WRITE on the registration (it has READ)",
-      "this repository to be the project's development target (new work in this project executes against its canonical repository acme/kotlin)",
-    ]);
+    expect(java?.capabilities.EXECUTE_CHANGES.missing.map((value) => value.requirement)).toEqual(["WRITE on the registration (it has READ)"]);
   });
 
-  it("FULL access closes the permission gap through re-verification", async () => {
+  it("FULL access makes the port fully developable although another repository is canonical", async () => {
     const { admin, project } = await portProject();
     await admin.repositoryRegister(principal, project.id, { repository: "acme/java", access: "FULL" }, operationId());
     const java = (await admin.projectCapabilities(principal, project.id)).repositories.find((value) => value.repository === "acme/java");
-    expect(java?.capabilities.EXECUTE_CHANGES.missing.map((value) => value.requirement)).toEqual([
-      "this repository to be the project's development target (new work in this project executes against its canonical repository acme/kotlin)",
-    ]);
-    expect(java?.capabilities.MERGE_PULL_REQUEST.allowed).toBe(true);
+    expect(Object.values(java?.capabilities ?? {}).every((value) => value.allowed)).toBe(true);
+  });
+
+  it("registers with FULL access when no access is named", async () => {
+    const { admin, project } = await portProject();
+    const { value } = (await admin.repositoryRegister(principal, project.id, { repository: "acme/java" }, operationId())) as { value: { permissions: string[] } };
+    expect(value.permissions).toEqual(["READ", "WRITE", "ADMIN"]);
+  });
+
+  it("task_execute plans an INGESTED task on the way and develops in the named non-canonical repository", async () => {
+    const { store, admin, service, project, java } = await portProject();
+    await admin.repositoryRegister(principal, project.id, { repository: "acme/java", access: "FULL" }, operationId());
+    const task = await service.taskCreate({ projectId: project.id, externalKey: "PORT-TESTS-1", title: "Add check-in transition tests to the Java port", description: "d", requirements: ["cover DRAFT to PARTIAL to DRAFT"], relationships: [] });
+    const result = (await admin.taskExecute(principal, { projectId: project.id, taskId: task.id, resourceId: java.resourceId, operationId: operationId(), changes: [{ path: "src/test/java/CheckinTransitionsTest.java", content: "class CheckinTransitionsTest {}\n" }] as never })) as { value: { job: { resourceId: string } } };
+    expect(result.value.job.resourceId).toBe(java.resourceId);
+    expect((await store.getTask(project.id, task.id))?.state).toBe("IMPLEMENTING");
+    const transitions = (await service.taskStatus(project.id, task.id)).transitions.map((value) => value.to);
+    expect(transitions).toEqual(["ANALYZING", "PLANNED", "IMPLEMENTING"]);
   });
 
   it("an HTTP_E2E job never pins a task to the verified repository past the canonical rule", async () => {

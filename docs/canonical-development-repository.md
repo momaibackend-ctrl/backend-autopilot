@@ -55,7 +55,7 @@ those projects keep working unchanged.
 task already executed?  ──yes──►  its pinned repository (always wins)
         │no
 project has ACTIVE canonical binding?
-        │yes ──► the canonical resource; a supplied resourceId may only CONFIRM it
+        │yes ──► the canonical resource by default; a supplied resourceId names another registered repository (ADR 025)
         │no  ──► the caller names a registered resource, exactly as before
 ```
 
@@ -63,8 +63,9 @@ Three consequences worth stating explicitly:
 
 - **A promotion never retargets work already under way.** A half-finished task's branch and verified
   commit live in the repository it started in; moving it would strand both.
-- **A caller cannot route around the binding.** Once a project is canonical-bound, a different
-  `resourceId` is a `CANONICAL_TARGET_REQUIRED` policy violation, not an override.
+- **The binding is the default, not a fence.** A caller that names another registered repository
+  of the project develops there; every other check (registration, WRITE, PolicyEngine, the READY
+  gate) applies to that repository unchanged (ADR 025).
 - **Canonical does not mean floating.** The binding says *where the base comes from*; execution
   still resolves the default branch to an exact commit and persists it on the job. Nothing ever
   runs against "whatever `main` is right now".
