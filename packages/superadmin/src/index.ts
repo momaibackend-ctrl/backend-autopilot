@@ -43,6 +43,7 @@ import {
 } from "../../schemas/src/index.js";
 import { resolveRebasePlan } from "./rebase-eligibility.js";
 import { conflictForForeignProject, verifyRepositoryForRegistration } from "./repository-registration.js";
+import { repositoryCapabilities, type GitHubView } from "./capabilities.js";
 import {
   CanonicalRepositoryService,
   type GitRepositoryProvider,
@@ -625,6 +626,34 @@ export class SuperadminService {
     });
   }
 
+  // Read-only: what a remote agent can do with each registered repository, and the exact call that
+  // closes every gap -- from the same conditions the real tools enforce (ADR 024).
+  async projectCapabilities(principal:SuperadminPrincipal,projectId:string){
+    this.requireSuperadmin(principal);
+    const project=await this.requireProject(projectId);
+    const resources=(await this.deps.store.listResources(projectId)).filter(resource=>resource.type==="GITHUB_REPOSITORY"&&resource.status!=="DELETED");
+    const active=await this.deps.store.getActiveCanonicalRepository(projectId);
+    const runtime={repositoryReads:Boolean(this.deps.repositories),execution:Boolean(this.deps.asyncExecution),httpE2e:Boolean(this.deps.httpE2eDispatcher)};
+    const view=async(name:string):Promise<GitHubView>=>{
+      if(!this.deps.repositories)return {reachable:false};
+      try{const description=await this.deps.repositories.describe(name);return {reachable:true,reportedName:description.externalReference,visibility:description.visibility,push:description.permissions.push,admin:description.permissions.admin};}
+      catch{return {reachable:false};}
+    };
+    const repositories=await Promise.all(resources.map(async resource=>repositoryCapabilities({
+      project,runtime,resource,github:await view(resource.externalReference),
+      ...(active?{canonical:{resourceId:active.resourceId,repository:active.repositoryIdentity.externalReference}}:{}),
+    })));
+    return {
+      projectId,environment:project.environment,autonomyMode:project.autonomyMode,runtime,
+      ...(active?{canonicalRepository:active.repositoryIdentity.externalReference}:{}),
+      repositories,
+      notes:[
+        "A task must be analyzed and planned (superadmin_task_analyze, superadmin_task_plan) before superadmin_task_execute accepts it; superadmin_task_status shows its readiness and next action.",
+        "Refused calls are audited as mcp.<tool>.refused with their reason (superadmin_audit_list).",
+      ],
+    };
+  }
+
   // Read-only: every contract and collection the repository holds at one commit.
   async repositoryApiDiscovery(principal:SuperadminPrincipal,projectId:string,input:{resourceId:string;ref?:string}){
     this.requireSuperadmin(principal);await this.requireProject(projectId);
@@ -856,8 +885,19 @@ export class SuperadminService {
     this.requireSuperadmin(principal);operationIdSchema.parse(operationId);
     const existing=await this.deps.store.getAdminOperation(operationId);
     if(existing){if(existing.actor!==principal.actor||existing.tool!==tool||existing.projectId!==projectId)throw new Conflict("Admin operation ID was already used for a different mutation");return {value:existing.result,idempotentReplay:true};}
-    if(projectId){const project=await this.requireProject(projectId);if(project.environment==="PRODUCTION"||project.autonomyMode==="AUTONOMOUS_PRODUCTION")throw new UnsupportedOperation("Production writes are NOT_SUPPORTED");}
-    const value=await action();const safeResult=redact(value);
+    let value:T;
+    try{
+      if(projectId){const project=await this.requireProject(projectId);if(project.environment==="PRODUCTION"||project.autonomyMode==="AUTONOMOUS_PRODUCTION")throw new UnsupportedOperation("Production writes are NOT_SUPPORTED");}
+      value=await action();
+    }catch(error){
+      // A refusal that leaves no trace cannot be diagnosed: "the tool blocked it" was all a remote
+      // agent could report. Every refused mutation is audited with its code and reason (ADR 024).
+      // Not saved as an admin operation, so the same operationId may be retried after the fix.
+      const refusal={code:typeof (error as {code?:unknown})?.code==="string"?(error as {code:string}).code:"UNEXPECTED",message:error instanceof Error?error.message.slice(0,500):"refused",details:redact((error as {details?:unknown})?.details??{})};
+      await this.audit.record({actor:principal.actor,action:`mcp.${tool}.refused`,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:redact(refusal),reason:`Refused SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId,...(principal.authMethod?{authMethod:principal.authMethod}:{})}).catch(()=>undefined);
+      throw error;
+    }
+    const safeResult=redact(value);
     await this.deps.store.saveAdminOperation({operationId,actor:principal.actor,tool,...(projectId?{projectId}:{}),result:safeResult,createdAt:this.clock.now()});
     await this.audit.record({actor:principal.actor,action:`mcp.${tool}` ,projectId:projectId??this.deps.systemProjectId,input:{tool,operationId,payload:input},result:safeResult,reason:`Authorized SUPERADMIN semantic MCP mutation: ${tool}`,correlationId:operationId,...(principal.authMethod?{authMethod:principal.authMethod}:{})});
     return {value,idempotentReplay:false};

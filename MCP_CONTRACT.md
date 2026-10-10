@@ -200,6 +200,18 @@ None of them accepts a URL or host; each scenario still runs through `superadmin
 single runner, with the same authorization, containment, redaction and limits. Details:
 [`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).
 
+## Capabilities and refusals
+
+`superadmin_project_capabilities({projectId})` is read-only. For each registered GitHub repository
+it reports what an agent can do: `READ_AND_PLAN`, `HTTP_E2E`, `EXECUTE_CHANGES`,
+`OPEN_PULL_REQUEST`, `MERGE_PULL_REQUEST` and `RENAME`. Every missing requirement comes with the
+exact call that closes it: registration access, autonomy mode, the canonical development
+repository, GitHub permissions, or deployment wiring. Call it before starting work and whenever
+something is refused.
+
+Every refused superadmin mutation is audited as `mcp.<tool>.refused` with its reason, and can be
+retried with the same `operationId` after the fix (ADR 024).
+
 ## Verified repository registration
 
 `superadmin_repository_register({operationId, projectId, repository, access})` registers an existing
