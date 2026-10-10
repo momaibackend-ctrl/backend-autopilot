@@ -150,7 +150,9 @@ export class AsyncExecutionCoordinator {
       this.store.listExecutionJobs(projectId,taskId),
       this.store.getActiveCanonicalRepository(projectId),
     ]);
-    const pinnedResourceId=jobs.at(-1)?.resourceId;
+    // Only development jobs pin a task to a repository. An HTTP_E2E job verifies a repository; it
+    // must not turn it into the task's development target past the canonical-repository rule.
+    const pinnedResourceId=jobs.filter(job=>job.kind!=='HTTP_E2E').at(-1)?.resourceId;
     return resolveDevelopmentTarget({
       ...(requestedResourceId?{requestedResourceId}:{}),
       ...(pinnedResourceId?{pinnedResourceId}:{}),

@@ -73,6 +73,11 @@ export class PolicyEngine {
       )
         throw new PolicyViolation("Resource permission denied", {
           required: request.requiredPermission,
+          granted: resource.permissions,
+          remediation:
+            resource.type === "GITHUB_REPOSITORY"
+              ? `Re-register ${resource.externalReference} with superadmin_repository_register (access FULL); it is verified against GitHub again before ${request.requiredPermission} is granted.`
+              : `Grant ${request.requiredPermission} on the registered resource ${resource.externalReference}.`,
         });
       if (
         resource.environment === "PRODUCTION" &&
