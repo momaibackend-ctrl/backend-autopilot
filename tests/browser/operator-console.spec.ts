@@ -29,7 +29,7 @@ test("operator understands LIVE-1 lifecycle and runs validation without a termin
     page.getByRole("heading", { name: "Database Changes" }),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "GitHub CI" })).toBeVisible();
-  await expect(page.getByText("32264809746").first()).toBeVisible();
+  await expect(page.getByText("33508697329").first()).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Independent Review" }),
   ).toBeVisible();
