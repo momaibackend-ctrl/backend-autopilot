@@ -200,6 +200,41 @@ None of them accepts a URL or host; each scenario still runs through `superadmin
 single runner, with the same authorization, containment, redaction and limits. Details:
 [`docs/http-validation-runner.md`](docs/http-validation-runner.md#whole-api-collection).
 
+## Start here: the project brief, missions and repository roles
+
+The server sends instructions at initialize: start every session with
+`superadmin_project_brief({projectId})` and continue with its `nextAction` (ADR 026).
+
+The brief is read-only, and it is recomputed from the control plane's own records on every call.
+It returns:
+
+- each registered repository with its role, purpose, canonical flag and the missions it serves;
+- every mission with its steps;
+- open tasks outside missions;
+- jobs in flight;
+- setup calls;
+- one overall `nextAction` with arguments.
+
+Each mission step is `DONE`, `RUNNING`, `REMAINING` or `FAILING`. A step carries its detail and the
+next call. A failing step also carries the latest failure and its diagnosis.
+
+- `superadmin_repository_role_set({operationId, projectId, resourceId, role, purpose?})` records a
+  repository's role:
+  - `WORKING`: deployed and relied on;
+  - `SANDBOX`: assembled before it reaches WORKING;
+  - `PORT`: a reimplementation built until it matches a reference;
+  - `ARCHIVE`: kept for recovery.
+
+  `ARCHIVE` is refused while an open mission still uses the repository.
+- `superadmin_mission_create({operationId, projectId, key, title, goal, taskIds})` opens a mission.
+  The goal is one of:
+  - `{kind:"PARITY", targetResourceId, referenceResourceId}`: proven by an HTTP E2E comparison run
+    at the target's current head;
+  - `{kind:"DELIVERY", targetResourceId}`: the attached tasks reach READY.
+- `superadmin_mission_update({operationId, projectId, missionId, title?, addTaskIds?,
+  removeTaskIds?, status?, reason?})` changes a mission. `ACHIEVED` is accepted only when every step
+  is `DONE` from evidence; the refusal lists what remains.
+
 ## Capabilities and refusals
 
 `superadmin_project_capabilities({projectId})` is read-only. For each registered GitHub repository

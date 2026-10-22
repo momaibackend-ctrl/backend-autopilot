@@ -8,6 +8,8 @@ import 'dotenv/config';
 // Run only against a throwaway database: it inserts fixture rows.
 import { execFileSync } from 'node:child_process';
 import { Pool } from 'pg';
+import { PostgresStateStore } from '../packages/project-registry/src/postgres-store.js';
+import type { Mission } from '../packages/schemas/src/index.js';
 
 const url = process.env['DATABASE_URL'];
 if (!url || !/@(localhost|127\.0\.0\.1)(:\d+)?\//.test(url)) throw new Error('DATABASE_URL must point at a local, disposable PostgreSQL');
@@ -25,7 +27,21 @@ try {
   // One job of every kind, including the newest: each later re-application must still admit them.
   for (const kind of ['IMPLEMENTATION', 'TEST', 'VALIDATION', 'REPAIR', 'RECONCILIATION', 'REBASE', 'HTTP_E2E'])
     await pool.query("insert into execution_jobs(id,project_id,task_id,resource_id,operation_id,kind,status,data,created_at,updated_at) values($1,$2,$3,$4,$5,$6,'SUCCEEDED',$7,$8,$8)", [crypto.randomUUID(), project, task, resource, `reapply-${kind}`, kind, {}, now]);
+  // A mission round-trip through the real store (ADR 026): the key is unique per project, an update
+  // keeps the row, and the row survives the next re-application.
+  const store = new PostgresStateStore(url);
+  const mission: Mission = { id: crypto.randomUUID(), projectId: project, key: 'REAPPLY', title: 'Re-apply', goal: { kind: 'DELIVERY', targetResourceId: resource }, taskIds: [task], status: 'ACTIVE', createdAt: now, updatedAt: now };
+  try {
+    await store.createMission(mission);
+    const duplicate = await store.createMission({ ...mission, id: crypto.randomUUID() }).then(() => 'accepted', (error: { code?: string }) => error.code);
+    if (duplicate !== 'CONFLICT') throw new Error(`a duplicate mission key was ${duplicate}, not CONFLICT`);
+    await store.updateMission({ ...mission, status: 'CANCELLED', statusReason: 'fixture', updatedAt: new Date().toISOString() });
+  } finally {
+    await store.close();
+  }
   migrate();
+  const missions = await pool.query<{ status: string; data: Mission }>('select status,data from missions where project_id=$1', [project]);
+  if (missions.rows.length !== 1 || missions.rows[0]?.status !== 'CANCELLED' || missions.rows[0]?.data.statusReason !== 'fixture') throw new Error(`mission did not survive re-application: ${JSON.stringify(missions.rows)}`);
   const constraint = await pool.query<{ def: string }>("select pg_get_constraintdef(oid) as def from pg_constraint where conrelid='execution_jobs'::regclass and conname='execution_jobs_kind_check'");
   const definition = constraint.rows[0]?.def ?? '';
   if (!definition.includes("'HTTP_E2E'")) throw new Error(`execution_jobs_kind_check was narrowed: ${definition || '(missing)'}`);

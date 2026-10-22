@@ -1,6 +1,6 @@
 import { Conflict, ExecutionFailed } from '../../core/src/errors.js';
 import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Mission, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 // Stays at or below PostgREST's own max-rows so a full page is a real page boundary rather than
 // a server-side cap we cannot see.
@@ -103,6 +103,10 @@ export class PostgrestStateStore implements StateStore {
   getAdminOperation(id:string){return this.one<AdminOperation>('admin_operations',`operation_id=eq.${encodeURIComponent(id)}`);}
   listAdminOperations(){return this.many<AdminOperation>('admin_operations','order=created_at.asc');}
   async listMigrationMarkers(){const rows=await this.request<Array<{key:string,checksum:string,data:unknown,created_at:string}>>('GET','/rest/v1/migration_markers?select=*&order=created_at.asc');return rows.map((v):MigrationMarker=>({key:v.key,checksum:v.checksum,data:v.data,createdAt:v.created_at}));}
+  async createMission(v:Mission){if(await this.one<Mission>('missions',`project_id=eq.${v.projectId}&key=eq.${encodeURIComponent(v.key)}`))throw new Conflict('Mission key already exists in this project',{key:v.key});return this.insert<Mission>('missions',{id:v.id,project_id:v.projectId,key:v.key,status:v.status,data:v,created_at:v.createdAt,updated_at:v.updatedAt});}
+  async updateMission(v:Mission){await this.patch('missions',`id=eq.${v.id}&project_id=eq.${v.projectId}`,{status:v.status,data:v,updated_at:v.updatedAt});return v;}
+  getMission(projectId:string,id:string){return this.one<Mission>('missions',`id=eq.${encodeURIComponent(id)}&project_id=eq.${projectId}`);}
+  listMissions(projectId:string){return this.many<Mission>('missions',`project_id=eq.${projectId}&order=created_at.asc`);}
   getCanonicalRepository(projectId:string,id:string){return this.one<CanonicalDevelopmentRepository>('canonical_development_repositories',`id=eq.${id}&project_id=eq.${projectId}`);}
   getActiveCanonicalRepository(projectId:string){return this.one<CanonicalDevelopmentRepository>('canonical_development_repositories',`project_id=eq.${projectId}&status=eq.ACTIVE`);}
   listCanonicalRepositories(projectId:string){return this.many<CanonicalDevelopmentRepository>('canonical_development_repositories',`project_id=eq.${projectId}&order=version.asc`);}

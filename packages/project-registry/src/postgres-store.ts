@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { Conflict } from '../../core/src/errors.js';
 import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, MigrationMarker, Mission, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 import * as s from './schema.js';
 
 export class PostgresStateStore implements StateStore {
@@ -111,6 +111,10 @@ export class PostgresStateStore implements StateStore {
   async getAdminOperation(id:string){const r=await this.pool.query<{data:AdminOperation}>('select data from admin_operations where operation_id=$1 limit 1',[id]);return r.rows[0]?.data;}
   async listAdminOperations(){return (await this.pool.query<{data:AdminOperation}>('select data from admin_operations order by created_at')).rows.map(v=>v.data);}
   async listMigrationMarkers(){return (await this.pool.query<{key:string,checksum:string,data:unknown,created_at:string}>('select * from migration_markers order by created_at')).rows.map((v):MigrationMarker=>({key:v.key,checksum:v.checksum,data:v.data,createdAt:new Date(v.created_at).toISOString()}));}
+  async createMission(v:Mission){try{await this.pool.query('insert into missions(id,project_id,key,status,data,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$7)',[v.id,v.projectId,v.key,v.status,v,v.createdAt,v.updatedAt]);}catch(error){if((error as {code?:string}).code==='23505')throw new Conflict('Mission key already exists in this project',{key:v.key});throw error;}return v;}
+  async updateMission(v:Mission){await this.pool.query('update missions set status=$1,data=$2,updated_at=$3 where id=$4 and project_id=$5',[v.status,v,v.updatedAt,v.id,v.projectId]);return v;}
+  async getMission(projectId:string,id:string){const r=await this.pool.query<{data:Mission}>('select data from missions where id=$1 and project_id=$2 limit 1',[id,projectId]);return r.rows[0]?.data;}
+  async listMissions(projectId:string){return (await this.pool.query<{data:Mission}>('select data from missions where project_id=$1 order by created_at',[projectId])).rows.map(v=>v.data);}
   async getCanonicalRepository(projectId:string,id:string){const r=await this.pool.query<{data:CanonicalDevelopmentRepository}>('select data from canonical_development_repositories where id=$1 and project_id=$2 limit 1',[id,projectId]);return r.rows[0]?.data;}
   async getActiveCanonicalRepository(projectId:string){const r=await this.pool.query<{data:CanonicalDevelopmentRepository}>("select data from canonical_development_repositories where project_id=$1 and status='ACTIVE' limit 1",[projectId]);return r.rows[0]?.data;}
   async listCanonicalRepositories(projectId:string){return (await this.pool.query<{data:CanonicalDevelopmentRepository}>('select data from canonical_development_repositories where project_id=$1 order by version',[projectId])).rows.map(v=>v.data);}

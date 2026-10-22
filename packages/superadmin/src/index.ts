@@ -36,6 +36,9 @@ import {
   validationScenarioSaveInputSchema,
   validationSuiteSchema,
   type DeveloperHandoverReport,
+  type Mission,
+  type MissionGoal,
+  type RepositoryRole,
   type PrincipalRole,
   type Project,
   type Resource,
@@ -44,6 +47,8 @@ import {
 import { resolveRebasePlan } from "./rebase-eligibility.js";
 import { conflictForForeignProject, verifyRepositoryForRegistration } from "./repository-registration.js";
 import { repositoryCapabilities, type GitHubView } from "./capabilities.js";
+import { missionEvidence, projectBrief } from "./missions.js";
+import { missionProgress } from "../../core/src/mission.js";
 import {
   CanonicalRepositoryService,
   type GitRepositoryProvider,
@@ -672,6 +677,76 @@ export class SuperadminService {
         "Refused calls are audited as mcp.<tool>.refused with their reason (superadmin_audit_list).",
       ],
     };
+  }
+
+  // Read-only: the first read of any session (ADR 026) -- roles, missions and their evidence-derived
+  // progress, open work and the single next call.
+  async projectBrief(principal:SuperadminPrincipal,projectId:string){
+    this.requireSuperadmin(principal);
+    const project=await this.requireProject(projectId);
+    return projectBrief({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project);
+  }
+
+  // What a repository is for in its product. ARCHIVE is refused while an open mission still builds in
+  // or compares against the repository: a reference is retired only after the port proved it matches.
+  repositoryRoleSet(principal:SuperadminPrincipal,input:{projectId:string;resourceId:string;role:RepositoryRole;purpose?:string;operationId:string}){
+    const {operationId,...payload}=input;
+    return this.mutate(principal,"repository_role_set",input.projectId,operationId,payload,async()=>{
+      const resource=await this.requireResource(input.projectId,input.resourceId);
+      if(resource.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("Roles describe registered GitHub repositories only",{resourceId:resource.resourceId,type:resource.type});
+      if(input.role==="ARCHIVE"){
+        const serving=(await this.deps.store.listMissions(input.projectId)).filter(mission=>mission.status==="ACTIVE"&&(mission.goal.targetResourceId===resource.resourceId||(mission.goal.kind==="PARITY"&&mission.goal.referenceResourceId===resource.resourceId)));
+        if(serving.length)throw new InvalidState("An open mission still works with this repository, so it cannot be archived yet",{missions:serving.map(mission=>mission.key),remediation:"Finish the mission (superadmin_project_brief shows what remains) and record it ACHIEVED, or cancel it, then archive."});
+      }
+      const updated=await this.deps.store.updateResource({...resource,role:input.role,...(input.purpose?{purpose:input.purpose}:{})});
+      return {resourceId:updated.resourceId,repository:updated.externalReference,role:updated.role,...(updated.purpose?{purpose:updated.purpose}:{})};
+    });
+  }
+
+  missionCreate(principal:SuperadminPrincipal,input:{projectId:string;key:string;title:string;goal:MissionGoal;taskIds?:string[];operationId:string}){
+    const {operationId,...payload}=input;
+    return this.mutate(principal,"mission_create",input.projectId,operationId,payload,async()=>{
+      await this.requireMissionRepositories(input.projectId,input.goal);
+      const taskIds=[...new Set(input.taskIds??[])];
+      for(const taskId of taskIds)await this.requireTask(input.projectId,taskId);
+      const now=this.clock.now();
+      const mission:Mission={id:this.ids.next(),projectId:input.projectId,key:input.key,title:input.title,goal:input.goal,taskIds,status:"ACTIVE",createdAt:now,updatedAt:now};
+      return this.deps.store.createMission(mission);
+    });
+  }
+
+  // ACHIEVED is a claim about evidence, so it is accepted only when the derived progress is complete.
+  missionUpdate(principal:SuperadminPrincipal,input:{projectId:string;missionId:string;title?:string;addTaskIds?:string[];removeTaskIds?:string[];status?:Mission["status"];reason?:string;operationId:string}){
+    const {operationId,...payload}=input;
+    return this.mutate(principal,"mission_update",input.projectId,operationId,payload,async()=>{
+      const mission=await this.deps.store.getMission(input.projectId,input.missionId);
+      if(!mission)throw new NotFound("Mission not found",{projectId:input.projectId,missionId:input.missionId});
+      for(const taskId of input.addTaskIds??[])await this.requireTask(input.projectId,taskId);
+      const removed=new Set(input.removeTaskIds??[]);
+      const taskIds=[...new Set([...mission.taskIds.filter(id=>!removed.has(id)),...(input.addTaskIds??[])])];
+      const now=this.clock.now();
+      const next:Mission={...mission,...(input.title?{title:input.title}:{}),taskIds,updatedAt:now};
+      if(input.status&&input.status!==mission.status){
+        if(input.status==="ACHIEVED"){
+          const [resources,tasks]=await Promise.all([this.deps.store.listResources(input.projectId),this.deps.store.listTasks(input.projectId)]);
+          const progress=missionProgress(next,await missionEvidence({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},next,resources,tasks));
+          if(!progress.complete)throw new InvalidState("The evidence does not show this mission achieved yet",{steps:progress.steps.filter(step=>step.status!=="DONE").map(step=>({id:step.id,status:step.status,detail:step.detail})),nextAction:progress.nextAction});
+          next.achievedAt=now;
+        }else delete next.achievedAt;
+        next.status=input.status;
+        if(input.reason)next.statusReason=input.reason;else delete next.statusReason;
+      }
+      return this.deps.store.updateMission(next);
+    });
+  }
+
+  private async requireMissionRepositories(projectId:string,goal:MissionGoal){
+    const ids=goal.kind==="PARITY"?[goal.targetResourceId,goal.referenceResourceId]:[goal.targetResourceId];
+    if(goal.kind==="PARITY"&&goal.targetResourceId===goal.referenceResourceId)throw new PolicyViolation("A parity mission compares two different repositories");
+    for(const id of ids){
+      const resource=await this.requireResource(projectId,id);
+      if(resource.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("A mission names registered GitHub repositories",{resourceId:id,type:resource.type});
+    }
   }
 
   // Read-only: every contract and collection the repository holds at one commit.

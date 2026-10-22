@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import { missionProgress, type MissionEvidence, type MissionTaskView } from "../../packages/core/src/mission.js";
+import type { Mission, Resource } from "../../packages/schemas/src/index.js";
+
+const projectId = "00000000-0000-4000-8000-000000000001";
+const targetId = "00000000-0000-4000-8000-000000000002";
+const referenceId = "00000000-0000-4000-8000-000000000003";
+const at = "2026-10-22T00:00:00.000Z";
+const sha = "a".repeat(40);
+
+function repository(resourceId: string, name: string, overrides: Partial<Resource> = {}): Resource {
+  return { resourceId, type: "GITHUB_REPOSITORY", provider: "github", externalReference: name, projectId, environment: "SANDBOX", permissions: ["READ", "WRITE", "ADMIN"], status: "ACTIVE", secretRefs: [], createdAt: at, ...overrides };
+}
+function mission(goal: Mission["goal"], taskIds: string[] = []): Mission {
+  return { id: "00000000-0000-4000-8000-000000000009", projectId, key: "M", title: "m", goal, taskIds, status: "ACTIVE", createdAt: at, updatedAt: at };
+}
+function task(id: string, state: MissionTaskView["task"]["state"], nextAction: MissionTaskView["nextAction"] = { tool: "superadmin_task_execute", why: "implement" }): MissionTaskView {
+  return { task: { id, externalKey: `T-${id.slice(-1)}`, title: "t", state }, nextAction };
+}
+const parity = mission({ kind: "PARITY", targetResourceId: targetId, referenceResourceId: referenceId }, ["00000000-0000-4000-8000-00000000000a"]);
+const both = { target: repository(targetId, "acme/java"), reference: repository(referenceId, "acme/kotlin") };
+
+describe("mission progress", () => {
+  it("a DELIVERY mission is complete only when every attached task is READY", () => {
+    const delivery = mission({ kind: "DELIVERY", targetResourceId: targetId }, ["1", "2"]);
+    const open = missionProgress(delivery, { target: both.target, tasks: [task("t1", "READY"), task("t2", "PLANNED")], missingTaskIds: [] });
+    expect(open.complete).toBe(false);
+    expect(open.nextAction).toMatchObject({ tool: "superadmin_task_execute", arguments: { taskId: "t2" } });
+    const done = missionProgress(delivery, { target: both.target, tasks: [task("t1", "READY"), task("t2", "READY")], missingTaskIds: [] });
+    expect(done.complete).toBe(true);
+    expect(done.nextAction).toMatchObject({ tool: "superadmin_mission_update", arguments: { status: "ACHIEVED" } });
+  });
+
+  it("a known failure outranks a task that is only waiting for its job", () => {
+    const progress = missionProgress(parity, {
+      ...both,
+      tasks: [task("t1", "IMPLEMENTING", null)],
+      missingTaskIds: [],
+      parity: { jobId: "j1", status: "SUCCEEDED", commitSha: sha, verdict: "NOT_PROVEN", failureClass: "PARITY_MISMATCH", failureMessage: "3 responses differ" },
+    });
+    expect(progress.steps.map((step) => step.status)).toEqual(["DONE", "RUNNING", "FAILING"]);
+    expect(progress.nextAction).toMatchObject({ tool: "superadmin_http_e2e_get", arguments: { jobId: "j1" } });
+  });
+
+  it("a job that ended without evidence is a failure with its own reason, never a pass", () => {
+    const progress = missionProgress(parity, { ...both, tasks: [task("t1", "READY")], missingTaskIds: [], parity: { jobId: "j1", status: "FAILED", commitSha: sha, failureClass: "INFRASTRUCTURE_UNAVAILABLE", failureMessage: "no evidence file" } });
+    expect(progress.complete).toBe(false);
+    expect(progress.steps.at(-1)).toMatchObject({ status: "FAILING", detail: expect.stringContaining("INFRASTRUCTURE_UNAVAILABLE: no evidence file") });
+  });
+
+  it("names the repository problem first, with the call that fixes it", () => {
+    const disabled = missionProgress(parity, { target: both.target, reference: repository(referenceId, "acme/kotlin", { status: "DISABLED" }), tasks: [], missingTaskIds: [] });
+    expect(disabled.nextAction).toMatchObject({ tool: "superadmin_resource_update", arguments: { resourceId: referenceId, status: "ACTIVE" } });
+    const readOnly = missionProgress(parity, { target: repository(targetId, "acme/java", { permissions: ["READ"] }), reference: both.reference, tasks: [], missingTaskIds: [] });
+    expect(readOnly.nextAction).toMatchObject({ tool: "superadmin_repository_register", arguments: { repository: "acme/java", access: "FULL" } });
+  });
+
+  it("a proof at an older commit than the target head does not count", () => {
+    const evidence: MissionEvidence = { ...both, tasks: [task("t1", "READY")], missingTaskIds: [], parity: { jobId: "j1", status: "SUCCEEDED", commitSha: sha, verdict: "PROVEN" } };
+    expect(missionProgress(parity, evidence).complete).toBe(true);
+    expect(missionProgress(parity, { ...evidence, targetHead: "b".repeat(40) })).toMatchObject({ complete: false, nextAction: { tool: "superadmin_http_e2e_run" } });
+  });
+});
