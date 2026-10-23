@@ -19,7 +19,9 @@ import { resolve } from "node:path";
 // and a unit test of the reconciler's logic passes either way. The cost lived entirely in which
 // store method it called. So that is what this asserts, against the real file.
 
-const source = readFileSync(resolve(__dirname, "../../supabase/functions/reconcile/index.ts"), "utf8");
+// The timer path is the Edge entry point plus the core module it delegates to (ADR 028); both are
+// read, so moving the logic between them cannot hide a read from this check.
+const source = ["../../supabase/functions/reconcile/index.ts", "../../packages/core/src/stall-recovery.ts"].map((path) => readFileSync(resolve(__dirname, path), "utf8")).join("\n");
 
 // Reads that return a whole JSON envelope per row, and so grow without bound as history accumulates.
 const unboundedReads = ["listExecutionJobs", "listArtifacts", "listRuns", "listAudit", "listTasks", "listTransitions"];

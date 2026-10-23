@@ -24,6 +24,8 @@ import '../../../packages/superadmin/src/repository-registration.ts';
 import '../../../packages/superadmin/src/capabilities.ts';
 import '../../../packages/superadmin/src/missions.ts';
 import '../../../packages/core/src/mission.ts';
+import '../../../packages/core/src/stall-recovery.ts';
+import '../../../packages/core/src/execution-reconciliation.ts';
 import '../../../packages/policy-engine/src/architecture-guard.ts';
 import '../../../packages/workflow-engine/src/index.ts';
 import '../../../packages/context-engine/src/index.ts';

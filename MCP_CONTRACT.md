@@ -238,6 +238,12 @@ next call. A failing step also carries the latest failure and its diagnosis.
   reference. `ACHIEVED` is accepted only when every step
   is `DONE` from evidence; the refusal lists what remains.
 
+### Stalled work
+
+The scheduled reconciler never parks a task because its job stalled (ADR 028). A stalled job is one that was never started, lost its runner, or ended in GitHub without a callback. The reconciler ends it with a coded cause, then resumes the same work as a new attempt with `operationId` `<original>#resume-<n>`. The task keeps its state.
+
+When the same cause repeats, the next attempt waits: 15 minutes, doubling to 6 hours. `jobsInFlight` in the brief shows each attempt's number, cause and start time. Only a run a person cancelled in GitHub stays stopped.
+
 ### Products
 
 `superadmin_project_product_set({operationId, projectId, product})` links a project into a product, or

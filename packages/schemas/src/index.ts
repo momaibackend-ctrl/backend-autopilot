@@ -100,6 +100,8 @@ export const repositoryRoleSchema = z.enum([
   "CANDIDATE",
   // Kept for recovery and reference; nothing is developed here.
   "ARCHIVE",
+  // The tooling that develops the product (for example Backend Autopilot itself); not part of it.
+  "TOOLING",
 ]);
 export type RepositoryRole = z.infer<typeof repositoryRoleSchema>;
 export const resourceSchema = z.object({
@@ -1189,6 +1191,21 @@ export const executionJobSchema = z.object({
   updatedAt: z.string().datetime(),
   error: z.unknown().optional(),
   result: z.unknown().optional(),
+  /**
+   * Set on a job the reconciler created to resume a stalled one (ADR 028): the same work, a new
+   * attempt. `notBefore` holds the back-off when the same stall cause keeps repeating.
+   */
+  resume: z
+    .object({
+      of: z.string().uuid(),
+      root: z.string().uuid(),
+      attempt: z.number().int().positive(),
+      cause: z.string().min(1),
+      consecutiveSameCause: z.number().int().positive(),
+      notBefore: z.string().datetime(),
+      lastDispatchError: z.string().optional(),
+    })
+    .optional(),
 });
 export type ExecutionJob = z.infer<typeof executionJobSchema>;
 export const transitionSchema = z.object({

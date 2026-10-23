@@ -21,7 +21,7 @@ export const repositoryRoleSetInputSchema = {
   operationId,
   projectId: uuid,
   resourceId: uuid.describe("A registered GITHUB_REPOSITORY resource of this project"),
-  role: repositoryRoleSchema.describe("WORKING: deployed and relied on. SANDBOX: where work is assembled before it reaches WORKING. CANDIDATE: the next version of WORKING (e.g. a reimplementation on another stack), built until it is proven to match a reference and then moved into WORKING in its place. ARCHIVE: kept for recovery; nothing is developed there"),
+  role: repositoryRoleSchema.describe("WORKING: deployed and relied on. SANDBOX: where work is assembled before it reaches WORKING. CANDIDATE: the next version of WORKING (e.g. a reimplementation on another stack), built until it is proven to match a reference and then moved into WORKING in its place. ARCHIVE: kept for recovery; nothing is developed there. TOOLING: the tooling that develops the product (for example Backend Autopilot itself), not part of the product"),
   purpose: z.string().min(1).max(500).optional().describe("One line on why the repository exists, shown to every later session"),
 };
 export const missionCreateInputSchema = {
@@ -51,7 +51,7 @@ export const projectProductSetInputSchema = {
 };
 
 export const projectBriefToolDescription =
-  "Read-only. START EVERY SESSION HERE. Where the project stands, from the control plane's own records rather than any session's memory: each registered repository with its role (WORKING, SANDBOX, CANDIDATE, ARCHIVE), purpose and the missions it serves, plus the repositories of the other projects of the same product; every mission with its steps derived from evidence (DONE, RUNNING, REMAINING, FAILING), the latest failure with its diagnosis, and the exact next call with arguments; open tasks outside missions; jobs in flight; and one overall nextAction. Continue with nextAction instead of re-exploring the project, its deployments or databases.";
+  "Read-only. START EVERY SESSION HERE. Where the project stands, from the control plane's own records rather than any session's memory: each registered repository with its role (WORKING, SANDBOX, CANDIDATE, ARCHIVE, TOOLING), purpose and the missions it serves, plus the repositories of the other projects of the same product; every mission with its steps derived from evidence (DONE, RUNNING, REMAINING, FAILING), the latest failure with its diagnosis, and the exact next call with arguments; open tasks outside missions; jobs in flight; and one overall nextAction. Continue with nextAction instead of re-exploring the project, its deployments or databases.";
 
 const runningJob = new Set(["QUEUED", "DISPATCHING", "DISPATCHED", "CLAIMED", "RUNNING"]);
 /** How many of the target's newest HTTP E2E jobs are opened to find the latest comparison. */
@@ -177,7 +177,8 @@ export interface ProjectBrief {
     progress?: MissionProgress;
   }>;
   otherOpenTasks: Array<{ taskId: string; externalKey: string; title: string; state: Task["state"]; updatedAt: string }>;
-  jobsInFlight: Array<{ jobId: string; kind: string; status: string; taskId: string; resourceId: string; queuedAt: string }>;
+  /** Active jobs. A resumed one says which attempt it is, why the last one stalled, and when it starts. */
+  jobsInFlight: Array<{ jobId: string; kind: string; status: string; taskId: string; resourceId: string; queuedAt: string; attempt: number; resume?: { attempt: number; cause: string; consecutiveSameCause: number; notBefore: string; lastDispatchError?: string } }>;
   setup: NextCall[];
   nextAction: NextCall | null;
   rules: string[];
@@ -240,7 +241,7 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
       .map((resource) => ({
         tool: "superadmin_repository_role_set",
         arguments: { projectId, resourceId: resource.resourceId },
-        why: `${resource.externalReference} has no role. Say what it is (WORKING, SANDBOX, CANDIDATE or ARCHIVE) so no session has to guess from its name.`,
+        why: `${resource.externalReference} has no role. Say what it is (WORKING, SANDBOX, CANDIDATE, ARCHIVE or TOOLING) so no session has to guess from its name.`,
       })),
     ...(active.length
       ? []
@@ -272,13 +273,19 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
     })),
     missions: missionViews,
     otherOpenTasks,
-    jobsInFlight: inFlight.map((job) => ({ jobId: job.id, kind: job.kind, status: job.status, taskId: job.taskId, resourceId: job.resourceId, queuedAt: job.queuedAt })),
+    jobsInFlight: await Promise.all(
+      inFlight.map(async (summary) => {
+        const resume = (await deps.store.getExecutionJob(projectId, summary.id))?.resume;
+        return { jobId: summary.id, kind: summary.kind, status: summary.status, taskId: summary.taskId, resourceId: summary.resourceId, queuedAt: summary.queuedAt, attempt: summary.attempt, ...(resume ? { resume: { attempt: resume.attempt, cause: resume.cause, consecutiveSameCause: resume.consecutiveSameCause, notBefore: resume.notBefore, ...(resume.lastDispatchError ? { lastDispatchError: resume.lastDispatchError } : {}) } } : {}) };
+      }),
+    ),
     setup,
     nextAction: firstMission?.progress?.nextAction ?? setup[0] ?? null,
     rules: [
       "Work from this brief and its nextAction. Do not rediscover the project from deployments, staging URLs or databases: verification runs in throwaway environments the autopilot builds itself.",
       "Repositories are named by role, not by guess: develop in the mission's target and compare against its reference. ARCHIVE is kept for recovery; nothing is developed there. Repositories listed under productRepositories belong to other projects of the same product: compare against them from here, develop in them only from their own project.",
       "A failure is a cause to fix, not a stop: read its diagnosis, fix that cause, run again. Only production access, real secrets, login or a product decision need a person.",
+      "A stalled job is resumed by the autopilot itself as a new attempt (jobsInFlight shows attempt, cause and start time). Do not re-send the same work while one is in flight; wait for it.",
       "Re-read this brief after every step; it is recomputed from evidence each time.",
     ],
   };

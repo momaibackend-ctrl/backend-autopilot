@@ -10,7 +10,7 @@ For remote MCP, `401` means the bearer does not match either deployed token. Con
 
 Run `pnpm dev` and open `http://localhost:3000` (use `localhost`, not a different host alias). Confirm `http://127.0.0.1:4310/health` responds. Next proxies `/api/control/*`; the browser must never be configured with provider tokens. If the shell appears but data does not, inspect the redacted API log and use the Retry button.
 
-For the remote service, check GitHub Pages deployment, Supabase Function logs, and authenticated `control-api/health`. `401` means the Supabase session is absent or invalid; `403` means the operator or project membership is not allowlisted. Diagnose execution through its durable job/run and Actions URL. Invoke reconciliation after a cancelled or timed-out job that could not write its callback.
+For the remote service, check GitHub Pages deployment, Supabase Function logs, and authenticated `control-api/health`. `401` means the Supabase session is absent or invalid; `403` means the operator or project membership is not allowlisted. Diagnose execution through its durable job/run and Actions URL. Reconciliation resumes stalled work by itself every 15 minutes (ADR 028). `superadmin_project_brief` lists each resumed attempt with its cause and start time, and the audit records `execution.job.resumed`. A cause that keeps repeating is an environment problem to fix, not a reason to resend the work.
 
 Console navigation/content is persisted, not compiled into the UI. Diagnose it with `superadmin_screen_list`/`superadmin_screen_get`; restore a screen through `superadmin_screen_upsert` using a new operation ID. Only typed text/metric/JSON blocks are valid.
 
