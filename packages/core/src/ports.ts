@@ -1,4 +1,4 @@
-import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, CommandRecord, ConsoleScreen, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, CommandRecord, Mission, ConsoleScreen, ExecutionJob, FileChange, ImplementationPlan, MigrationMarker, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, TestReport, Transition } from '../../schemas/src/index.js';
 
 /**
  * One durable, atomic canonical-binding replacement. Both promotion and metadata rollback go
@@ -130,6 +130,8 @@ export interface StateStore {
   getActiveCanonicalRepository(projectId:string):Promise<CanonicalDevelopmentRepository|undefined>;
   listCanonicalRepositories(projectId:string):Promise<CanonicalDevelopmentRepository[]>;
   promoteCanonicalRepository(request:CanonicalPromotionRequest):Promise<{active:CanonicalDevelopmentRepository;displaced?:CanonicalDevelopmentRepository}>;
+  /** Product goals that outlive an agent session (ADR 026). A key is unique within its project. */
+  createMission(mission:Mission):Promise<Mission>; updateMission(mission:Mission):Promise<Mission>; getMission(projectId:string,id:string):Promise<Mission|undefined>; listMissions(projectId:string):Promise<Mission[]>;
 }
 
 export interface Clock { now():string; }

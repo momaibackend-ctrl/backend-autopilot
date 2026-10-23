@@ -1,6 +1,6 @@
 import { Conflict } from '../../core/src/errors.js';
 import type { ArtifactDigest, AuditDigest, CanonicalPromotionRequest, ExecutionJobSummary, StateStore } from '../../core/src/ports.js';
-import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
+import type { AdminOperation, Artifact, AuditEvent, CanonicalDevelopmentRepository, ConsoleScreen, ExecutionJob, Mission, Operator, Project, ProjectContext, ProjectMembership, Resource, Run, SystemSetting, Task, Transition } from '../../schemas/src/index.js';
 
 export class MemoryStateStore implements StateStore {
   private projects=new Map<string,Project>(); private resources=new Map<string,Resource>(); private contexts:ProjectContext[]=[];
@@ -10,6 +10,7 @@ export class MemoryStateStore implements StateStore {
   private settings=new Map<string,SystemSetting>(); private screens=new Map<string,ConsoleScreen>();
   private operators=new Map<string,Operator>(); private memberships=new Map<string,ProjectMembership>(); private operations=new Map<string,AdminOperation>();
   private canonical=new Map<string,CanonicalDevelopmentRepository>();
+  private missions=new Map<string,Mission>();
   async createProject(v:Project){if([...this.projects.values()].some(p=>p.slug===v.slug))throw new Conflict('Project slug already exists');this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async updateProject(v:Project){this.projects.set(v.id,structuredClone(v));return structuredClone(v);}
   async getProject(id:string){return clone(this.projects.get(id));} async listProjects(){return clones([...this.projects.values()]);}
@@ -63,6 +64,10 @@ export class MemoryStateStore implements StateStore {
   async saveAdminOperation(v:AdminOperation){this.operations.set(v.operationId,structuredClone(v));return structuredClone(v);} async getAdminOperation(id:string){return clone(this.operations.get(id));}
   async listAdminOperations(){return clones([...this.operations.values()]);}
   async listMigrationMarkers(){return [];}
+  async createMission(v:Mission){if([...this.missions.values()].some(m=>m.projectId===v.projectId&&m.key===v.key))throw new Conflict('Mission key already exists in this project',{key:v.key});this.missions.set(v.id,structuredClone(v));return structuredClone(v);}
+  async updateMission(v:Mission){this.missions.set(v.id,structuredClone(v));return structuredClone(v);}
+  async getMission(projectId:string,id:string){const value=this.missions.get(id);return value?.projectId===projectId?structuredClone(value):undefined;}
+  async listMissions(projectId:string){return clones([...this.missions.values()].filter(m=>m.projectId===projectId).sort(byCreatedAt));}
   /**
    * Restores an already-valid persisted binding without re-running the promotion invariant. Not
    * part of StateStore: it exists only so FileStateStore can rehydrate its snapshot, where the

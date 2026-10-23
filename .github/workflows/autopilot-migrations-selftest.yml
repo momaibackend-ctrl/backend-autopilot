@@ -8,6 +8,7 @@ on:
     paths:
       - packages/project-registry/migrations/**
       - scripts/migrate.ts
+      - packages/project-registry/src/postgres-store.ts
       - scripts/migrations-reapply-check.ts
       - .github/workflows/autopilot-migrations-selftest.yml
   workflow_dispatch:

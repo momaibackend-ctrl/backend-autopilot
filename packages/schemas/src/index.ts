@@ -81,6 +81,21 @@ export const secretRefSchema = z
     /^[A-Z][A-Z0-9_]{2,127}$/,
     "Secret references must be environment/vault-style names, never values",
   );
+// What a repository is FOR inside its product (ADR 026). A product can need several at once -- a
+// working implementation, a sandbox ahead of it, a port to another stack being built until it
+// matches -- and an agent that cannot tell them apart picks one by name and works on the wrong
+// thing. Stored in the resource document, so it needs no migration; absent on older rows.
+export const repositoryRoleSchema = z.enum([
+  // What is deployed and relied on.
+  "WORKING",
+  // Where work is assembled before it reaches WORKING.
+  "SANDBOX",
+  // A reimplementation (another language or stack) built until it matches a reference.
+  "PORT",
+  // Kept for recovery and reference; nothing is developed here.
+  "ARCHIVE",
+]);
+export type RepositoryRole = z.infer<typeof repositoryRoleSchema>;
 export const resourceSchema = z.object({
   resourceId: z.string().uuid(),
   type: resourceTypeSchema,
@@ -92,6 +107,9 @@ export const resourceSchema = z.object({
   status: z.enum(["ACTIVE", "DISABLED", "DELETED"]),
   secretRefs: z.array(secretRefSchema).default([]),
   createdAt: z.string().datetime(),
+  role: repositoryRoleSchema.optional(),
+  /** One line on why the repository exists, for whoever opens the project next. Data, not instruction. */
+  purpose: z.string().min(1).max(500).optional(),
 });
 export type Resource = z.infer<typeof resourceSchema>;
 export const resourceRegisterSchema = resourceSchema
@@ -1419,3 +1437,32 @@ export const confirmedDeleteSchema = z.object({
   ]),
   reason: z.string().min(8).max(500),
 });
+
+// A mission is a product goal that outlives any one agent session (ADR 026). Its progress is never
+// stored: it is derived each time from the evidence the control plane already holds, so a new
+// session that knows nothing else learns from one read what is done, what failed and why, and
+// which call comes next -- and cannot be told a goal is met that the evidence does not show.
+export const missionGoalSchema = z.discriminatedUnion("kind", [
+  // The target reproduces the reference's HTTP behaviour across every contract, proven by a
+  // parity run of both in throwaway environments (ADR 019).
+  z.object({ kind: z.literal("PARITY"), targetResourceId: z.string().uuid(), referenceResourceId: z.string().uuid() }),
+  // The listed tasks reach READY in the target.
+  z.object({ kind: z.literal("DELIVERY"), targetResourceId: z.string().uuid() }),
+]);
+export type MissionGoal = z.infer<typeof missionGoalSchema>;
+export const missionStatusSchema = z.enum(["ACTIVE", "ACHIEVED", "CANCELLED"]);
+export const missionKeySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/, "A mission key is 2-64 letters, digits, dots, dashes or underscores");
+export const missionSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  key: missionKeySchema,
+  title: z.string().min(1).max(200),
+  goal: missionGoalSchema,
+  taskIds: z.array(z.string().uuid()).max(200),
+  status: missionStatusSchema,
+  statusReason: z.string().min(1).max(500).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  achievedAt: z.string().datetime().optional(),
+});
+export type Mission = z.infer<typeof missionSchema>;
