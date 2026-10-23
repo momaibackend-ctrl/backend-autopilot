@@ -222,18 +222,33 @@ next call. A failing step also carries the latest failure and its diagnosis.
   repository's role:
   - `WORKING`: deployed and relied on;
   - `SANDBOX`: assembled before it reaches WORKING;
-  - `PORT`: a reimplementation built until it matches a reference;
+  - `CANDIDATE`: the next version of WORKING, built until it is proven to match a reference and then
+    moved into WORKING in its place;
   - `ARCHIVE`: kept for recovery.
 
   `ARCHIVE` is refused while an open mission still uses the repository.
 - `superadmin_mission_create({operationId, projectId, key, title, goal, taskIds})` opens a mission.
   The goal is one of:
-  - `{kind:"PARITY", targetResourceId, referenceResourceId}`: proven by an HTTP E2E comparison run
-    at the target's current head;
+  - `{kind:"PARITY", targetResourceId, referenceResourceId, referenceRef?}`: proven by an HTTP E2E
+    comparison run at the target's current head. The reference may belong to another project of the
+    same product, and `referenceRef` pins it to a branch, tag or commit;
   - `{kind:"DELIVERY", targetResourceId}`: the attached tasks reach READY.
 - `superadmin_mission_update({operationId, projectId, missionId, title?, addTaskIds?,
-  removeTaskIds?, status?, reason?})` changes a mission. `ACHIEVED` is accepted only when every step
+  removeTaskIds?, referenceRef?, status?, reason?})` changes a mission. `referenceRef: null` unpins the
+  reference. `ACHIEVED` is accepted only when every step
   is `DONE` from evidence; the refusal lists what remains.
+
+### Products
+
+`superadmin_project_product_set({operationId, projectId, product})` links a project into a product, or
+unlinks it with `null` (ADR 027). It writes only the project document; no resource, task or history
+moves. Projects of one product:
+
+- see each other's repositories in the brief, under `productRepositories`;
+- may use them as the read-only comparison reference of a PARITY mission and of
+  `superadmin_http_e2e_run` `counterpart`.
+
+Development, pull requests and every other write stay inside each repository's own project.
 
 ## Capabilities and refusals
 

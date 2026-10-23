@@ -21,7 +21,7 @@ export const repositoryRoleSetInputSchema = {
   operationId,
   projectId: uuid,
   resourceId: uuid.describe("A registered GITHUB_REPOSITORY resource of this project"),
-  role: repositoryRoleSchema.describe("WORKING: deployed and relied on. SANDBOX: where work is assembled before it reaches WORKING. PORT: a reimplementation built until it matches a reference. ARCHIVE: kept for recovery; nothing is developed there"),
+  role: repositoryRoleSchema.describe("WORKING: deployed and relied on. SANDBOX: where work is assembled before it reaches WORKING. CANDIDATE: the next version of WORKING (e.g. a reimplementation on another stack), built until it is proven to match a reference and then moved into WORKING in its place. ARCHIVE: kept for recovery; nothing is developed there"),
   purpose: z.string().min(1).max(500).optional().describe("One line on why the repository exists, shown to every later session"),
 };
 export const missionCreateInputSchema = {
@@ -29,7 +29,7 @@ export const missionCreateInputSchema = {
   projectId: uuid,
   key: missionKeySchema.describe("Short stable name, unique in the project, e.g. JAVA-PARITY"),
   title: z.string().min(1).max(200),
-  goal: missionGoalSchema.describe("PARITY: the target answers every scenario of every contract as the reference does, proven by a comparison run. DELIVERY: the attached tasks reach READY in the target"),
+  goal: missionGoalSchema.describe("PARITY: the target answers every scenario of every contract as the reference does, proven by a comparison run; the reference may be a repository of another project of the same product (superadmin_project_product_set), and referenceRef pins it to a branch, tag or commit. DELIVERY: the attached tasks reach READY in the target"),
   taskIds: z.array(uuid).max(200).default([]).describe("Tasks that carry the work; verification is recorded against them"),
 };
 export const missionUpdateInputSchema = {
@@ -39,13 +39,19 @@ export const missionUpdateInputSchema = {
   title: z.string().min(1).max(200).optional(),
   addTaskIds: z.array(uuid).max(200).optional(),
   removeTaskIds: z.array(uuid).max(200).optional(),
+  referenceRef: z.string().min(1).max(255).nullable().optional().describe("PARITY only: pin the reference to this branch, tag or commit; null unpins it"),
   status: z.enum(["ACTIVE", "ACHIEVED", "CANCELLED"]).optional().describe("ACHIEVED is accepted only when the brief shows every step DONE from evidence"),
   reason: reason.optional(),
 };
 export const projectBriefInputSchema = { projectId: uuid };
+export const projectProductSetInputSchema = {
+  operationId,
+  projectId: uuid,
+  product: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).nullable().describe("Lower-case product name shared by every project of one product, e.g. momna; null unlinks the project"),
+};
 
 export const projectBriefToolDescription =
-  "Read-only. START EVERY SESSION HERE. Where the project stands, from the control plane's own records rather than any session's memory: each registered repository with its role (WORKING, SANDBOX, PORT, ARCHIVE), purpose and the missions it serves; every mission with its steps derived from evidence (DONE, RUNNING, REMAINING, FAILING), the latest failure with its diagnosis, and the exact next call with arguments; open tasks outside missions; jobs in flight; and one overall nextAction. Continue with nextAction instead of re-exploring the project, its deployments or databases.";
+  "Read-only. START EVERY SESSION HERE. Where the project stands, from the control plane's own records rather than any session's memory: each registered repository with its role (WORKING, SANDBOX, CANDIDATE, ARCHIVE), purpose and the missions it serves, plus the repositories of the other projects of the same product; every mission with its steps derived from evidence (DONE, RUNNING, REMAINING, FAILING), the latest failure with its diagnosis, and the exact next call with arguments; open tasks outside missions; jobs in flight; and one overall nextAction. Continue with nextAction instead of re-exploring the project, its deployments or databases.";
 
 const runningJob = new Set(["QUEUED", "DISPATCHING", "DISPATCHED", "CLAIMED", "RUNNING"]);
 /** How many of the target's newest HTTP E2E jobs are opened to find the latest comparison. */
@@ -57,15 +63,29 @@ export interface BriefDependencies {
   repositories?: GitRepositoryProvider;
 }
 
-async function latestParityRun(deps: BriefDependencies, projectId: string, targetId: string, referenceId: string): Promise<ParityRunView | undefined> {
+/**
+ * A repository a mission may use as its reference: one of the project's own, or one of another
+ * project linked into the same product (ADR 027). Anything else reads as absent.
+ */
+export async function productRepository(store: StateStore, project: Pick<Project, "id" | "product">, resourceId: string): Promise<Resource | undefined> {
+  const resource = await store.getResource(resourceId);
+  if (!resource || resource.type !== "GITHUB_REPOSITORY") return undefined;
+  if (resource.projectId === project.id) return resource;
+  if (!project.product) return undefined;
+  return (await store.getProject(resource.projectId))?.product === project.product ? resource : undefined;
+}
+
+async function latestParityRun(deps: BriefDependencies, projectId: string, targetId: string, referenceId: string, referenceRef: string | undefined): Promise<ParityRunView | undefined> {
   const summaries = (await deps.store.listExecutionJobSummaries(projectId))
     .filter((job) => job.kind === "HTTP_E2E" && job.resourceId === targetId)
     .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt))
     .slice(0, PARITY_LOOKBACK);
   for (const summary of summaries) {
     const job = await deps.store.getExecutionJob(projectId, summary.id);
-    const counterpart = (job?.payload as { counterpart?: { repositoryResourceId?: string } } | undefined)?.counterpart;
+    const counterpart = (job?.payload as { counterpart?: { repositoryResourceId?: string; requestedRef?: string } } | undefined)?.counterpart;
     if (!job || counterpart?.repositoryResourceId !== referenceId) continue;
+    // A pinned reference counts only runs against exactly that pin.
+    if (referenceRef !== undefined && counterpart.requestedRef !== referenceRef) continue;
     const read = await readHttpE2eJob(deps.store, projectId, job.id);
     const evidence = read.evidence;
     const coverage = evidence?.coverage as { coveredOperations?: number; totalOperations?: number } | undefined;
@@ -99,10 +119,10 @@ async function defaultHead(deps: BriefDependencies, resource: Resource | undefin
   }
 }
 
-export async function missionEvidence(deps: BriefDependencies, mission: Mission, resources: Resource[], tasks: Task[]): Promise<MissionEvidence> {
+export async function missionEvidence(deps: BriefDependencies, project: Pick<Project, "id" | "product">, mission: Mission, resources: Resource[], tasks: Task[]): Promise<MissionEvidence> {
   const byId = new Map(resources.map((resource) => [resource.resourceId, resource]));
   const target = byId.get(mission.goal.targetResourceId);
-  const reference = mission.goal.kind === "PARITY" ? byId.get(mission.goal.referenceResourceId) : undefined;
+  const reference = mission.goal.kind === "PARITY" ? (byId.get(mission.goal.referenceResourceId) ?? (await productRepository(deps.store, project, mission.goal.referenceResourceId))) : undefined;
   const taskById = new Map(tasks.filter((task) => !task.deletedAt).map((task) => [task.id, task]));
   const attached = mission.taskIds.map((id) => taskById.get(id)).filter((task): task is Task => Boolean(task));
   const views = await Promise.all(
@@ -115,7 +135,7 @@ export async function missionEvidence(deps: BriefDependencies, mission: Mission,
       };
     }),
   );
-  const parity = mission.goal.kind === "PARITY" ? await latestParityRun(deps, mission.projectId, mission.goal.targetResourceId, mission.goal.referenceResourceId) : undefined;
+  const parity = mission.goal.kind === "PARITY" ? await latestParityRun(deps, mission.projectId, mission.goal.targetResourceId, mission.goal.referenceResourceId, mission.goal.referenceRef) : undefined;
   // The head matters only to tell whether a PROVEN comparison still covers the target.
   const targetHead = parity?.verdict === "PROVEN" ? await defaultHead(deps, target) : undefined;
   return {
@@ -129,7 +149,12 @@ export async function missionEvidence(deps: BriefDependencies, mission: Mission,
 }
 
 export interface ProjectBrief {
-  project: Pick<Project, "id" | "name" | "slug" | "environment" | "autonomyMode">;
+  project: Pick<Project, "id" | "name" | "slug" | "environment" | "autonomyMode" | "product">;
+  /**
+   * The repositories of the other projects of the same product, read-only from here: usable as a
+   * mission's comparison reference, developed only from their own project.
+   */
+  productRepositories: Array<{ projectId: string; projectName: string; resourceId: string; repository: string; role?: Resource["role"]; purpose?: string; status: Resource["status"]; missions: Array<{ missionKey: string; as: "TARGET" | "REFERENCE" }> }>;
   repositories: Array<{
     resourceId: string;
     repository: string;
@@ -170,7 +195,11 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
     deps.store.listExecutionJobSummaries(projectId, undefined, [...runningJob]),
   ]);
   const repositories = resources.filter((resource) => resource.type === "GITHUB_REPOSITORY" && resource.status !== "DELETED");
-  const name = new Map(resources.map((resource) => [resource.resourceId, resource.externalReference]));
+  const siblings = project.product ? (await deps.store.listProjects()).filter((other) => other.id !== projectId && other.product === project.product && !other.deletedAt) : [];
+  const siblingRepositories = (
+    await Promise.all(siblings.map(async (other) => (await deps.store.listResources(other.id)).filter((resource) => resource.type === "GITHUB_REPOSITORY" && resource.status !== "DELETED").map((resource) => ({ project: other, resource }))))
+  ).flat();
+  const name = new Map([...resources, ...siblingRepositories.map((value) => value.resource)].map((resource) => [resource.resourceId, resource.externalReference]));
   const taskKey = new Map(tasks.map((task) => [task.id, task.externalKey]));
   const active = missions.filter((mission) => mission.status === "ACTIVE");
 
@@ -189,7 +218,7 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
       ...(mission.statusReason ? { statusReason: mission.statusReason } : {}),
       ...(mission.achievedAt ? { achievedAt: mission.achievedAt } : {}),
       // Progress is derived for open missions only; a closed one keeps the verdict it closed with.
-      ...(mission.status === "ACTIVE" ? { progress: missionProgress(mission, await missionEvidence(deps, mission, resources, tasks)) } : {}),
+      ...(mission.status === "ACTIVE" ? { progress: missionProgress(mission, await missionEvidence(deps, project, mission, resources, tasks)) } : {}),
     })),
   );
 
@@ -211,16 +240,26 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
       .map((resource) => ({
         tool: "superadmin_repository_role_set",
         arguments: { projectId, resourceId: resource.resourceId },
-        why: `${resource.externalReference} has no role. Say what it is (WORKING, SANDBOX, PORT or ARCHIVE) so no session has to guess from its name.`,
+        why: `${resource.externalReference} has no role. Say what it is (WORKING, SANDBOX, CANDIDATE or ARCHIVE) so no session has to guess from its name.`,
       })),
     ...(active.length
       ? []
-      : [{ tool: "superadmin_mission_create", arguments: { projectId }, why: "No mission is open. Record the goal (for a port: PARITY of the PORT against its reference) so its progress survives every session." }]),
+      : [{ tool: "superadmin_mission_create", arguments: { projectId }, why: "No mission is open. Record the goal (for a new version: PARITY of the CANDIDATE against the WORKING reference) so its progress survives every session." }]),
   ];
   const firstMission = missionViews.find((view) => view.status === "ACTIVE" && view.progress?.nextAction);
 
   return {
-    project: { id: project.id, name: project.name, slug: project.slug, environment: project.environment, autonomyMode: project.autonomyMode },
+    project: { id: project.id, name: project.name, slug: project.slug, environment: project.environment, autonomyMode: project.autonomyMode, ...(project.product ? { product: project.product } : {}) },
+    productRepositories: siblingRepositories.map(({ project: other, resource }) => ({
+      projectId: other.id,
+      projectName: other.name,
+      resourceId: resource.resourceId,
+      repository: resource.externalReference,
+      ...(resource.role ? { role: resource.role } : {}),
+      ...(resource.purpose ? { purpose: resource.purpose } : {}),
+      status: resource.status,
+      missions: servedBy(resource.resourceId),
+    })),
     repositories: repositories.map((resource) => ({
       resourceId: resource.resourceId,
       repository: resource.externalReference,
@@ -238,7 +277,7 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
     nextAction: firstMission?.progress?.nextAction ?? setup[0] ?? null,
     rules: [
       "Work from this brief and its nextAction. Do not rediscover the project from deployments, staging URLs or databases: verification runs in throwaway environments the autopilot builds itself.",
-      "Repositories are named by role, not by guess: develop in the mission's target and compare against its reference. ARCHIVE is kept for recovery; nothing is developed there.",
+      "Repositories are named by role, not by guess: develop in the mission's target and compare against its reference. ARCHIVE is kept for recovery; nothing is developed there. Repositories listed under productRepositories belong to other projects of the same product: compare against them from here, develop in them only from their own project.",
       "A failure is a cause to fix, not a stop: read its diagnosis, fix that cause, run again. Only production access, real secrets, login or a product decision need a person.",
       "Re-read this brief after every step; it is recomputed from evidence each time.",
     ],

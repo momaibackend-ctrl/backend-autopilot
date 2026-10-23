@@ -123,12 +123,13 @@ function parityStep(mission: Mission, evidence: MissionEvidence): MissionStep {
       ...(taskId ? { taskId } : {}),
       repositoryResourceId: mission.goal.targetResourceId,
       scenarioSource: { kind: "REPOSITORY" },
-      counterpart: { repositoryResourceId: mission.goal.referenceResourceId, label: "reference" },
+      counterpart: { repositoryResourceId: mission.goal.referenceResourceId, ...(mission.goal.referenceRef ? { ref: mission.goal.referenceRef } : {}), label: "reference" },
     },
     why: "Builds and starts both implementations in throwaway environments, runs every scenario against every contract, and compares each response.",
   };
   const parity = evidence.parity;
-  if (!parity) return { id: "PARITY", status: "REMAINING", detail: "The target has never been compared with the reference.", next: run };
+  const pinned = mission.goal.referenceRef ? ` at ${mission.goal.referenceRef}` : "";
+  if (!parity) return { id: "PARITY", status: "REMAINING", detail: `The target has never been compared with the reference${pinned}.`, next: run };
   const read: NextCall = { tool: "superadmin_http_e2e_get", arguments: { projectId, jobId: parity.jobId }, why: "" };
   if (runningJob.has(parity.status))
     return { id: "PARITY", status: "RUNNING", detail: `Comparison at ${short(parity.commitSha)} is ${parity.status}.`, next: { ...read, why: "Read the verdict when the run finishes; nothing needs to be sent meanwhile." } };

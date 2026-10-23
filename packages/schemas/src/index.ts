@@ -42,6 +42,11 @@ export const projectSchema = z.object({
   status: z.enum(["ACTIVE", "SUSPENDED", "ARCHIVED"]),
   workspacePath: z.string(),
   repository: repositoryIdentitySchema.optional(),
+  /**
+   * The product this project belongs to (ADR 027). Projects of one product may use each other's
+   * repositories as read-only comparison references; nothing else crosses the boundary.
+   */
+  product: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   deletedAt: z.string().datetime().optional(),
@@ -90,8 +95,9 @@ export const repositoryRoleSchema = z.enum([
   "WORKING",
   // Where work is assembled before it reaches WORKING.
   "SANDBOX",
-  // A reimplementation (another language or stack) built until it matches a reference.
-  "PORT",
+  // The next version of WORKING -- for example a reimplementation on another stack -- built until it
+  // is proven to match a reference, then moved into WORKING in its place.
+  "CANDIDATE",
   // Kept for recovery and reference; nothing is developed here.
   "ARCHIVE",
 ]);
@@ -1445,7 +1451,10 @@ export const confirmedDeleteSchema = z.object({
 export const missionGoalSchema = z.discriminatedUnion("kind", [
   // The target reproduces the reference's HTTP behaviour across every contract, proven by a
   // parity run of both in throwaway environments (ADR 019).
-  z.object({ kind: z.literal("PARITY"), targetResourceId: z.string().uuid(), referenceResourceId: z.string().uuid() }),
+  // The reference may belong to another project of the same product (ADR 027). referenceRef pins it
+  // to a branch, tag or commit -- needed once the reference repository itself moves on, e.g. after
+  // the target replaced it, when comparing against its head would compare the target with itself.
+  z.object({ kind: z.literal("PARITY"), targetResourceId: z.string().uuid(), referenceResourceId: z.string().uuid(), referenceRef: z.string().min(1).max(255).optional() }),
   // The listed tasks reach READY in the target.
   z.object({ kind: z.literal("DELIVERY"), targetResourceId: z.string().uuid() }),
 ]);
