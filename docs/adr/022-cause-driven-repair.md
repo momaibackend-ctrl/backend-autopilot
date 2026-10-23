@@ -34,3 +34,12 @@ The project's goal is to solve the task: find the cause and fix it, not block it
 - A task is never stopped because it needed a fourth attempt. It is told, with evidence, whether its repairs are reaching the cause.
 - A stagnating task stays visible, in IMPLEMENTING with stagnation guidance in `awaitingCaller` and readiness, instead of disappearing into BLOCKED.
 - The test-failure fingerprint is coarse: the failing suites, not individual test names. It can call two different failures in the same suite "the same cause". The only consequence of that is a stronger hint, never a block, so the error is cheap. A finer fingerprint can come from structured test output later.
+
+## Amendment: the failing tests are named, and a task runs one job at a time
+
+On a real Kotlin task the agent saw "473 tests completed, 1 failed" and an exit code. The name of the one failing test, an architecture rule, was buried in 4 MB of DEBUG output. The agent sent three variations of the same change and stalled on the stagnation guidance, because nothing told it what to look at. It had also sent change sets back to back, so two jobs built the same branch at once and one lost the push.
+
+- **The Gradle test report carries `failedTests`.** These are the failing tests by class and name, with the first line of the message, at most 50. They are read from the JUnit XML results the build writes, with the console transcript as the fallback.
+- **The repair guidance names them**, and `readiness.repair.latestFailedTests` carries them.
+- **The fingerprint includes the failing test names.** "The same cause" now means the same tests, not just the same suite.
+- **A task accepts one job at a time.** `enqueueImplementation` and `enqueueRebase` refuse a new job while one is in flight (queued, dispatched, claimed, running, or a resumed attempt waiting for its back-off). The `CONFLICT` names the job to wait for. Replaying an operationId stays status-only.

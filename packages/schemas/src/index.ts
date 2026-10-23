@@ -429,6 +429,8 @@ export const testReportSchema = z.object({
   ),
   /** Present whenever the plan's verification profile required a generative layer. */
   propertyBased: propertyBasedReportSchema.optional(),
+  /** The failing tests by name, with the first line of why; bounded. Absent on older reports. */
+  failedTests: z.array(z.object({ test: z.string(), message: z.string().optional() })).max(50).optional(),
   finishedAt: z.string().datetime(),
 });
 export type TestReport = z.infer<typeof testReportSchema>;

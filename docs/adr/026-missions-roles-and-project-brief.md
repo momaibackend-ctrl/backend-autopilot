@@ -74,3 +74,5 @@ Such a failure is now recognised by `REFERENCE_NOT_PROVEN` or by a diagnosis in 
 - **Otherwise:** fix it in the reference's own repository.
 
 The next call is a task in that repository's project. When the mission pins its reference, the step also says to move the pin once the fix is released. The brief's rules tell agents not to change the target for a reference failure.
+
+When the mission already carries an open task besides its first one, that task is the reference work and becomes the next call. The first task carries the comparison itself. A new task is only proposed when no such open task exists.
