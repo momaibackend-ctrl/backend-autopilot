@@ -91,3 +91,18 @@ describe("a reference that fails by itself", () => {
     expect(progress.nextAction?.why).toContain("move referenceRef to the fixed commit");
   });
 });
+
+describe("a failing reference with its fix already attached", () => {
+  it("continues the attached open task instead of asking for a new one", () => {
+    const evidence = {
+      ...both,
+      referenceFix: { projectId, resourceId: "s", repository: "acme/kotlin-sandbox", via: "SANDBOX" as const },
+      missingTaskIds: [],
+      parity: { jobId: "j9", status: "SUCCEEDED", commitSha: sha, verdict: "NOT_PROVEN" as const, failureClass: "REFERENCE_NOT_PROVEN", failureMessage: "SCENARIO_FAILED", diagnosis: { area: "REFERENCE" } },
+    };
+    const withFix = missionProgress(parity, { ...evidence, tasks: [task("00000000-0000-4000-8000-00000000000a", "READY"), task("00000000-0000-4000-8000-00000000000b", "INGESTED", { tool: "superadmin_task_analyze", why: "snapshot" })] });
+    expect(withFix.nextAction).toMatchObject({ tool: "superadmin_task_analyze", arguments: { taskId: "00000000-0000-4000-8000-00000000000b" }, why: expect.stringContaining("The reference must pass before the comparison can") });
+    const allReady = missionProgress(parity, { ...evidence, tasks: [task("00000000-0000-4000-8000-00000000000a", "READY")] });
+    expect(allReady.nextAction).toMatchObject({ tool: "superadmin_task_create" });
+  });
+});

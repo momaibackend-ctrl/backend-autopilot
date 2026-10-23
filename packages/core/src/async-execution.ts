@@ -2,7 +2,7 @@ import { AuditLog } from '../../audit/src/index.js';
 import { PolicyEngine } from '../../policy-engine/src/index.js';
 import { executeInputSchema, PlatformVersions, taskRebaseInputSchema, type ExecutionJob, type Run, type Task } from '../../schemas/src/index.js';
 import { WorkflowEngine } from '../../workflow-engine/src/index.js';
-import { ArchitectureViolation, DependencyBlocked, ExecutionFailed, InvalidState, NotFound } from './errors.js';
+import { ArchitectureViolation, Conflict, DependencyBlocked, ExecutionFailed, InvalidState, NotFound } from './errors.js';
 import type { Clock, IdGenerator, StateStore } from './ports.js';
 import { systemClock, uuidGenerator } from './ports.js';
 import { deterministicTaskBranch } from './branch.js';
@@ -10,6 +10,8 @@ import { detectHardcodedSecret } from '../../secret-scanner/src/index.js';
 import { requireProjectGithubRepository } from './repository-guard.js';
 import { resolveDevelopmentTarget } from '../../canonical-repository/src/target-resolution.js';
 import type { GitRepositoryProvider } from '../../canonical-repository/src/ports.js';
+
+const inFlightStatuses=['QUEUED','DISPATCHING','DISPATCHED','CLAIMED','RUNNING'] as const;
 
 export interface ExecutionJobDispatcher {
   dispatch(job:ExecutionJob):Promise<{workflowRunId?:string;workflowRunUrl?:string}>;
@@ -60,6 +62,7 @@ export class AsyncExecutionCoordinator {
       return executionResult(existing,existingRun,true);
     }
     if(!['PLANNED','IMPLEMENTING','VERIFYING'].includes(task.state))throw new InvalidState('Task must be PLANNED, IMPLEMENTING or VERIFYING before remote execution');
+    await this.requireNoJobInFlight(project.id,task.id);
     const target=await this.resolveTarget(project.id,task.id,resourceId);
     const targetResourceId=target.resourceId;
     await this.policy.authorize({project,action:'EXECUTE',resourceId:targetResourceId,requiredPermission:'WRITE',actor});
@@ -114,6 +117,7 @@ export class AsyncExecutionCoordinator {
     const existing=await this.store.findExecutionJobByOperation(project.id,data.operationId);
     if(existing){const existingRun=existing.runId?await this.store.getRun(project.id,existing.runId):undefined;return executionResult(existing,existingRun,true);}
     if(!['READY','IMPLEMENTING','BLOCKED'].includes(task.state))throw new InvalidState('Only a READY task (or one already being re-verified, or blocked awaiting conflict resolution) can be transferred onto a newer base');
+    await this.requireNoJobInFlight(project.id,task.id);
     await this.policy.authorize({project,action:'EXECUTE',resourceId,requiredPermission:'WRITE',actor});
     const resource=await requireProjectGithubRepository(this.store,project.id,resourceId);
     for(const resolution of data.resolutions)assertSafeChange(resolution.path,resolution.content);
@@ -136,6 +140,16 @@ export class AsyncExecutionCoordinator {
       await this.store.updateRun({...run,status:'FAILED',finishedAt:this.clock.now()});
       throw new ExecutionFailed('Rebase dispatch failed; no progress is being reported',{jobId:job.id,runId:run.id,blockingReport:{code:'WRITE_DISPATCH_UNAVAILABLE',reason,remediation:'Restore the configured execution dispatcher, then use a fresh operationId.'}});
     }
+  }
+  /**
+   * One job per task at a time. Two jobs on one task build on the same branch at once: one of them
+   * loses the push ("Git push failed") and both spend a runner -- on a real port an agent sent three
+   * change sets in a row and had to cancel the duplicates by hand. A resumed attempt waiting for its
+   * back-off counts as in flight too.
+   */
+  private async requireNoJobInFlight(projectId:string,taskId:string){
+    const active=await this.store.listExecutionJobSummaries(projectId,taskId,inFlightStatuses);
+    if(active.length)throw new Conflict('The task already has a job in flight; wait for its result before sending the next change set',{jobIds:active.map(job=>job.id),remediation:'Read it with superadmin_job_get or superadmin_task_readiness and send the next change set when it has finished; cancel it with superadmin_job_cancel only if it is genuinely obsolete.'});
   }
   async get(projectId:string,jobId:string){const job=await this.store.getExecutionJob(projectId,jobId);if(!job)throw new NotFound('Execution job not found');return job;}
   list(projectId:string,taskId?:string){return this.store.listExecutionJobs(projectId,taskId);}

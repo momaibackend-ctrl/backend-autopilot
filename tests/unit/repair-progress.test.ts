@@ -78,3 +78,18 @@ describe("generative invariants", () => {
     }
   });
 });
+
+describe("failing tests named in the report", () => {
+  const named = (tests: string[]): TestReport => ({ ...report([["UNIT", 1]]), failedTests: tests.map((test) => ({ test, message: `${test} broke` })) });
+
+  it("tells the repairing agent which tests fail and why", () => {
+    const progress = repairProgress([artifact("TEST_REPORT", named(["ArchTest > http imports only contracts()"]))]);
+    expect(progress.latestFailedTests).toEqual([{ test: "ArchTest > http imports only contracts()", message: "ArchTest > http imports only contracts() broke" }]);
+    expect(progress.guidance).toContain("Failing: ArchTest > http imports only contracts() (ArchTest > http imports only contracts() broke).");
+  });
+
+  it("counts a different failing test in the same suite as a different cause", () => {
+    expect(testFailureFingerprint(named(["A > a()"]))).not.toBe(testFailureFingerprint(named(["B > b()"])));
+    expect(testFailureFingerprint(named(["A > a()", "B > b()"]))).toBe(testFailureFingerprint(named(["B > b()", "A > a()"])));
+  });
+});

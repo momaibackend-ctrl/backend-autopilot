@@ -238,6 +238,10 @@ next call. A failing step also carries the latest failure and its diagnosis.
   reference. `ACHIEVED` is accepted only when every step
   is `DONE` from evidence; the refusal lists what remains.
 
+### One job per task
+
+`superadmin_task_execute` and `superadmin_job_create` refuse a new change set while the task has a job in flight. The `CONFLICT` names the job: wait for its result with `superadmin_task_readiness` or `superadmin_job_get` (ADR 022). A failed test run reports the failing tests by name in its TEST_REPORT (`failedTests`) and in `readiness.repair.latestFailedTests`.
+
 ### Stalled work
 
 The scheduled reconciler never parks a task because its job stalled (ADR 028). A stalled job is one that was never started, lost its runner, or ended in GitHub without a callback. The reconciler ends it with a coded cause, then resumes the same work as a new attempt with `operationId` `<original>#resume-<n>`. The task keeps its state.

@@ -84,11 +84,13 @@ describe("development target resolution", () => {
   });
 
   it("keeps an already-executing task on its pinned repository after a later promotion", async () => {
-    const { coordinator, project, legacy, canonical, promote, plannedTask, dispatched, changes } = await fixture();
+    const { store, coordinator, project, legacy, canonical, promote, plannedTask, dispatched, changes } = await fixture();
     const task = await plannedTask("EXISTING-1");
     // The task starts before any canonical binding exists, pinned to the old sandbox repository.
     await coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "existing-exec-1", changes }, legacy.resourceId);
     expect(dispatched.at(-1)?.resourceId).toBe(legacy.resourceId);
+    // The first job finishes before the next change set is sent: one job per task at a time.
+    await store.updateExecutionJob({ ...dispatched.at(-1)!, status: "FAILED", finishedAt: new Date().toISOString() });
 
     await promote(canonical.resourceId, "canonical-target-4", canonicalHead);
 
@@ -97,6 +99,20 @@ describe("development target resolution", () => {
     await coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "existing-exec-2", changes }, undefined);
     expect(dispatched.at(-1)?.resourceId).toBe(legacy.resourceId);
     expect(dispatched.at(-1)?.baseCommitSha).toBeUndefined();
+  });
+
+  it("accepts one job per task at a time and names the one in flight", async () => {
+    const { store, coordinator, project, legacy, plannedTask, dispatched, changes } = await fixture();
+    const task = await plannedTask("ONE-AT-A-TIME");
+    await coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "one-at-a-time-1", changes }, legacy.resourceId);
+    const first = dispatched.at(-1)!;
+    await expect(coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "one-at-a-time-2", changes }, legacy.resourceId)).rejects.toMatchObject({ code: "CONFLICT", details: { jobIds: [first.id], remediation: expect.stringContaining("superadmin_job_get") } });
+    expect(dispatched).toHaveLength(1);
+    // Replaying the first operation is still status-only, never refused.
+    await expect(coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "one-at-a-time-1", changes }, legacy.resourceId)).resolves.toMatchObject({ idempotentReplay: true });
+    await store.updateExecutionJob({ ...first, status: "SUCCEEDED", finishedAt: new Date().toISOString() });
+    await coordinator.enqueueImplementation({ projectId: project.id, taskId: task.id, operationId: "one-at-a-time-2", changes }, legacy.resourceId);
+    expect(dispatched).toHaveLength(2);
   });
 
   it("refuses to move a pinned task onto a different repository", () => {

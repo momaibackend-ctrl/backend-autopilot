@@ -33,7 +33,9 @@ export function testFailureFingerprint(report: TestReport): string | undefined {
   // A failing generative suite is the same cause while it fails on the same replay seeds.
   const seeds = report.propertyBased?.status === "FAIL" && Array.isArray(report.propertyBased.replaySeeds) ? report.propertyBased.replaySeeds : [];
   const counterexample = report.propertyBased?.status === "FAIL" ? ["property", ...[...seeds].sort()] : [];
-  return hash(["tests", ...failed, ...counterexample].join("|"));
+  // The failing test names, when the report has them, make "the same cause" mean the same tests.
+  const tests = Array.isArray(report.failedTests) ? report.failedTests.map((value) => value?.test).filter((value): value is string => typeof value === "string").sort() : [];
+  return hash(["tests", ...failed, ...counterexample, ...tests].join("|"));
 }
 
 export interface RepairProgress {
@@ -45,6 +47,8 @@ export interface RepairProgress {
   latestFingerprint?: string;
   /** What to do next, phrased for the agent sending the repair. */
   guidance?: string;
+  /** The tests that failed in the latest failed run, by name, when its report named them. */
+  latestFailedTests?: Array<{ test: string; message?: string | undefined }>;
 }
 
 /**
@@ -53,32 +57,42 @@ export interface RepairProgress {
  */
 export function repairProgress(artifacts: Artifact[]): RepairProgress {
   const fingerprints: string[] = [];
+  let latestFailedTests: RepairProgress["latestFailedTests"];
   const ordered = [...artifacts].sort((left, right) => String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? "")));
   for (const artifact of ordered) {
     if (artifact.status !== "AVAILABLE") continue;
     if (artifact.kind === "TEST_REPORT") {
-      const fingerprint = testFailureFingerprint(artifact.content as TestReport);
-      if (fingerprint) fingerprints.push(fingerprint);
+      const report = artifact.content as TestReport;
+      const fingerprint = testFailureFingerprint(report);
+      if (fingerprint) {
+        fingerprints.push(fingerprint);
+        latestFailedTests = Array.isArray(report.failedTests) && report.failedTests.length ? report.failedTests.slice(0, 10) : undefined;
+      }
     } else if (artifact.kind === "VALIDATION_REPORT") {
       const content = artifact.content as { suite?: string; verdict?: string; diagnosis?: { fingerprint?: string } } | undefined;
-      if (content?.suite === "HTTP_E2E" && content.verdict === "NOT_PROVEN" && content.diagnosis?.fingerprint) fingerprints.push(`e2e:${content.diagnosis.fingerprint}`);
+      if (content?.suite === "HTTP_E2E" && content.verdict === "NOT_PROVEN" && content.diagnosis?.fingerprint) {
+        fingerprints.push(`e2e:${content.diagnosis.fingerprint}`);
+        latestFailedTests = undefined;
+      }
     }
   }
   const latest = fingerprints.at(-1);
   let consecutive = 0;
   for (let index = fingerprints.length - 1; index >= 0 && fingerprints[index] === latest; index -= 1) consecutive += 1;
   const stagnating = consecutive >= STAGNATION_THRESHOLD;
+  const named = latestFailedTests?.length ? ` Failing: ${latestFailedTests.map((value) => (value.message ? `${value.test} (${value.message})` : value.test)).join("; ")}.` : "";
   return {
     failures: fingerprints.length,
+    ...(latestFailedTests?.length ? { latestFailedTests } : {}),
     consecutiveSameCause: consecutive,
     stagnating,
     ...(latest ? { latestFingerprint: latest } : {}),
     ...(stagnating
       ? {
-          guidance: `The same cause has failed ${consecutive} attempts in a row, so the last fixes did not reach it. Do not send another variation of the same change: read the full failing output (artifact_read with tail:true, superadmin_http_e2e_get for its diagnosis and logs), reproduce the failure in the smallest possible case, check the neighbouring layer it may come from (contract, scenario, environment manifest, migration, dependency version), and only then send a repair based on the new hypothesis.`,
+          guidance: `The same cause has failed ${consecutive} attempts in a row, so the last fixes did not reach it. Do not send another variation of the same change: read the full failing output (artifact_read with tail:true, superadmin_http_e2e_get for its diagnosis and logs), reproduce the failure in the smallest possible case, check the neighbouring layer it may come from (contract, scenario, environment manifest, migration, dependency version), and only then send a repair based on the new hypothesis.${named}`,
         }
       : latest
-        ? { guidance: consecutive > 1 ? `The latest cause repeated ${consecutive} times; make sure the next repair targets it directly.` : "The latest repair changed the cause: that is progress. Fix the new cause the same way." }
+        ? { guidance: `${consecutive > 1 ? `The latest cause repeated ${consecutive} times; make sure the next repair targets it directly.` : "The latest repair changed the cause: that is progress. Fix the new cause the same way."}${named}` }
         : {}),
   };
 }

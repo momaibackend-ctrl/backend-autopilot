@@ -22,6 +22,8 @@ export interface MissionStep {
   status: MissionStepStatus;
   detail: string;
   next?: NextCall;
+  /** Set when the comparison failed because the reference itself does not pass. */
+  blockedBy?: "REFERENCE";
 }
 
 export interface MissionTaskView {
@@ -167,6 +169,7 @@ function parityStep(mission: Mission, evidence: MissionEvidence): MissionStep {
     return {
       id: "PARITY",
       status: "FAILING",
+      blockedBy: "REFERENCE",
       detail: `The reference itself does not pass at this comparison (${short(parity.commitSha)} of the target): ${parity.failureMessage ?? "it was not proven"}. Nothing in the target can change this.`,
       next: {
         tool: "superadmin_task_create",
@@ -203,7 +206,21 @@ export function missionProgress(mission: Mission, evidence: MissionEvidence): Mi
   // A comparison is recorded against the same task, which accepts one job at a time: while the
   // task's own job runs, the next call is to wait for it.
   const waitForTask = tasks?.status === "RUNNING" ? tasks : undefined;
-  const actionable = steps.find((step) => step.status === "FAILING") ?? waitForTask ?? (measureFirst ? parity : undefined) ?? (["REMAINING", "RUNNING"] as const).map((status) => steps.find((step) => step.status === status)).find(Boolean);
+  // A failing reference is fixed by task work. The first mission task carries the comparison
+  // itself; when another attached task is still open, it is the reference work and the next call --
+  // creating one more would only duplicate it.
+  const fixTask = parity?.blockedBy === "REFERENCE" ? evidence.tasks.slice(1).find((view) => view.task.state !== "READY") : undefined;
+  const referenceWork: MissionStep | undefined = fixTask
+    ? {
+        id: "TASKS",
+        status: "REMAINING",
+        detail: `${fixTask.task.externalKey} is ${fixTask.task.state}.`,
+        next: fixTask.nextAction
+          ? { tool: fixTask.nextAction.tool, arguments: { projectId: mission.projectId, taskId: fixTask.task.id }, why: `The reference must pass before the comparison can; ${fixTask.task.externalKey} carries that work. ${fixTask.nextAction.why}` }
+          : { tool: "superadmin_task_readiness", arguments: { projectId: mission.projectId, taskId: fixTask.task.id }, why: `The reference must pass before the comparison can; ${fixTask.task.externalKey} carries that work and has a job running.` },
+      }
+    : undefined;
+  const actionable = referenceWork ?? steps.find((step) => step.status === "FAILING") ?? waitForTask ?? (measureFirst ? parity : undefined) ?? (["REMAINING", "RUNNING"] as const).map((status) => steps.find((step) => step.status === status)).find(Boolean);
   const nextAction = complete
     ? { tool: "superadmin_mission_update", arguments: { projectId: mission.projectId, missionId: mission.id, status: "ACHIEVED" }, why: "Every step is proven by evidence; record the mission as achieved." }
     : (actionable?.next ?? null);
