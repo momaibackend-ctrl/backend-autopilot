@@ -40,6 +40,7 @@
     "../../../packages/superadmin/src/missions.js": "../../../packages/superadmin/src/missions.ts",
     "./missions.js": "../../../packages/superadmin/src/missions.ts",
     "../../../packages/core/src/mission.js": "../../../packages/core/src/mission.ts",
+    "../../../packages/core/src/stall-recovery.js": "../../../packages/core/src/stall-recovery.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
     "../../secret-scanner/src/index.js": "../../../packages/secret-scanner/src/index.ts",
     "../../../packages/core/src/repository-guard.js": "../../../packages/core/src/repository-guard.ts",

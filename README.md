@@ -11,7 +11,7 @@ The canonical source is the public sandbox repository `momaibackend-ctrl/backend
 - `pages.yml` builds a Next.js static export and deploys GitHub Pages.
 - `supabase.yml` applies versioned SQL, sets Edge secret references and deploys Edge Functions.
 - `autopilot-execution.yml` claims one durable job, clones only its registered repository, installs dependencies, changes a deterministic task branch, tests, reviews, pushes and records evidence.
-- `autopilot-reconcile.yml` periodically repairs terminal workflow states that could not write their callback.
+- `autopilot-reconcile.yml` periodically ends stalled jobs with a coded cause and resumes their work as a new attempt (ADR 028).
 
 Remote state uses project `shzdgtatfonznkprnxrz`: PostgreSQL stores envelopes and relational ownership metadata; the private `autopilot-artifacts` Storage bucket stores large blobs. Jobs have operation-id idempotency, per-task distributed claim/lease, exact branch/SHA recovery and bounded repair attempts. No persistent workspace volume or always-on application process exists.
 
