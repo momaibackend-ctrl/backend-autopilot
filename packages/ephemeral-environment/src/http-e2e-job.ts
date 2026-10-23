@@ -78,6 +78,22 @@ async function authorizedTarget(store: StateStore, projectId: string, resourceId
 }
 
 /**
+ * The reference a parity run compares against. A repository of the project itself is authorized
+ * exactly like the subject. A repository of ANOTHER project is accepted only when a superadmin has
+ * linked both projects into the same product (ADR 027), and only as what a reference is: cloned at
+ * one commit and run in a throwaway environment. Its own project's policy still has to allow that
+ * (PROVISION with READ), so a reference never reaches further than its owner allows.
+ */
+export async function authorizedReference(store: StateStore, project: Project, resourceId: string, actor: string): Promise<Resource> {
+  const resource = await store.getResource(resourceId);
+  if (!resource || resource.projectId === project.id) return (await authorizedTarget(store, project.id, resourceId, actor)).resource;
+  const owner = await store.getProject(resource.projectId);
+  if (!owner || !project.product || owner.product !== project.product)
+    throw new NotFound("Resource not found", { projectId: project.id, resourceId, remediation: "A reference from another project must belong to the same product: link both projects with superadmin_project_product_set." });
+  return (await authorizedTarget(store, owner.id, resourceId, actor)).resource;
+}
+
+/**
  * Creates and dispatches one HTTP_E2E job. The caller names a task, a registered repository and
  * optionally a ref; the commit is resolved here, once, so the job verifies exactly that SHA even
  * if the branch moves while it runs.
@@ -124,9 +140,8 @@ export async function enqueueHttpE2eJob(
   const sha = await pin(resource.externalReference, input.ref);
   let counterpart: HttpE2ePayload["counterpart"];
   if (input.counterpart) {
-    // The reference implementation is authorized exactly like the subject: a project-owned,
-    // non-production GitHub repository the project may PROVISION against with READ.
-    const reference = (await authorizedTarget(deps.store, project.id, input.counterpart.repositoryResourceId, input.actor)).resource;
+    // The reference implementation: this project's own repository, or a linked product's (ADR 027).
+    const reference = await authorizedReference(deps.store, project, input.counterpart.repositoryResourceId, input.actor);
     counterpart = httpE2eCounterpartSchema.parse({
       repositoryResourceId: reference.resourceId,
       commitSha: await pin(reference.externalReference, input.counterpart.ref),
@@ -227,10 +242,10 @@ export async function prepareHttpE2eJob(
   });
   try {
     const payload = httpE2ePayloadSchema.parse(job.payload);
-    const { resource } = await authorizedTarget(deps.store, job.projectId, job.resourceId, input.owner);
+    const { project, resource } = await authorizedTarget(deps.store, job.projectId, job.resourceId, input.owner);
     const counterpart = payload.counterpart
       ? {
-          repository: (await authorizedTarget(deps.store, job.projectId, payload.counterpart.repositoryResourceId, input.owner)).resource.externalReference,
+          repository: (await authorizedReference(deps.store, project, payload.counterpart.repositoryResourceId, input.owner)).externalReference,
           commitSha: payload.counterpart.commitSha,
           ...(payload.counterpart.root === undefined ? {} : { root: payload.counterpart.root }),
           label: payload.counterpart.label,

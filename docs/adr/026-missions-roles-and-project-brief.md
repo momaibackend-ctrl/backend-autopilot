@@ -22,7 +22,7 @@ None of that was recorded anywhere an agent could read. A repository was just "r
 |---|---|
 | `WORKING` | Deployed and relied on. |
 | `SANDBOX` | Where work is assembled before it reaches `WORKING`. |
-| `PORT` | A reimplementation on another stack, built until it matches a reference. |
+| `CANDIDATE` | The next version of `WORKING` (for example a reimplementation on another stack), built until it is proven to match a reference, then moved into `WORKING` in its place. Named `PORT` in the first release; renamed before any repository carried it (ADR 027). |
 | `ARCHIVE` | Kept for recovery; nothing is developed there. |
 
 `superadmin_repository_role_set` records them. `ARCHIVE` is refused while an open mission still builds in the repository or compares against it. A reference is retired only after the port has been proven to match it.

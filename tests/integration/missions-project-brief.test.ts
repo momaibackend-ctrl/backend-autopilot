@@ -70,7 +70,7 @@ describe("missions and the project brief", () => {
     const { store, service, admin, project, repositories, working, sandbox, port } = await product();
     await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: working, role: "WORKING", purpose: "Deployed Kotlin service; the reference until the port matches it", operationId: operationId() });
     await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: sandbox, role: "SANDBOX", operationId: operationId() });
-    await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: port, role: "PORT", operationId: operationId() });
+    await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: port, role: "CANDIDATE", operationId: operationId() });
     const task = await service.taskCreate({ projectId: project.id, externalKey: "PORT-PARITY", title: "Java port matches the working service", description: "d", requirements: ["full end-to-end parity"], relationships: [] });
     const mission = ((await admin.missionCreate(principal, { projectId: project.id, key: "JAVA-PARITY", title: "Java replaces Kotlin", goal: { kind: "PARITY", targetResourceId: port, referenceResourceId: working }, taskIds: [task.id], operationId: operationId() })) as { value: { id: string } }).value;
 

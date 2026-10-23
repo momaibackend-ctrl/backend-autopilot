@@ -6,7 +6,7 @@ This repository is the Backend Autopilot control plane. It is never the backend 
 
 ## Non-negotiable safety rules
 
-1. Never discover and then mutate an external resource. Every external reference must already be an active Resource Registry record owned by the current project.
+1. Never discover and then mutate an external resource. Every external reference must already be an active Resource Registry record owned by the current project. The one exception is read-only: a repository of another project that a superadmin linked into the same product may serve as a comparison reference (cloned at one commit, run in a throwaway environment). Writes never cross a project boundary (ADR 027).
 2. Every write crosses `PolicyEngine.authorize`. Do not call an adapter directly from MCP, CLI, HTTP or a future agent runtime.
 3. Never introduce a general shell MCP operation. Commands must have semantic callers, fixed argument schemas, `shell:false`, a CommandPolicy category, logging and redaction.
 4. Never work on `main` or `master`. Require clean state, record base SHA, use one `autopilot/<task>-<slug>` branch, preserve diff and commit evidence.

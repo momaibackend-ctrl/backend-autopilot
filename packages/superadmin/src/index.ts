@@ -47,7 +47,7 @@ import {
 import { resolveRebasePlan } from "./rebase-eligibility.js";
 import { conflictForForeignProject, verifyRepositoryForRegistration } from "./repository-registration.js";
 import { repositoryCapabilities, type GitHubView } from "./capabilities.js";
-import { missionEvidence, projectBrief } from "./missions.js";
+import { missionEvidence, productRepository, projectBrief } from "./missions.js";
 import { missionProgress } from "../../core/src/mission.js";
 import {
   CanonicalRepositoryService,
@@ -695,11 +695,27 @@ export class SuperadminService {
       const resource=await this.requireResource(input.projectId,input.resourceId);
       if(resource.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("Roles describe registered GitHub repositories only",{resourceId:resource.resourceId,type:resource.type});
       if(input.role==="ARCHIVE"){
-        const serving=(await this.deps.store.listMissions(input.projectId)).filter(mission=>mission.status==="ACTIVE"&&(mission.goal.targetResourceId===resource.resourceId||(mission.goal.kind==="PARITY"&&mission.goal.referenceResourceId===resource.resourceId)));
+        // A mission in another project of the product may use this repository as its reference.
+        const missions=(await Promise.all((await this.deps.store.listProjects()).map(project=>this.deps.store.listMissions(project.id)))).flat();
+        const serving=missions.filter(mission=>mission.status==="ACTIVE"&&(mission.goal.targetResourceId===resource.resourceId||(mission.goal.kind==="PARITY"&&mission.goal.referenceResourceId===resource.resourceId)));
         if(serving.length)throw new InvalidState("An open mission still works with this repository, so it cannot be archived yet",{missions:serving.map(mission=>mission.key),remediation:"Finish the mission (superadmin_project_brief shows what remains) and record it ACHIEVED, or cancel it, then archive."});
       }
       const updated=await this.deps.store.updateResource({...resource,role:input.role,...(input.purpose?{purpose:input.purpose}:{})});
       return {resourceId:updated.resourceId,repository:updated.externalReference,role:updated.role,...(updated.purpose?{purpose:updated.purpose}:{})};
+    });
+  }
+
+  // Links a project into a product (ADR 027). Writes only the project's own document: no resource,
+  // task or history moves, so linking and unlinking are both safe and reversible.
+  projectProductSet(principal:SuperadminPrincipal,input:{projectId:string;product:string|null;operationId:string}){
+    const {operationId,...payload}=input;
+    return this.mutate(principal,"project_product_set",input.projectId,operationId,payload,async()=>{
+      const project=await this.requireProject(input.projectId);
+      const next:Project={...project,updatedAt:this.clock.now()};
+      if(input.product)next.product=input.product;else delete next.product;
+      const updated=await this.deps.store.updateProject(next);
+      const siblings=input.product?(await this.deps.store.listProjects()).filter(other=>other.id!==project.id&&other.product===input.product).map(other=>({projectId:other.id,name:other.name})):[];
+      return {projectId:updated.id,...(updated.product?{product:updated.product}:{}),projects:siblings};
     });
   }
 
@@ -716,7 +732,7 @@ export class SuperadminService {
   }
 
   // ACHIEVED is a claim about evidence, so it is accepted only when the derived progress is complete.
-  missionUpdate(principal:SuperadminPrincipal,input:{projectId:string;missionId:string;title?:string;addTaskIds?:string[];removeTaskIds?:string[];status?:Mission["status"];reason?:string;operationId:string}){
+  missionUpdate(principal:SuperadminPrincipal,input:{projectId:string;missionId:string;title?:string;addTaskIds?:string[];removeTaskIds?:string[];referenceRef?:string|null;status?:Mission["status"];reason?:string;operationId:string}){
     const {operationId,...payload}=input;
     return this.mutate(principal,"mission_update",input.projectId,operationId,payload,async()=>{
       const mission=await this.deps.store.getMission(input.projectId,input.missionId);
@@ -725,11 +741,19 @@ export class SuperadminService {
       const removed=new Set(input.removeTaskIds??[]);
       const taskIds=[...new Set([...mission.taskIds.filter(id=>!removed.has(id)),...(input.addTaskIds??[])])];
       const now=this.clock.now();
-      const next:Mission={...mission,...(input.title?{title:input.title}:{}),taskIds,updatedAt:now};
+      let goal=mission.goal;
+      if(input.referenceRef!==undefined){
+        if(goal.kind!=="PARITY")throw new PolicyViolation("Only a PARITY mission has a reference to pin");
+        const pinned={...goal};
+        if(input.referenceRef===null)delete pinned.referenceRef;else pinned.referenceRef=input.referenceRef;
+        goal=pinned;
+      }
+      const next:Mission={...mission,goal,...(input.title?{title:input.title}:{}),taskIds,updatedAt:now};
       if(input.status&&input.status!==mission.status){
         if(input.status==="ACHIEVED"){
           const [resources,tasks]=await Promise.all([this.deps.store.listResources(input.projectId),this.deps.store.listTasks(input.projectId)]);
-          const progress=missionProgress(next,await missionEvidence({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},next,resources,tasks));
+          const project=await this.requireProject(input.projectId);
+          const progress=missionProgress(next,await missionEvidence({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project,next,resources,tasks));
           if(!progress.complete)throw new InvalidState("The evidence does not show this mission achieved yet",{steps:progress.steps.filter(step=>step.status!=="DONE").map(step=>({id:step.id,status:step.status,detail:step.detail})),nextAction:progress.nextAction});
           next.achievedAt=now;
         }else delete next.achievedAt;
@@ -740,13 +764,15 @@ export class SuperadminService {
     });
   }
 
+  // The target is developed in, so it must be this project's own. The reference is only compared
+  // against, so it may also come from another project of the same product (ADR 027).
   private async requireMissionRepositories(projectId:string,goal:MissionGoal){
-    const ids=goal.kind==="PARITY"?[goal.targetResourceId,goal.referenceResourceId]:[goal.targetResourceId];
-    if(goal.kind==="PARITY"&&goal.targetResourceId===goal.referenceResourceId)throw new PolicyViolation("A parity mission compares two different repositories");
-    for(const id of ids){
-      const resource=await this.requireResource(projectId,id);
-      if(resource.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("A mission names registered GitHub repositories",{resourceId:id,type:resource.type});
-    }
+    const target=await this.requireResource(projectId,goal.targetResourceId);
+    if(target.type!=="GITHUB_REPOSITORY")throw new PolicyViolation("A mission names registered GitHub repositories",{resourceId:target.resourceId,type:target.type});
+    if(goal.kind!=="PARITY")return;
+    if(goal.targetResourceId===goal.referenceResourceId)throw new PolicyViolation("A parity mission compares two different repositories");
+    const reference=await productRepository(this.deps.store,await this.requireProject(projectId),goal.referenceResourceId);
+    if(!reference)throw new NotFound("The reference must be a GitHub repository of this project or of another project of the same product",{resourceId:goal.referenceResourceId,remediation:"Link both projects with superadmin_project_product_set."});
   }
 
   // Read-only: every contract and collection the repository holds at one commit.
