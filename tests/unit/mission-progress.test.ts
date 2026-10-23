@@ -73,3 +73,21 @@ describe("a parity mission measures first", () => {
     expect(noTask.nextAction).toMatchObject({ tool: "superadmin_task_create" });
   });
 });
+
+describe("a reference that fails by itself", () => {
+  it("is not the target's to fix: the step names the reference fix, the sandbox it goes through, and the pin to move", () => {
+    const pinned = mission({ kind: "PARITY", targetResourceId: targetId, referenceResourceId: referenceId, referenceRef: "2e7d3b8" }, ["00000000-0000-4000-8000-00000000000a"]);
+    const progress = missionProgress(pinned, {
+      ...both,
+      referenceFix: { projectId, resourceId: "s", repository: "acme/kotlin-sandbox", via: "SANDBOX" },
+      tasks: [task("00000000-0000-4000-8000-00000000000a", "READY")],
+      missingTaskIds: [],
+      parity: { jobId: "j9", status: "SUCCEEDED", commitSha: sha, verdict: "NOT_PROVEN", failureClass: "REFERENCE_NOT_PROVEN", failureMessage: "SCENARIO_FAILED: 2 of 6 scenario(s) did not pass", diagnosis: { area: "REFERENCE" } },
+    });
+    const step = progress.steps.find((value) => value.id === "PARITY")!;
+    expect(step).toMatchObject({ status: "FAILING", detail: expect.stringContaining("Nothing in the target can change this") });
+    expect(progress.nextAction).toMatchObject({ tool: "superadmin_task_create", arguments: { projectId } });
+    expect(progress.nextAction?.why).toContain("in acme/kotlin-sandbox (the product's SANDBOX), then release it to acme/kotlin");
+    expect(progress.nextAction?.why).toContain("move referenceRef to the fixed commit");
+  });
+});

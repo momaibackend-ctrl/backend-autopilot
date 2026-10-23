@@ -63,3 +63,14 @@ Nothing here relaxes a gate. READY, PolicyEngine, the Resource Registry, the pro
 - **Stage 2.** A driver that keeps work moving. Today the scheduled reconciler parks an IMPLEMENTING task in BLOCKED when its job stalls. It should restart the stalled step, and advance a mission's mechanical steps on its own.
 - **Stage 3.** Bring every Momna repository into one project with roles, and open the Java parity mission.
 - **Later, an internal agent.** Code changes come from the external agent (GPT over MCP) for now. An internal coding agent is a later, separate decision.
+
+## Amendment: a reference that fails by itself
+
+A PARITY comparison can fail because the reference itself does not pass: it will not build or start, or it fails the scenarios. That happened on the first Momna comparison. The working Kotlin service's entry point never wires its core, onboarding and check-in services, so every one of those endpoints answers 503. In that case the mission step read like an ordinary failure, and an agent told to "fix the cause" went round in circles in the target, where nothing could change it.
+
+Such a failure is now recognised by `REFERENCE_NOT_PROVEN` or by a diagnosis in the `REFERENCE` area, and the PARITY step says where the fix belongs:
+
+- **If the reference is WORKING and the product has exactly one SANDBOX:** fix it in that sandbox, then release it to the reference, matching how work on a working repository is assembled.
+- **Otherwise:** fix it in the reference's own repository.
+
+The next call is a task in that repository's project. When the mission pins its reference, the step also says to move the pin once the fix is released. The brief's rules tell agents not to change the target for a reference failure.

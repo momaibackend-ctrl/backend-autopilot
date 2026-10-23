@@ -44,9 +44,22 @@ export interface ParityRunView {
   coverage?: { covered?: number; total?: number };
 }
 
+/**
+ * Where a reference that fails on its own gets fixed. Work on a WORKING repository is assembled in
+ * the product's SANDBOX and released from there, so a single SANDBOX of the product is named;
+ * otherwise the reference's own repository.
+ */
+export interface ReferenceFix {
+  projectId: string;
+  resourceId: string;
+  repository: string;
+  via: "SANDBOX" | "REFERENCE";
+}
+
 export interface MissionEvidence {
   target?: Resource;
   reference?: Resource;
+  referenceFix?: ReferenceFix;
   tasks: MissionTaskView[];
   /** Attached task ids that no longer resolve to a task. */
   missingTaskIds: string[];
@@ -138,6 +151,29 @@ function parityStep(mission: Mission, evidence: MissionEvidence): MissionStep {
     if (evidence.targetHead && evidence.targetHead !== parity.commitSha)
       return { id: "PARITY", status: "REMAINING", detail: `Proven at ${short(parity.commitSha)}, but the target has moved to ${short(evidence.targetHead)}; the proof does not cover the new commits.${coverage}`, next: { ...run, why: "Re-prove parity at the current head." } };
     return { id: "PARITY", status: "DONE", detail: `PROVEN at ${short(parity.commitSha)}: the target answers every scenario as the reference does.${coverage}` };
+  }
+  // The reference failed by itself (it would not build, start or pass the scenarios). No change in
+  // the target can fix that, and an agent told to "fix the cause" in the target only goes round in
+  // circles -- so the step says where the fix belongs.
+  if (parity.failureClass === "REFERENCE_NOT_PROVEN" || parity.diagnosis?.area === "REFERENCE") {
+    const reference = evidence.reference?.externalReference ?? "the reference";
+    const fix = evidence.referenceFix;
+    const where = !fix
+      ? `in ${reference}`
+      : fix.via === "SANDBOX"
+        ? `in ${fix.repository} (the product's SANDBOX), then release it to ${reference}`
+        : `in ${fix.repository}`;
+    const repin = mission.goal.referenceRef ? ` The mission pins the reference at ${mission.goal.referenceRef}: once the fix is in ${reference}, move referenceRef to the fixed commit (superadmin_mission_update).` : "";
+    return {
+      id: "PARITY",
+      status: "FAILING",
+      detail: `The reference itself does not pass at this comparison (${short(parity.commitSha)} of the target): ${parity.failureMessage ?? "it was not proven"}. Nothing in the target can change this.`,
+      next: {
+        tool: "superadmin_task_create",
+        arguments: { projectId: fix?.projectId ?? mission.projectId },
+        why: `Fix the reference ${where}: ${parity.failureMessage ?? "it was not proven"}. Read the reference's own steps and application log in superadmin_http_e2e_get (jobId ${parity.jobId}, counterpart).${repin} Then compare again with superadmin_http_e2e_run.`,
+      },
+    };
   }
   const cause = parity.failureClass ? `${parity.failureClass}${parity.failureMessage ? `: ${parity.failureMessage}` : ""}` : "the run produced no verdict";
   const diagnosis = parity.diagnosis?.summary ? ` Diagnosis (${parity.diagnosis.area ?? "unknown area"}): ${parity.diagnosis.summary}` : "";

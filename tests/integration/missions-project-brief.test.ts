@@ -129,6 +129,20 @@ describe("missions and the project brief", () => {
     expect(brief.missions[0]?.progress).toBeUndefined();
   });
 
+  it("sends a failing reference to the product's sandbox instead of the target", async () => {
+    const { store, service, admin, project, working, sandbox, port } = await product();
+    await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: working, role: "WORKING", operationId: operationId() });
+    await admin.repositoryRoleSet(principal, { projectId: project.id, resourceId: sandbox, role: "SANDBOX", operationId: operationId() });
+    const task = await service.taskCreate({ projectId: project.id, externalKey: "PARITY-REF", title: "t", description: "d", requirements: ["parity"], relationships: [] });
+    await admin.missionCreate(principal, { projectId: project.id, key: "REF", title: "t", goal: { kind: "PARITY", targetResourceId: port, referenceResourceId: working }, taskIds: [task.id], operationId: operationId() });
+    const run = (await admin.projectBrief(principal, project.id)).missions[0]!.progress!.nextAction!;
+    await admin.httpE2eRun(principal, project.id, { ...(run.arguments as Record<string, unknown>), operationId: operationId() } as never);
+    await finishComparison(store, project.id, { verdict: "NOT_PROVEN", failure: { class: "REFERENCE_NOT_PROVEN", message: "SCENARIO_FAILED: 2 of 6 scenario(s) did not pass" }, diagnosis: { area: "REFERENCE", summary: "The reference implementation did not verify" }, covered: 44, total: 44 });
+    const brief = await admin.projectBrief(principal, project.id);
+    expect(brief.nextAction).toMatchObject({ tool: "superadmin_task_create", arguments: { projectId: project.id } });
+    expect(brief.nextAction?.why).toContain("acme/backend-sandbox (the product's SANDBOX), then release it to acme/backend");
+  });
+
   it("validates what a mission names and audits every refusal", async () => {
     const { store, service, admin, project, working, port } = await product();
     await expect(admin.missionCreate(principal, { projectId: project.id, key: "SELF", title: "t", goal: { kind: "PARITY", targetResourceId: port, referenceResourceId: port }, operationId: operationId() })).rejects.toMatchObject({ code: "POLICY_VIOLATION" });
