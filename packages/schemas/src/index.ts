@@ -1096,6 +1096,8 @@ export const artifactKindSchema = z.enum([
   "SECRET_CONFIG_HANDOVER",
   "DEVELOPER_HANDOVER_REPORT",
   "REPOSITORY_RENAME_REPORT",
+  // The complete evidence of one HTTP E2E environment run; its VALIDATION_REPORT carries the digest.
+  "ENVIRONMENT_EVIDENCE",
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export const artifactSchema = z.object({

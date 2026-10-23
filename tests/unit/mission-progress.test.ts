@@ -61,3 +61,15 @@ describe("mission progress", () => {
     expect(missionProgress(parity, { ...evidence, targetHead: "b".repeat(40) })).toMatchObject({ complete: false, nextAction: { tool: "superadmin_http_e2e_run" } });
   });
 });
+
+describe("a parity mission measures first", () => {
+  it("runs the comparison before remaining task work, but not while the task has a job in flight or no task exists", () => {
+    const fresh = missionProgress(parity, { ...both, tasks: [task("00000000-0000-4000-8000-00000000000a", "INGESTED", { tool: "superadmin_task_analyze", why: "snapshot" })], missingTaskIds: [] });
+    expect(fresh.nextAction).toMatchObject({ tool: "superadmin_http_e2e_run", arguments: { taskId: "00000000-0000-4000-8000-00000000000a" } });
+    const busy = missionProgress(parity, { ...both, tasks: [task("00000000-0000-4000-8000-00000000000a", "IMPLEMENTING", null)], missingTaskIds: [] });
+    expect(busy.nextAction).toMatchObject({ tool: "superadmin_task_readiness" });
+    expect(busy.steps.map((step) => step.status)).toEqual(["DONE", "RUNNING", "REMAINING"]);
+    const noTask = missionProgress(parity, { ...both, tasks: [], missingTaskIds: [] });
+    expect(noTask.nextAction).toMatchObject({ tool: "superadmin_task_create" });
+  });
+});

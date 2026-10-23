@@ -11,7 +11,7 @@ import { missionProgress, type MissionEvidence, type MissionProgress, type NextC
 import type { StateStore } from "../../core/src/ports.js";
 import type { GitRepositoryProvider } from "../../canonical-repository/src/ports.js";
 import { readHttpE2eJob } from "../../ephemeral-environment/src/http-e2e-job.js";
-import { missionGoalSchema, missionKeySchema, repositoryRoleSchema, type Mission, type Project, type Resource, type Task } from "../../schemas/src/index.js";
+import { missionGoalSchema, missionKeySchema, repositoryRoleSchema, type Artifact, type Mission, type Project, type Resource, type Task } from "../../schemas/src/index.js";
 
 const uuid = z.string().uuid();
 const operationId = z.string().min(8).max(200);
@@ -61,6 +61,8 @@ export interface BriefDependencies {
   store: StateStore;
   service: AutopilotService;
   repositories?: GitRepositoryProvider;
+  /** Resolves externalized artifact content, so an older report kept in blob storage still reads. */
+  readArtifact?: (projectId: string, artifactId: string) => Promise<Artifact>;
 }
 
 /**
@@ -86,7 +88,7 @@ async function latestParityRun(deps: BriefDependencies, projectId: string, targe
     if (!job || counterpart?.repositoryResourceId !== referenceId) continue;
     // A pinned reference counts only runs against exactly that pin.
     if (referenceRef !== undefined && counterpart.requestedRef !== referenceRef) continue;
-    const read = await readHttpE2eJob(deps.store, projectId, job.id);
+    const read = await readHttpE2eJob(deps.store, projectId, job.id, deps.readArtifact);
     const evidence = read.evidence;
     const coverage = evidence?.coverage as { coveredOperations?: number; totalOperations?: number } | undefined;
     const failure = evidence?.failure as { class?: string; message?: string } | undefined;

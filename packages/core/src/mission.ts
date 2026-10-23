@@ -157,7 +157,17 @@ export function missionProgress(mission: Mission, evidence: MissionEvidence): Mi
   const complete = steps.every((step) => step.status === "DONE");
   // A known failure outranks remaining work, and both outrank waiting: a task resting on a running
   // job must not hide a comparison that already says what is wrong.
-  const actionable = (["FAILING", "REMAINING", "RUNNING"] as const).map((status) => steps.find((step) => step.status === status)).find(Boolean);
+  //
+  // In a PARITY mission the comparison is the measurement that says what to change, so a comparison
+  // still to run comes before remaining task work -- as long as there is a task to record it
+  // against and that task has no job of its own in flight.
+  const parity = steps.find((step) => step.id === "PARITY");
+  const tasks = steps.find((step) => step.id === "TASKS");
+  const measureFirst = parity?.status === "REMAINING" && tasks?.status === "REMAINING" && Boolean(parity.next?.arguments?.["taskId"]);
+  // A comparison is recorded against the same task, which accepts one job at a time: while the
+  // task's own job runs, the next call is to wait for it.
+  const waitForTask = tasks?.status === "RUNNING" ? tasks : undefined;
+  const actionable = steps.find((step) => step.status === "FAILING") ?? waitForTask ?? (measureFirst ? parity : undefined) ?? (["REMAINING", "RUNNING"] as const).map((status) => steps.find((step) => step.status === status)).find(Boolean);
   const nextAction = complete
     ? { tool: "superadmin_mission_update", arguments: { projectId: mission.projectId, missionId: mission.id, status: "ACHIEVED" }, why: "Every step is proven by evidence; record the mission as achieved." }
     : (actionable?.next ?? null);

@@ -18,7 +18,7 @@ import type { GitRepositoryProvider } from "../../canonical-repository/src/ports
 import { collectionScenarios, type ImportedScenario } from "../../http-runner/src/collection.js";
 import { restoreScenarioDefinition, type ArtifactWriter } from "../../http-runner/src/index.js";
 import { PolicyEngine } from "../../policy-engine/src/index.js";
-import type { ExecutionJob, Project, Resource } from "../../schemas/src/index.js";
+import type { Artifact, ExecutionJob, Project, Resource } from "../../schemas/src/index.js";
 import { diagnoseHttpE2e } from "./diagnosis.js";
 import { ENVIRONMENT_EVIDENCE_VERSION, environmentEvidenceSchema, type EnvironmentEvidence, type FailureClass } from "./evidence.js";
 
@@ -291,6 +291,38 @@ function syntheticEvidence(failureClass: FailureClass, step: string, message: st
   });
 }
 
+/** Longest log tail kept in the report digest; the complete logs stay in ENVIRONMENT_EVIDENCE. */
+const DIGEST_LOG_CHARS = 2_000;
+const DIGEST_DIFFERENCES = 50;
+const tail = (text: string | undefined) => (text === undefined || text.length <= DIGEST_LOG_CHARS ? text : `…${text.slice(-DIGEST_LOG_CHARS)}`);
+const digestSteps = (steps: EnvironmentEvidence["steps"]) => steps.map((step) => ({ ...step, ...(step.logTail === undefined ? {} : { logTail: tail(step.logTail) }) }));
+
+/**
+ * What every reader of a verdict needs, small enough to stay inline in the database. Without it, a
+ * full report over the artifact store's externalization threshold (64 kB -- a real run with 45
+ * operations is ~100 kB) was moved to blob storage whole, leaving `{externalized: true}` where the
+ * verdict, commit, diagnosis and coverage had been. The READY gate, cause-driven repair, the brief
+ * and superadmin_http_e2e_get then saw no verdict at all.
+ */
+function evidenceDigest(evidence: EnvironmentEvidence) {
+  const collection = evidence.collection as { summary?: unknown; coverage?: unknown } | undefined;
+  return {
+    evidenceVersion: evidence.evidenceVersion,
+    startedAt: evidence.startedAt,
+    completedAt: evidence.completedAt,
+    durationMs: evidence.durationMs,
+    outcome: evidence.outcome,
+    steps: digestSteps(evidence.steps),
+    ...(evidence.health ? { health: evidence.health } : {}),
+    ...(evidence.applicationLogTail === undefined ? {} : { applicationLogTail: tail(evidence.applicationLogTail) }),
+    ...(collection ? { collection: { summary: collection.summary, coverage: collection.coverage } } : {}),
+    ...(evidence.counterpart
+      ? { counterpart: { label: evidence.counterpart.label, outcome: evidence.counterpart.outcome, steps: digestSteps(evidence.counterpart.steps), ...(evidence.counterpart.applicationLogTail === undefined ? {} : { applicationLogTail: tail(evidence.counterpart.applicationLogTail) }) } }
+      : {}),
+    ...(evidence.parity ? { parity: { ...evidence.parity, differences: (evidence.parity.differences ?? []).slice(0, DIGEST_DIFFERENCES) } } : {}),
+  };
+}
+
 async function persistEvidence(
   deps: HttpE2eDependencies & { artifacts: ArtifactWriter },
   job: ExecutionJob,
@@ -299,6 +331,9 @@ async function persistEvidence(
   const payload = httpE2ePayloadSchema.safeParse(job.payload);
   const resource = await deps.store.getResource(job.resourceId);
   const diagnosis = diagnoseHttpE2e(evidence);
+  // The complete evidence (scenario reports, plan, full logs) may be externalized; the report
+  // below never is, and names it.
+  const full = await deps.artifacts.write(job.projectId, "ENVIRONMENT_EVIDENCE", { suite: "HTTP_E2E", jobId: job.id, evidence }, job.taskId);
   const artifact = await deps.artifacts.write(
     job.projectId,
     "VALIDATION_REPORT",
@@ -317,7 +352,8 @@ async function persistEvidence(
       ...(evidence.outcome.failure ? { failure: evidence.outcome.failure } : {}),
       reasons: evidence.outcome.reasons,
       ...(diagnosis ? { diagnosis } : {}),
-      evidence,
+      fullEvidenceArtifactId: full.id,
+      evidence: evidenceDigest(evidence),
     },
     job.taskId,
   );
@@ -403,12 +439,20 @@ export async function recordHttpE2eEvidence(
 }
 
 /** The job plus its recorded evidence summary, for the read tool. */
-export async function readHttpE2eJob(store: StateStore, projectId: string, jobId: string) {
+/**
+ * `readArtifact` resolves externalized content. A report written before the digest existed may
+ * live in blob storage whole; without a reader such a report reads as absent, never as a verdict.
+ */
+export async function readHttpE2eJob(store: StateStore, projectId: string, jobId: string, readArtifact?: (projectId: string, artifactId: string) => Promise<Artifact>) {
   const job = await store.getExecutionJob(projectId, jobId);
   if (!job || job.kind !== "HTTP_E2E") throw new NotFound("HTTP E2E job not found", { jobId });
-  const report = (await store.listArtifacts(projectId, job.taskId)).find(
+  // The job names its report; scanning the task's artifacts is the fallback for older jobs.
+  const named = (job.result as { evidenceArtifactId?: string } | undefined)?.evidenceArtifactId;
+  let report = named ? await store.getArtifact(projectId, named) : undefined;
+  report ??= (await store.listArtifacts(projectId, job.taskId)).find(
     (artifact) => artifact.kind === "VALIDATION_REPORT" && (artifact.content as { jobId?: string } | undefined)?.jobId === job.id,
   );
+  if (report?.storage && readArtifact) report = await readArtifact(projectId, report.id).catch(() => report);
   const content = report?.content as
     | {
         verdict?: string;
