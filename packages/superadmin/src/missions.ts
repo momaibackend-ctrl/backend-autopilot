@@ -7,7 +7,7 @@
 // project by name and drifting to whatever it finds first.
 import { z } from "zod";
 import type { AutopilotService } from "../../core/src/application.js";
-import { missionProgress, type MissionEvidence, type MissionProgress, type NextCall, type ParityRunView } from "../../core/src/mission.js";
+import { missionProgress, type MissionEvidence, type ReferenceFix, type MissionProgress, type NextCall, type ParityRunView } from "../../core/src/mission.js";
 import type { StateStore } from "../../core/src/ports.js";
 import type { GitRepositoryProvider } from "../../canonical-repository/src/ports.js";
 import { readHttpE2eJob } from "../../ephemeral-environment/src/http-e2e-job.js";
@@ -121,6 +121,15 @@ async function defaultHead(deps: BriefDependencies, resource: Resource | undefin
   }
 }
 
+/** Where a failing reference is fixed: the product's one SANDBOX, or else the reference itself. */
+async function referenceFix(store: StateStore, project: Pick<Project, "id" | "product">, reference: Resource): Promise<ReferenceFix> {
+  const projects = project.product ? (await store.listProjects()).filter((value) => value.id === project.id || (value.product === project.product && !value.deletedAt)) : [{ id: project.id }];
+  const sandboxes = (await Promise.all(projects.map((value) => store.listResources(value.id)))).flat().filter((resource) => resource.type === "GITHUB_REPOSITORY" && resource.status === "ACTIVE" && resource.role === "SANDBOX");
+  const sandbox = reference.role === "WORKING" && sandboxes.length === 1 ? sandboxes[0]! : undefined;
+  const fix = sandbox ?? reference;
+  return { projectId: fix.projectId, resourceId: fix.resourceId, repository: fix.externalReference, via: sandbox ? "SANDBOX" : "REFERENCE" };
+}
+
 export async function missionEvidence(deps: BriefDependencies, project: Pick<Project, "id" | "product">, mission: Mission, resources: Resource[], tasks: Task[]): Promise<MissionEvidence> {
   const byId = new Map(resources.map((resource) => [resource.resourceId, resource]));
   const target = byId.get(mission.goal.targetResourceId);
@@ -138,11 +147,13 @@ export async function missionEvidence(deps: BriefDependencies, project: Pick<Pro
     }),
   );
   const parity = mission.goal.kind === "PARITY" ? await latestParityRun(deps, mission.projectId, mission.goal.targetResourceId, mission.goal.referenceResourceId, mission.goal.referenceRef) : undefined;
+  const fix = reference && parity && (parity.failureClass === "REFERENCE_NOT_PROVEN" || parity.diagnosis?.area === "REFERENCE") ? await referenceFix(deps.store, project, reference) : undefined;
   // The head matters only to tell whether a PROVEN comparison still covers the target.
   const targetHead = parity?.verdict === "PROVEN" ? await defaultHead(deps, target) : undefined;
   return {
     ...(target ? { target } : {}),
     ...(reference ? { reference } : {}),
+    ...(fix ? { referenceFix: fix } : {}),
     tasks: views,
     missingTaskIds: mission.taskIds.filter((id) => !taskById.has(id)),
     ...(parity ? { parity } : {}),
@@ -287,6 +298,7 @@ export async function projectBrief(deps: BriefDependencies, project: Project): P
       "Work from this brief and its nextAction. Do not rediscover the project from deployments, staging URLs or databases: verification runs in throwaway environments the autopilot builds itself.",
       "Repositories are named by role, not by guess: develop in the mission's target and compare against its reference. ARCHIVE is kept for recovery; nothing is developed there. Repositories listed under productRepositories belong to other projects of the same product: compare against them from here, develop in them only from their own project.",
       "A failure is a cause to fix, not a stop: read its diagnosis, fix that cause, run again. Only production access, real secrets, login or a product decision need a person.",
+      "When a comparison says the reference itself does not pass, do not change the target for it: fix the reference where the brief names (the product's SANDBOX, released to WORKING), then compare again.",
       "A stalled job is resumed by the autopilot itself as a new attempt (jobsInFlight shows attempt, cause and start time). Do not re-send the same work while one is in flight; wait for it.",
       "Re-read this brief after every step; it is recomputed from evidence each time.",
     ],
