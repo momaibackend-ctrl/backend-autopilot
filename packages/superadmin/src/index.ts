@@ -617,7 +617,7 @@ export class SuperadminService {
   }
   async httpE2eGet(principal:SuperadminPrincipal,projectId:string,jobId:string){
     this.requireSuperadmin(principal);await this.requireProject(projectId);
-    return readHttpE2eJob(this.deps.store,projectId,jobId);
+    return readHttpE2eJob(this.deps.store,projectId,jobId,(project,id)=>this.artifacts.read(project,id));
   }
 
   // Verified registration of an existing GitHub repository (ADR 023): exact owner/name as GitHub
@@ -684,7 +684,7 @@ export class SuperadminService {
   async projectBrief(principal:SuperadminPrincipal,projectId:string){
     this.requireSuperadmin(principal);
     const project=await this.requireProject(projectId);
-    return projectBrief({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project);
+    return projectBrief({store:this.deps.store,service:this.deps.service,readArtifact:(project:string,id:string)=>this.artifacts.read(project,id),...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project);
   }
 
   // What a repository is for in its product. ARCHIVE is refused while an open mission still builds in
@@ -753,7 +753,7 @@ export class SuperadminService {
         if(input.status==="ACHIEVED"){
           const [resources,tasks]=await Promise.all([this.deps.store.listResources(input.projectId),this.deps.store.listTasks(input.projectId)]);
           const project=await this.requireProject(input.projectId);
-          const progress=missionProgress(next,await missionEvidence({store:this.deps.store,service:this.deps.service,...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project,next,resources,tasks));
+          const progress=missionProgress(next,await missionEvidence({store:this.deps.store,service:this.deps.service,readArtifact:(project:string,id:string)=>this.artifacts.read(project,id),...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project,next,resources,tasks));
           if(!progress.complete)throw new InvalidState("The evidence does not show this mission achieved yet",{steps:progress.steps.filter(step=>step.status!=="DONE").map(step=>({id:step.id,status:step.status,detail:step.detail})),nextAction:progress.nextAction});
           next.achievedAt=now;
         }else delete next.achievedAt;

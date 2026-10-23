@@ -42,3 +42,18 @@ The record job stores the diagnosis with the evidence. `superadmin_http_e2e_get`
 - An API task goes from review to verification without any call, and from a NOT_PROVEN verdict to a named cause with a place to fix it.
 - The fingerprint makes progress measurable: a repair that changes the cause is progress, while one that reproduces the same fingerprint is not. Stage 4b's second part uses that to replace "N attempts, then BLOCKED" with cause-driven repair.
 - Diagnosis is heuristic. When no specific pattern matches, it falls back to the class-level next step and still attaches the log lines, so it never returns nothing.
+
+## Amendment: the report stays readable at any size
+
+The artifact store moves any content of 64 kB or more to blob storage, and leaves `{externalized: true}` in the database. A real run reaches that size: 45 operations with scenario reports and logs come to about 100 kB. Its VALIDATION_REPORT was externalized whole, so every reader of a verdict found nothing. That included the READY gate, cause-driven repair, the project brief and `superadmin_http_e2e_get`. An agent then saw a finished job with no verdict, no cause and no coverage.
+
+The evidence is now written in two parts:
+
+- **The complete evidence** (scenario reports, plan, full logs) is written as an `ENVIRONMENT_EVIDENCE` artifact, which may be externalized.
+- **The VALIDATION_REPORT** stays inline and names the complete evidence (`fullEvidenceArtifactId`). It carries the verdict, failure, reasons, diagnosis and commit, plus a digest:
+  - the steps, with log tails capped at 2,000 characters;
+  - the collection summary and coverage;
+  - the counterpart's outcome;
+  - the parity summary, with its first 50 differences.
+
+`readHttpE2eJob` finds the report through the job's own `evidenceArtifactId`. Given an artifact reader, it also reads a report externalized before this change. Without a reader, such a report reads as absent, never as a verdict. The READY gate still sees only inline reports, so a run recorded before this change has to be run again before it counts there.
