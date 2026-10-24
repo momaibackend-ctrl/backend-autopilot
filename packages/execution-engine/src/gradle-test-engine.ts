@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Clock } from '../../core/src/ports.js';
 import type { ImplementationPlan, TestReport } from '../../schemas/src/index.js';
 import type { CommandRunner } from './command-runner.js';
-import { collectGradleFailures } from './test-failures.js';
+import { collectGradleFailures, collectGradleTotals } from './test-failures.js';
 import { buildPropertyBasedReport, parsePropertyReportFile, parsePropertyRunnerOutput, type ParsedPropertyRun } from './property-based-report.js';
 
 // Absolute path, not a relative "./gradlew" -- avoids depending on whether the spawned
@@ -52,9 +52,11 @@ export class GradleTestEngine {
     });
     const passed = suites.length === plan.testsRequired.length && suites.every(s => s.passed);
     const failedTests = passed ? [] : await collectGradleFailures(workspace, transcript);
+    const testTotals = await collectGradleTotals(workspace, transcript);
     return {
       passed,
       suites,
+      ...(testTotals ? { testTotals } : {}),
       ...(failedTests.length ? { failedTests } : {}),
       ...(propertyRequired || propertyBased.evidence !== 'NONE' ? { propertyBased } : {}),
       finishedAt: this.clock.now(),

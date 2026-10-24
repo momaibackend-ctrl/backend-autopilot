@@ -59,6 +59,39 @@ export function parseGradleTranscriptFailures(transcript: string): FailedTest[] 
   return failures;
 }
 
+export interface TestTotals {
+  tests: number;
+  failures: number;
+  skipped: number;
+}
+
+/** Totals of one JUnit XML document, from its testsuite element. */
+export function parseJUnitTotals(xml: string): TestTotals | undefined {
+  const suite = /<testsuite\b([^>]*)>/.exec(xml)?.[1];
+  if (!suite) return undefined;
+  const count = (name: string) => Number(new RegExp(`\\b${name}="(\\d+)"`).exec(suite)?.[1] ?? 0);
+  return { tests: count('tests'), failures: count('failures') + count('errors'), skipped: count('skipped') };
+}
+
+/** "N tests completed, M failed, K skipped" from a Gradle transcript, the fallback when no XML exists. */
+export function parseGradleTranscriptTotals(transcript: string): TestTotals | undefined {
+  const match = /(\d+) tests? completed(?:, (\d+) failed)?(?:, (\d+) skipped)?/.exec(transcript);
+  return match ? { tests: Number(match[1]), failures: Number(match[2] ?? 0), skipped: Number(match[3] ?? 0) } : undefined;
+}
+
+/** How many tests a Gradle workspace ran: summed JUnit XML results, else the transcript line. */
+export async function collectGradleTotals(workspace: string, transcript: string): Promise<TestTotals | undefined> {
+  const root = join(workspace, 'build', 'test-results');
+  let totals: TestTotals | undefined;
+  for (const directory of await readdir(root).catch(() => [] as string[])) {
+    for (const file of (await readdir(join(root, directory)).catch(() => [] as string[])).filter((name) => name.endsWith('.xml'))) {
+      const value = parseJUnitTotals(await readFile(join(root, directory, file), 'utf8').catch(() => ''));
+      if (value) totals = { tests: (totals?.tests ?? 0) + value.tests, failures: (totals?.failures ?? 0) + value.failures, skipped: (totals?.skipped ?? 0) + value.skipped };
+    }
+  }
+  return totals ?? parseGradleTranscriptTotals(transcript);
+}
+
 /** Every failing test of a Gradle workspace: JUnit XML results first, then the transcript. */
 export async function collectGradleFailures(workspace: string, transcript: string): Promise<FailedTest[]> {
   const found: FailedTest[] = [];
