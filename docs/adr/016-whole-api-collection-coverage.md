@@ -24,3 +24,7 @@ Everything is additive. `superadmin_scenario_run`, the scenario schema and its 2
 - Parity between two implementations of one contract means two `PROVEN` runs of the same collection, one against each implementation's registered resource.
 - The collection run is bounded at 100 scenarios and 120 s per call. A larger collection runs in parts with `scenarioIds`, and the variables it needs must be extracted within each part.
 - Not included yet: comparing two runs response by response, and a READY-gate requirement for a `PROVEN` collection. Both build on this report and can be added without changing it.
+
+## Amendment: one route, one operation
+
+An operation's identity is its method plus its path template, with parameter names ignored (`operationKey`). The Momna Java port documented the same route as `…/actions/{actionCode}` in one contract file and `…/actions/{action}` in another. The inventory then counted two operations, one of which no request could ever exercise. Coverage stayed short by one and kept the verdict `NOT_PROVEN` for a route that was in fact exercised. Merging contracts, deduplicating operations and counting coverage per contract now all use the same key.
