@@ -429,6 +429,8 @@ export const testReportSchema = z.object({
   ),
   /** Present whenever the plan's verification profile required a generative layer. */
   propertyBased: propertyBasedReportSchema.optional(),
+  /** How many test cases the runner executed, from its own result files. Absent when unknown. */
+  testTotals: z.object({ tests: z.number().int().nonnegative(), failures: z.number().int().nonnegative(), skipped: z.number().int().nonnegative() }).optional(),
   /** The failing tests by name, with the first line of why; bounded. Absent on older reports. */
   failedTests: z.array(z.object({ test: z.string(), message: z.string().optional() })).max(50).optional(),
   finishedAt: z.string().datetime(),

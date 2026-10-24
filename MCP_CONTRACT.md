@@ -238,6 +238,19 @@ next call. A failing step also carries the latest failure and its diagnosis.
   reference. `ACHIEVED` is accepted only when every step
   is `DONE` from evidence; the refusal lists what remains.
 
+### Evidence instead of claims
+
+`superadmin_change_proof({projectId, taskId})` is read-only (ADR 029). It returns the evidence for a task's change from the control plane's records only:
+
+- the commit and branch;
+- tests executed (totals, failing tests by name, property-based counts);
+- the review and the security scan;
+- HTTP E2E (verdict, commit, whether it is the latest commit, coverage, requests, scenarios, comparison with the reference);
+- the pull request;
+- run links.
+
+The verdict is `PROVEN` only when the task is READY and every piece is shown at the latest commit; otherwise `NOT_PROVEN`, with each missing piece named. Agents quote it instead of reporting from memory.
+
 ### One job per task
 
 `superadmin_task_execute` and `superadmin_job_create` refuse a new change set while the task has a job in flight. The `CONFLICT` names the job: wait for its result with `superadmin_task_readiness` or `superadmin_job_get` (ADR 022). A failed test run reports the failing tests by name in its TEST_REPORT (`failedTests`) and in `readiness.repair.latestFailedTests`.

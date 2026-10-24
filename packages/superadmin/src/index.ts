@@ -48,6 +48,7 @@ import { resolveRebasePlan } from "./rebase-eligibility.js";
 import { conflictForForeignProject, verifyRepositoryForRegistration } from "./repository-registration.js";
 import { repositoryCapabilities, type GitHubView } from "./capabilities.js";
 import { missionEvidence, productRepository, projectBrief } from "./missions.js";
+import { changeProof } from "./proof.js";
 import { missionProgress } from "../../core/src/mission.js";
 import {
   CanonicalRepositoryService,
@@ -685,6 +686,14 @@ export class SuperadminService {
     this.requireSuperadmin(principal);
     const project=await this.requireProject(projectId);
     return projectBrief({store:this.deps.store,service:this.deps.service,readArtifact:(project:string,id:string)=>this.artifacts.read(project,id),...(this.deps.repositories?{repositories:this.deps.repositories}:{})},project);
+  }
+
+  // Read-only evidence for one task's change, from records only; quoted by agents instead of claims.
+  async changeProof(principal:SuperadminPrincipal,projectId:string,taskId:string){
+    this.requireSuperadmin(principal);
+    const project=await this.requireProject(projectId);
+    const task=await this.requireTask(projectId,taskId);
+    return changeProof({store:this.deps.store,service:this.deps.service,readArtifact:(project:string,id:string)=>this.artifacts.read(project,id)},project,task);
   }
 
   // What a repository is for in its product. ARCHIVE is refused while an open mission still builds in

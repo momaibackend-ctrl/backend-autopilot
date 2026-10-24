@@ -19,7 +19,7 @@ describe("HTTP SUPERADMIN MCP contract",()=>{
       "superadmin_canonical_repository_get","superadmin_canonical_repository_plan","superadmin_canonical_repository_promote","superadmin_canonical_repository_rollback",
       "superadmin_repository_export_plan","superadmin_repository_export","superadmin_repository_export_verify","superadmin_developer_handover_report",
       "superadmin_repository_rename_plan","superadmin_repository_rename","superadmin_repository_register","superadmin_project_capabilities",
-      "superadmin_project_brief","superadmin_repository_role_set","superadmin_mission_create","superadmin_mission_update","superadmin_project_product_set",
+      "superadmin_project_brief","superadmin_repository_role_set","superadmin_mission_create","superadmin_mission_update","superadmin_project_product_set","superadmin_change_proof",
     ])expect(tools).toContain(name);
     expect(tools.length).toBeGreaterThanOrEqual(77);
     expect(tools.some(name=>/(shell|sql|filesystem|run_any_command)/i.test(name))).toBe(false);

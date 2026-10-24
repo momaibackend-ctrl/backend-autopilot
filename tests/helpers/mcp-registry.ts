@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import * as httpRunner from "../../packages/http-runner/src/index.js";
 import * as missions from "../../packages/superadmin/src/missions.js";
+import * as proof from "../../packages/superadmin/src/proof.js";
 
 export interface PublishedTool {
   name: string;
@@ -11,7 +12,7 @@ export interface PublishedTool {
 // shared exported constant (so the runner and its published contract cannot drift apart). Both
 // forms are resolved here, which is what makes "the tool really is in the published roster" a
 // checkable property rather than a grep for one particular spelling.
-const exported = { ...httpRunner, ...missions } as unknown as Record<string, unknown>;
+const exported = { ...httpRunner, ...missions, ...proof } as unknown as Record<string, unknown>;
 const registration =
   /registerTool\(\s*(?:'((?:[^'\\]|\\.)*)'|([A-Za-z_$][\w$]*))\s*,\s*\{\s*description\s*:\s*(?:'((?:[^'\\]|\\.)*)'|([A-Za-z_$][\w$]*))/g;
 

@@ -23,6 +23,7 @@ import '../../../packages/superadmin/src/rebase-eligibility.ts';
 import '../../../packages/superadmin/src/repository-registration.ts';
 import '../../../packages/superadmin/src/capabilities.ts';
 import '../../../packages/superadmin/src/missions.ts';
+import '../../../packages/superadmin/src/proof.ts';
 import '../../../packages/core/src/mission.ts';
 import '../../../packages/core/src/stall-recovery.ts';
 import '../../../packages/core/src/execution-reconciliation.ts';
