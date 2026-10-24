@@ -177,6 +177,16 @@ function hasSecurity(requirements: unknown): boolean {
 }
 
 /** Reads every operation a contract documents. Throws when the document is not a contract. */
+/**
+ * The identity of a documented operation: method plus path template, with parameter names
+ * dropped. `/flows/{id}/actions/{action}` and `/flows/{id}/actions/{actionCode}` are the same
+ * route -- one contract file naming the parameter differently from another must not turn one
+ * operation into two, one of which can then never be "exercised".
+ */
+export function operationKey(method: string, path: string): string {
+  return `${method.toUpperCase()} ${path.replace(/{[^}/]+}/g, "{}")}`;
+}
+
 export function extractApiOperations(document: unknown): ApiInventory {
   if (!isRecord(document) || !(typeof document["openapi"] === "string" || document["swagger"] === "2.0"))
     throw new InvalidState("API inventory requires an OpenAPI 3.x or Swagger 2.0 document");
@@ -203,7 +213,7 @@ export function extractApiOperations(document: unknown): ApiInventory {
         excluded.push({ method, path, reason: `${method} is not executable by the HTTP runner` });
         continue;
       }
-      const key = `${method} ${path}`;
+      const key = operationKey(method, path);
       if (seen.has(key)) continue;
       seen.add(key);
       if (operations.length >= collectionLimits.maxOperations)
@@ -249,7 +259,7 @@ export function inventoryFromContractArtifact(content: unknown): ApiInventory | 
     if (merged.title === undefined && inventory.title !== undefined) merged.title = inventory.title;
     if (merged.version === undefined && inventory.version !== undefined) merged.version = inventory.version;
     for (const operation of inventory.operations) {
-      const key = `${operation.method} ${operation.path}`;
+      const key = operationKey(operation.method, operation.path);
       if (seen.has(key)) continue;
       seen.add(key);
       merged.operations.push(operation);
@@ -381,12 +391,12 @@ export function computeApiCoverage(
   // An operation documented by two contracts counts toward both: each contract is a separate
   // claim about the API, and "the check-in contract is fully covered" must be answerable alone.
   const perContract = new Map<string, { total: number; covered: number }>();
-  const coveredKeys = new Set(covered.map((value) => `${value.method} ${value.path}`));
+  const coveredKeys = new Set(covered.map((value) => operationKey(value.method, value.path)));
   for (const operation of inventory.operations)
     for (const contract of operation.contract ? [operation.contract, ...(operation.alsoIn ?? [])] : []) {
       const entry = perContract.get(contract) ?? { total: 0, covered: 0 };
       entry.total += 1;
-      if (coveredKeys.has(`${operation.method} ${operation.path}`)) entry.covered += 1;
+      if (coveredKeys.has(operationKey(operation.method, operation.path))) entry.covered += 1;
       perContract.set(contract, entry);
     }
   const byContract = [...perContract.entries()].map(([contract, entry]) => ({

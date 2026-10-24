@@ -14,7 +14,7 @@
 // Web APIs only (plus the pure `yaml` parser), so it runs in the Deno Edge MCP and in Node.
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { extractApiOperations, importPostmanCollection, type ApiInventory, type ApiOperation } from "./collection.js";
+import { extractApiOperations, importPostmanCollection, operationKey, type ApiInventory, type ApiOperation } from "./collection.js";
 
 export const discoveryLimits = {
   /** Files read from one repository in one discovery; the rest is recorded as a gap. */
@@ -251,7 +251,7 @@ export async function discoverRepositoryApi(source: RepositoryContentSource): Pr
     for (const gap of inventory.incomplete ?? []) gaps.push({ source: `${path} ${gap.source}`, reason: gap.reason });
     excluded.push(...inventory.excluded);
     for (const operation of inventory.operations) {
-      const key = `${operation.method} ${operation.path}`;
+      const key = operationKey(operation.method, operation.path);
       const existing = byKey.get(key);
       if (existing) {
         existing.alsoIn = [...(existing.alsoIn ?? []), path];
