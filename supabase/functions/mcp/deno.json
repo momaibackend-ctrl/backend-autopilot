@@ -39,6 +39,8 @@
     "./capabilities.js": "../../../packages/superadmin/src/capabilities.ts",
     "../../../packages/superadmin/src/missions.js": "../../../packages/superadmin/src/missions.ts",
     "./missions.js": "../../../packages/superadmin/src/missions.ts",
+    "../../../packages/superadmin/src/proof.js": "../../../packages/superadmin/src/proof.ts",
+    "./proof.js": "../../../packages/superadmin/src/proof.ts",
     "../../../packages/core/src/mission.js": "../../../packages/core/src/mission.ts",
     "../../../packages/core/src/stall-recovery.js": "../../../packages/core/src/stall-recovery.ts",
     "../../http-runner/src/index.js": "../../../packages/http-runner/src/index.ts",
